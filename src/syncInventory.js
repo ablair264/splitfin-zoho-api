@@ -1,15 +1,17 @@
-// server/src/syncInventory.js
-import admin from 'firebase-admin'
-import { fetchItems } from './api/zoho.js'
+import admin from 'firebase-admin';
+import { fetchItems } from './api/zoho.js';
 
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-  })
+  });
 }
-const db = admin.firestore()
+const db = admin.firestore();
 
+/**
+ * Syncs Zoho items into Firestore.
+ */
 export async function syncInventory() {
   console.log('⏳ Fetching items from Zoho…');
   const items = await fetchItems();
@@ -19,18 +21,19 @@ export async function syncInventory() {
   const coll  = db.collection('products');
 
   items.forEach(zItem => {
-    const skuRaw = zItem.item_code;
-    const sku     = skuRaw ? String(skuRaw).trim() : '';
+    // 1) Try item_code, then sku, trim whitespace
+    const skuRaw = zItem.item_code ?? zItem.sku ?? '';
+    const sku    = String(skuRaw).trim();
 
+    // 2) Skip if still empty
     if (!sku) {
-      // ► Log the full object so we can see what fields _are_ present
       console.warn(
-        `⚠️  Skipping item with missing SKU (item_id=${zItem.item_id}). Full record:`,
-        JSON.stringify(zItem, null, 2)
+        `⚠️  Skipping item with missing SKU (item_id=${zItem.item_id}).`
       );
       return;
     }
 
+    // 3) Write only the two stock fields (merge preserves all others)
     const ref = coll.doc(sku);
     batch.set(
       ref,
