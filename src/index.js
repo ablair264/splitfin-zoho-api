@@ -126,8 +126,15 @@ app.get('/api/purchaseorders', async (req, res) => {
   }
 });
 
-// Hourly sync
-cron.schedule('0 * * * *', () => syncInventory().catch(err => console.error('Sync failed:', err)));
+app.post('/api/sync', async (req, res) => {
+  try {
+    console.log('🚀 Triggered manual sync from client…');
+    await syncInventory();
+    return res.json({ success: true, message: 'Inventory synced.' });
+  } catch (err) {
+    console.error('Manual sync failed:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
 
-// Start server
 app.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
