@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import cron from 'node-cron';
-import { syncInventory } from '../syncInventory.js';
+import { syncInventory } from './syncInventory.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
