@@ -83,14 +83,38 @@ export async function fetchItems() {
 /**
  * Proxies Zoho Inventory purchase orders.
  */
-export async function fetchPurchaseOrders(status = 'open') {
-  const token = await getAccessToken();
-  const resp = await axios.get(
-    'https://www.zohoapis.eu/inventory/v1/purchaseorders',
-    {
-      params: { status, organization_id: ZOHO_ORG_ID },
-      headers: { Authorization: `Zoho-oauthtoken ${token}` }
-    }
-  );
-  return resp.data.purchaseorders;
+async function fetchAllPurchaseOrders(status = 'open') {
+  const perPage = 200;
+  let page = 1;
+  let allOrders = [];
+
+  while (true) {
+    const url =
+      `https://www.zohoapis.eu/inventory/v1/purchaseorders` +
+      `?status=${status}` +
+      `&organization_id=${ZOHO_ORG_ID}` +
+      `&include_line_items=true` +
+      `&per_page=${perPage}` +
+      `&page=${page}`;
+
+    const { data } = await axios.get(url, {
+      headers: { Authorization: `Zoho-oauthtoken ${await getAccessToken()}` }
+    });
+
+    const orders = Array.isArray(data.purchaseorders)
+      ? data.purchaseorders
+      : [];
+
+    // stop if empty
+    if (orders.length === 0) break;
+
+    allOrders.push(...orders);
+
+    // last page?
+    if (orders.length < perPage) break;
+
+    page++;
+  }
+
+  return allOrders;
 }
