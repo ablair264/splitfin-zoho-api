@@ -15,10 +15,10 @@ import { getAccessToken, fetchPurchaseOrders } from './api/zoho.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// Load env
+// Load environment variables
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-// Load Firebase Service Account from ENV
+// Load Firebase Service Account from ENV var
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 
 // Initialize Firebase Admin
@@ -27,17 +27,21 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 
-// Express setup
+// Express App Setup
 const app = express();
 const {
-  ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REDIRECT_URI,
-  ZOHO_ORG_ID, ZOHO_REFRESH_TOKEN, PORT = 3001
+  ZOHO_CLIENT_ID,
+  ZOHO_CLIENT_SECRET,
+  ZOHO_REDIRECT_URI,
+  ZOHO_ORG_ID,
+  ZOHO_REFRESH_TOKEN,
+  PORT = 3001
 } = process.env;
 
 app.use(cors({ origin: 'http://localhost:5173' }));
 app.use(express.json());
 
-// ── 1) OAuth consent redirect ─────────────────────────────────────────────
+// ── OAuth Consent Redirect ─────────────────────────────────────────────────
 app.get('/oauth/url', (req, res) => {
   const AUTH_BASE = 'https://accounts.zoho.eu/oauth/v2/auth';
   const params = new URLSearchParams({
@@ -51,7 +55,7 @@ app.get('/oauth/url', (req, res) => {
   res.redirect(`${AUTH_BASE}?${params}`);
 });
 
-// ── 2) OAuth callback to store refresh_token ──────────────────────────────
+// ── OAuth Callback to Store Refresh Token ──────────────────────────────────
 app.get('/oauth/callback', async (req, res) => {
   const { code } = req.query;
   if (!code) return res.status(400).send('No code received');
@@ -69,11 +73,9 @@ app.get('/oauth/callback', async (req, res) => {
       }
     );
     if (data.error) {
-      return res
-        .status(400)
-        .send(`Zoho OAuth error: ${data.error_description||data.error}`);
+      return res.status(400).send(`Zoho OAuth error: ${data.error_description || data.error}`);
     }
-    // Persist new refresh_token
+    // Persist new refresh token
     const envPath = path.resolve(__dirname, '../.env');
     fs.writeFileSync(envPath,
 `ZOHO_CLIENT_ID=${ZOHO_CLIENT_ID}
@@ -88,82 +90,42 @@ PORT=${PORT}
       <p>Token expires in ${data.expires_in}s</p>
     `);
   } catch (err) {
-    console.error(err.response?.data||err);
+    console.error(err.response?.data || err);
     return res.status(500).send('Token exchange failed');
   }
 });
 
-// ── In‐memory cache for access token ───────────────────────────────────────
-let cachedToken     = null;
-let cachedExpiry    = 0;
-let refreshPromise = null;
-
-async function getAccessToken() {
-  const now = Date.now();
-  if (cachedToken && now < cachedExpiry) {
-    return cachedToken;
-  }
-  if (refreshPromise) {
-    // another request is already refreshing—wait for it
-    return await refreshPromise;
-  }
-
-  // no valid token and no refresh in flight: start one
-  refreshPromise = (async () => {
-    const { data } = await axios.post(
-      'https://accounts.zoho.eu/oauth/v2/token',
-      null,
-      { params: {
-          grant_type:    'refresh_token',
-          client_id:     ZOHO_CLIENT_ID,
-          client_secret: ZOHO_CLIENT_SECRET,
-          refresh_token: ZOHO_REFRESH_TOKEN
-        }
-      }
-    );
-    if (data.error) throw new Error(data.error_description || data.error);
-
-    cachedToken  = data.access_token;
-    cachedExpiry = now + data.expires_in * 1000 - 60 * 1000; // 1min safety margin
-    refreshPromise = null;       // clear the in-flight marker
-    return cachedToken;
-  })();
-
-  return await refreshPromise;
-}
-
-// ── Firestore-backed Items Endpoint ────────────────────────────────────────
-// Firestore-backed items endpoint
+// ── Firestore-backed Items Endpoint ───────────────────────────────────────
 app.get('/api/items', async (req, res) => {
   try {
     const snap = await db.collection('products').get();
     const products = snap.docs.map(d => d.data());
-    res.json({ items: products });
+    return res.json({ items: products });
   } catch (err) {
     console.error('Firestore /api/items failed:', err);
-    res.status(500).send('Items fetch failed');
+    return res.status(500).send('Items fetch failed');
   }
 });
 
-// Purchase orders proxy using new helper
+// ── Zoho Purchase Orders Proxy ────────────────────────────────────────────
 app.get('/api/purchaseorders', async (req, res) => {
   try {
     const status = req.query.status || 'open';
     const purchaseorders = await fetchPurchaseOrders(status);
-    res.json({ purchaseorders });
+    return res.json({ purchaseorders });
   } catch (err) {
     console.error('Proxy /api/purchaseorders failed:', err);
-    res.status(500).send('Purchase Orders fetch failed');
+    return res.status(500).send('Purchase Orders fetch failed');
   }
 });
 
-// Scheduled hourly sync
+// ── Scheduled Hourly Sync ─────────────────────────────────────────────────
 cron.schedule('0 * * * *', () => {
   console.log('⏰ Running hourly Zoho→Firestore sync…');
-  syncInventory().catch(e => console.error('Scheduled sync failed:', e));
+  syncInventory().catch(err => console.error('Scheduled sync failed:', err));
 });
 
-// Start server
-app.listen(PORT, () =>
-  console.log(`Auth & Proxy server listening on http://localhost:${PORT}`)
-);
+// ── Start HTTP Server ─────────────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(`Auth & Proxy server listening on http://localhost:${PORT}`);
+});
