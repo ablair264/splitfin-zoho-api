@@ -18,7 +18,8 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 import admin from 'firebase-admin';
 import serviceAccount from '../serviceAccountKey.json';
 import cron from 'node-cron';
-import { syncInventory } from '../syncInventory.js';
+
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON!);
 
 // Initialize Firebase Admin
 admin.initializeApp({
