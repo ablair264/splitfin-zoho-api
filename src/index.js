@@ -126,14 +126,15 @@ app.get('/api/purchaseorders', async (req, res) => {
   }
 });
 
+// POST /api/sync — triggers the Zoho→Firestore syncInventory()
 app.post('/api/sync', async (req, res) => {
+  console.log('🚀 Manual sync triggered via HTTP');
   try {
-    console.log('🚀 Triggered manual sync from client…');
     await syncInventory();
-    return res.json({ success: true, message: 'Inventory synced.' });
+    return res.json({ ok: true, message: 'Sync complete.' });
   } catch (err) {
-    console.error('Manual sync failed:', err);
-    return res.status(500).json({ success: false, message: err.message });
+    console.error('❌ Manual sync failed:', err);
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
