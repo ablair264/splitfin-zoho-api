@@ -24,9 +24,35 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 const app = express();
-const { ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REDIRECT_URI,
-        ZOHO_ORG_ID, ZOHO_REFRESH_TOKEN, PORT = 3001 } = process.env;
-app.use(cors({ origin: 'http://localhost:5173' }));
+const {
+  ZOHO_CLIENT_ID,
+  ZOHO_CLIENT_SECRET,
+  ZOHO_REDIRECT_URI,
+  ZOHO_ORG_ID,
+  ZOHO_REFRESH_TOKEN,
+  PORT = 3001
+} = process.env;
+
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'https://splitfin.co.uk',
+  'https://splitfin-zoho-api.onrender.com'
+];
+
+app.use(cors({
+  origin: (incomingOrigin, callback) => {
+    // allow requests with no origin (e.g. Postman, curl)
+    if (!incomingOrigin) return callback(null, true);
+
+    if (ALLOWED_ORIGINS.includes(incomingOrigin)) {
+      return callback(null, true);
+    }
+
+    // disallowed origin
+    return callback(new Error(`CORS blocked for origin: ${incomingOrigin}`));
+  }
+}));
+
 app.use(express.json());
 
 // OAuth - consent URL
