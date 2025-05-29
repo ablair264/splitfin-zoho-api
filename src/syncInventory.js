@@ -10,22 +10,24 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore()
 
-/**
- * Syncs Zoho items into Firestore, _merging_ only the two stock fields
- * and a timestamp onto your existing docs keyed by SKU
- */
 export async function syncInventory() {
   console.log('⏳ Fetching items from Zoho…');
   const items = await fetchItems();
+  console.log(`📝 Received ${items.length} records from Zoho`);
 
-  console.log(`📝 Writing ${items.length} records to Firestore…`);
   const batch = db.batch();
   const coll  = db.collection('products');
 
   items.forEach(zItem => {
-    const sku = String(zItem.item_code || '').trim();
+    const skuRaw = zItem.item_code;
+    const sku     = skuRaw ? String(skuRaw).trim() : '';
+
     if (!sku) {
-      console.warn(`⚠️  Skipping item with missing SKU (item_id=${zItem.item_id})`);
+      // ► Log the full object so we can see what fields _are_ present
+      console.warn(
+        `⚠️  Skipping item with missing SKU (item_id=${zItem.item_id}). Full record:`,
+        JSON.stringify(zItem, null, 2)
+      );
       return;
     }
 
