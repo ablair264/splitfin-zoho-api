@@ -144,9 +144,9 @@ app.get('/api/purchaseorders', async (req, res) => {
 app.get('/api/agents', async (req, res) => {
   try {
     const token = await getAccessToken();
-    // List all records in the custom Agents module
+    // List all records in the Agents module (API name 'Agents')
     const zohoRes = await axios.get(
-      `https://www.zohoapis.eu/crm/v2/CustomModule3?organization_id=${ZOHO_ORG_ID}`,
+      `https://www.zohoapis.eu/crm/v2/Agents?organization_id=${ZOHO_ORG_ID}`,
       { headers: { Authorization: `Zoho-oauthtoken ${token}` } }
     );
     res.json(zohoRes.data);
