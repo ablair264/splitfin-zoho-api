@@ -11,7 +11,6 @@ const {
   ZOHO_ORG_ID
 } = process.env;
 
-// In-memory cache for OAuth token
 let cachedToken = null;
 let cachedExpiry = 0;
 let refreshPromise = null;
@@ -42,11 +41,10 @@ export async function getAccessToken() {
       }
     );
     const data = response.data;
-    if (data.error) {
-      throw new Error(data.error_description || data.error);
-    }
+    if (data.error) throw new Error(data.error_description || data.error);
+
     cachedToken = data.access_token;
-    cachedExpiry = now + (data.expires_in * 1000) - 60000; // 1 minute buffer
+    cachedExpiry = now + data.expires_in * 1000 - 60000;
     refreshPromise = null;
     return cachedToken;
   })();
@@ -55,12 +53,40 @@ export async function getAccessToken() {
 }
 
 /**
- * Proxies Zoho Inventory Purchase Orders endpoint
+ * Fetches all items from Zoho Inventory via pagination.
+ */
+export async function fetchItems() {
+  const allItems = [];
+  let page = 1;
+  const per_page = 200;
+
+  while (true) {
+    const token = await getAccessToken();
+    const resp = await axios.get(
+      'https://www.zohoapis.eu/inventory/v1/items',
+      {
+        params: { organization_id: ZOHO_ORG_ID, per_page, page },
+        headers: { Authorization: `Zoho-oauthtoken ${token}` }
+      }
+    );
+    const data = resp.data;
+    if (Array.isArray(data.items)) {
+      allItems.push(...data.items);
+    }
+    if (!data.page_context?.has_more_page) break;
+    page += 1;
+  }
+
+  return allItems;
+}
+
+/**
+ * Proxies Zoho Inventory purchase orders.
  */
 export async function fetchPurchaseOrders(status = 'open') {
   const token = await getAccessToken();
   const resp = await axios.get(
-    `https://www.zohoapis.eu/inventory/v1/purchaseorders`,
+    'https://www.zohoapis.eu/inventory/v1/purchaseorders',
     {
       params: { status, organization_id: ZOHO_ORG_ID },
       headers: { Authorization: `Zoho-oauthtoken ${token}` }
