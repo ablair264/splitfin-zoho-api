@@ -18,8 +18,10 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 // Firebase init
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-const db = admin.firestore();
+if (!admin.apps.length) {
+  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+}
+const db = admin.firestore()();
 
 const app = express();
 const { ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REDIRECT_URI,
