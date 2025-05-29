@@ -15,15 +15,21 @@ const db = admin.firestore()
  * and a timestamp onto your existing docs keyed by SKU
  */
 export async function syncInventory() {
-  console.log('⏳ Fetching items from Zoho…')
-  const items = await fetchItems()
+  console.log('⏳ Fetching items from Zoho…');
+  const items = await fetchItems();
 
-  console.log(`📝 Writing ${items.length} records to Firestore…`)
-  const batch = db.batch()
-  const coll  = db.collection('products')
+  console.log(`📝 Writing ${items.length} records to Firestore…`);
+  const batch = db.batch();
+  const coll  = db.collection('products');
 
   items.forEach(zItem => {
-    const ref = coll.doc(zItem.item_code)
+    const sku = String(zItem.item_code || '').trim();
+    if (!sku) {
+      console.warn(`⚠️  Skipping item with missing SKU (item_id=${zItem.item_id})`);
+      return;
+    }
+
+    const ref = coll.doc(sku);
     batch.set(
       ref,
       {
@@ -32,9 +38,9 @@ export async function syncInventory() {
         lastSynced:             admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
-    )
-  })
+    );
+  });
 
-  await batch.commit()
-  console.log('✅ syncInventory complete.')
+  await batch.commit();
+  console.log('✅ syncInventory complete.');
 }
