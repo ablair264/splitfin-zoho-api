@@ -17,7 +17,7 @@ const __dirname  = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 // ── Load Firebase Service Account from ENV ─────────────────────────────────
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON!);
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 
 // ── Initialize Firebase Admin ──────────────────────────────────────────────
 admin.initializeApp({
@@ -134,8 +134,7 @@ async function getAccessToken() {
   return await refreshPromise;
 }
 
-// ── Proxy endpoints ───────────────────────────────────────────────────────
-// Fetch Zoho Items
+// ── Firestore-backed Items Endpoint ────────────────────────────────────────
 app.get('/api/items', async (req, res) => {
   try {
     const snap = await db.collection('products').get();
