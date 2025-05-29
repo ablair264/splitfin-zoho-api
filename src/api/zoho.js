@@ -83,7 +83,7 @@ export async function fetchItems() {
 /**
  * Proxies Zoho Inventory purchase orders.
  */
-async function fetchAllPurchaseOrders(status = 'open') {
+async function fetchPurchaseOrders(status = 'open') {
   const perPage = 200;
   let page = 1;
   let allOrders = [];
