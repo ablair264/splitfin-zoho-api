@@ -7,10 +7,11 @@ if (!admin.apps.length) {
     credential: admin.credential.cert(serviceAccount),
   });
 }
-const db = admin.firestore();
+const db   = admin.firestore();
+const coll = db.collection('products');
 
 /**
- * Syncs Zoho items into Firestore.
+ * Syncs Zoho items into Firestore by matching on the `sku` field.
  */
 export async function syncInventory() {
   console.log('⏳ Fetching items from Zoho…');
@@ -18,29 +19,33 @@ export async function syncInventory() {
   console.log(`📝 Received ${items.length} records from Zoho`);
 
   const batch = db.batch();
-  const coll  = db.collection('products');
 
-  items.forEach(zItem => {
+  for (const zItem of items) {
     // 1) Determine SKU
     const skuRaw = zItem.item_code ?? zItem.sku ?? '';
     const sku    = String(skuRaw).trim();
     if (!sku) {
-      console.warn(`⚠️  Skipping item with missing SKU (item_id=${zItem.item_id}).`);
-      return;
+      console.warn(`⚠️ Skipping item with missing SKU (item_id=${zItem.item_id})`);
+      continue;
     }
 
-    // 2) Safely pull stock values (default to 0 if undefined)
-    const available = typeof zItem.available_stock === 'number'
-      ? zItem.available_stock
-      : 0;
-    const actualAvail = typeof zItem.actual_available_stock === 'number'
-      ? zItem.actual_available_stock
-      : 0;
+    // 2) Find the existing Firestore doc by sku
+    const qSnap = await coll.where('sku', '==', sku).limit(1).get();
+    if (qSnap.empty) {
+      console.warn(`⚠️ No Firestore product found for SKU=${sku}; skipping`);
+      continue;
+    }
+    const docRef = qSnap.docs[0].ref;
 
-    // 3) Merge only those values
-    const ref = coll.doc(sku);
+    // 3) Prepare safe stock values
+    const available   = typeof zItem.available_stock === 'number'
+                        ? zItem.available_stock : 0;
+    const actualAvail = typeof zItem.actual_available_stock === 'number'
+                        ? zItem.actual_available_stock : 0;
+
+    // 4) Merge-update those two fields
     batch.set(
-      ref,
+      docRef,
       {
         available_stock:        available,
         actual_available_stock: actualAvail,
@@ -48,8 +53,9 @@ export async function syncInventory() {
       },
       { merge: true }
     );
-  });
+  }
 
+  // 5) Commit once
   await batch.commit();
   console.log('✅ syncInventory complete.');
 }
