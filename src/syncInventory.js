@@ -21,25 +21,29 @@ export async function syncInventory() {
   const coll  = db.collection('products');
 
   items.forEach(zItem => {
-    // 1) Try item_code, then sku, trim whitespace
+    // 1) Determine SKU
     const skuRaw = zItem.item_code ?? zItem.sku ?? '';
     const sku    = String(skuRaw).trim();
-
-    // 2) Skip if still empty
     if (!sku) {
-      console.warn(
-        `⚠️  Skipping item with missing SKU (item_id=${zItem.item_id}).`
-      );
+      console.warn(`⚠️  Skipping item with missing SKU (item_id=${zItem.item_id}).`);
       return;
     }
 
-    // 3) Write only the two stock fields (merge preserves all others)
+    // 2) Safely pull stock values (default to 0 if undefined)
+    const available = typeof zItem.available_stock === 'number'
+      ? zItem.available_stock
+      : 0;
+    const actualAvail = typeof zItem.actual_available_stock === 'number'
+      ? zItem.actual_available_stock
+      : 0;
+
+    // 3) Merge only those values
     const ref = coll.doc(sku);
     batch.set(
       ref,
       {
-        available_stock:        zItem.available_stock,
-        actual_available_stock: zItem.actual_available_stock,
+        available_stock:        available,
+        actual_available_stock: actualAvail,
         lastSynced:             admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
