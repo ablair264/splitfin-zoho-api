@@ -114,14 +114,13 @@ app.get('/api/items', async (req, res) => {
   }
 });
 
-// Proxy purchase orders
 app.get('/api/purchaseorders', async (req, res) => {
   try {
     const status = req.query.status || 'open';
-    const purchaseorders = await fetchPurchaseOrders(status);
+    const purchaseorders = await fetchAllPurchaseOrders(status);
     res.json({ purchaseorders });
-  } catch (e) {
-    console.error('Proxy /api/purchaseorders failed:', e);
+  } catch (err) {
+    console.error('Proxy /api/purchaseorders failed:', err.response?.data || err);
     res.status(500).send('Purchase Orders fetch failed');
   }
 });
