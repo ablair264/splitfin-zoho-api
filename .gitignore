@@ -1,3 +1,31 @@
-node_modules/
-.env
+# macOS cruft
+.DS_Store
+src/.DS_Store
 
+# Node modules
+node_modules/
+server/node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment files
+.env
+.env.local
+server/.env
+
+# Firebase service account (keep your key private!)
+serviceAccountKey.json
+server/serviceAccountKey.json
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE/editor folders
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
