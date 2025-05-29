@@ -144,8 +144,9 @@ app.get('/api/purchaseorders', async (req, res) => {
 app.get('/api/agents', async (req, res) => {
   try {
     const token = await getAccessToken();
+    // List all records in the custom Agents module
     const zohoRes = await axios.get(
-      `https://www.zohoapis.eu/crm/v2/CustomModule3/actions/custom-view?custom_view_id=806490000000514372`,
+      `https://www.zohoapis.eu/crm/v2/CustomModule3?organization_id=${ZOHO_ORG_ID}`,
       { headers: { Authorization: `Zoho-oauthtoken ${token}` } }
     );
     res.json(zohoRes.data);
@@ -158,8 +159,9 @@ app.get('/api/agents', async (req, res) => {
 app.get('/api/customers', async (req, res) => {
   try {
     const token = await getAccessToken();
+    // List all records in the Accounts (Customers) module
     const zohoRes = await axios.get(
-      `https://www.zohoapis.eu/crm/v2/Accounts/actions/custom-view?custom_view_id=806490000000030957`,
+      `https://www.zohoapis.eu/crm/v2/Accounts?organization_id=${ZOHO_ORG_ID}`,
       { headers: { Authorization: `Zoho-oauthtoken ${token}` } }
     );
     res.json(zohoRes.data);
