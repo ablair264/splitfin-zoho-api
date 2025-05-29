@@ -9,31 +9,29 @@ import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import cron from 'node-cron';
 import { syncInventory } from './syncInventory.js';
+import { getAccessToken, fetchPurchaseOrders } from './api/zoho.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
+// Load env
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-// ── Load Firebase Service Account from ENV ─────────────────────────────────
+// Load Firebase Service Account from ENV
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 
-// ── Initialize Firebase Admin ──────────────────────────────────────────────
+// Initialize Firebase Admin
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 const db = admin.firestore();
 
-// ── Express Setup ──────────────────────────────────────────────────────────
+// Express setup
 const app = express();
 const {
-  ZOHO_CLIENT_ID,
-  ZOHO_CLIENT_SECRET,
-  ZOHO_REDIRECT_URI,
-  ZOHO_ORG_ID,
-  ZOHO_REFRESH_TOKEN,
-  PORT = 3001
+  ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REDIRECT_URI,
+  ZOHO_ORG_ID, ZOHO_REFRESH_TOKEN, PORT = 3001
 } = process.env;
 
 app.use(cors({ origin: 'http://localhost:5173' }));
@@ -135,40 +133,37 @@ async function getAccessToken() {
 }
 
 // ── Firestore-backed Items Endpoint ────────────────────────────────────────
+// Firestore-backed items endpoint
 app.get('/api/items', async (req, res) => {
   try {
     const snap = await db.collection('products').get();
     const products = snap.docs.map(d => d.data());
-    return res.json({ items: products });
+    res.json({ items: products });
   } catch (err) {
     console.error('Firestore /api/items failed:', err);
-    return res.status(500).send('Items fetch failed');
+    res.status(500).send('Items fetch failed');
   }
 });
 
-// ── Zoho Purchase Orders Proxy ─────────────────────────────────────────────
+// Purchase orders proxy using new helper
 app.get('/api/purchaseorders', async (req, res) => {
   try {
     const status = req.query.status || 'open';
-    const token  = await getAccessToken(); // ensure getAccessToken is defined above
-    const zohoRes = await axios.get(
-      `https://www.zohoapis.eu/inventory/v1/purchaseorders?status=${status}&organization_id=${ZOHO_ORG_ID}`,
-      { headers: { 'Authorization': `Zoho-oauthtoken ${token}` } }
-    );
-    return res.json(zohoRes.data);
+    const purchaseorders = await fetchPurchaseOrders(status);
+    res.json({ purchaseorders });
   } catch (err) {
-    console.error('Proxy /api/purchaseorders failed:', err.response?.data || err);
-    return res.status(500).send('Purchase Orders fetch failed');
+    console.error('Proxy /api/purchaseorders failed:', err);
+    res.status(500).send('Purchase Orders fetch failed');
   }
 });
 
-// ── Scheduled Sync ─────────────────────────────────────────────────────────
+// Scheduled hourly sync
 cron.schedule('0 * * * *', () => {
   console.log('⏰ Running hourly Zoho→Firestore sync…');
-  syncInventory().catch(err => console.error('Scheduled sync failed:', err));
+  syncInventory().catch(e => console.error('Scheduled sync failed:', e));
 });
 
-// ── Start Server ──────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`Auth & Proxy server listening on http://localhost:${PORT}`);
-});
+// Start server
+app.listen(PORT, () =>
+  console.log(`Auth & Proxy server listening on http://localhost:${PORT}`)
+);
