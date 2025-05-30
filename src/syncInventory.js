@@ -1,6 +1,6 @@
 import admin from 'firebase-admin';
 import { fetchItems } from './api/zoho.js';
-import { fetchCustomers } from './api/zoho.js';
+import { fetchCustomersFromCRM } from './api/zoho.js';
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 if (!admin.apps.length) {
@@ -62,32 +62,40 @@ export async function syncInventory() {
 }
 
 
-export async function syncCustomers() {
-  console.log('⏳ Fetching customers from Zoho…');
-  const customers = await fetchCustomers();
-  console.log(`📝 Received ${customers.length} customers from Zoho`);
+export async function syncCustomersFromCRM() {
+  console.log('⏳ Fetching customers from Zoho CRM…');
+  const customers = await fetchCustomersFromCRM();
+  console.log(`📝 Received ${customers.length} customers from Zoho CRM`);
 
   const batch = db.batch();
   const customerColl = db.collection('customers');
 
-  for (const contact of customers) {
-    const id = contact.contact_id;
+  for (const account of customers) {
+    const id = account.id;
     if (!id) continue;
 
     const docRef = customerColl.doc(id);
+
     const data = {
       id,
-      Account_Name: contact.contact_name,
-      Phone: contact.phone,
-      Primary_Email: contact.email,
-      Zoho_Contact_ID: contact.contact_id,
-      Zoho_Account_ID: contact.customer_sub_type,
-      createdTime: admin.firestore.FieldValue.serverTimestamp(),
+      Account_Name: account.Account_Name || '',
+      Phone: account.Phone || '',
+      Primary_Email: account.Primary_Email || '',
+      Agent: account.Agent || '',
+      Billing_City: account.Billing_City || '',
+      Billing_Code: account.Billing_Code || '',
+      Billing_Country: account.Billing_Country || '',
+      Billing_State: account.Billing_State || '',
+      Billing_Street: account.Billing_Street || '',
+      Primary_First_Name: account.Primary_First_Name || '',
+      Primary_Last_Name: account.Primary_Last_Name || '',
+      source: 'ZohoCRM',
+      createdTime: admin.firestore.FieldValue.serverTimestamp()
     };
 
     batch.set(docRef, data, { merge: true });
   }
 
   await batch.commit();
-  console.log('✅ syncCustomers complete.');
+  console.log('✅ syncCustomersFromCRM complete.');
 }
