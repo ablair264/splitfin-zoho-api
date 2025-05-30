@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import { syncInventory } from './syncInventory.js';
-import { syncCustomers } from './syncInventory.js';
+import { syncInventory, syncCustomersFromCRM } from './syncInventory.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
@@ -186,7 +186,7 @@ app.post('/api/sync', async (req, res) => {
  
 app.post('/api/sync-customers', async (req, res) => {
   try {
-    await syncCustomers();
+	await syncCustomersFromCRM();
     res.json({ success: true });
   } catch (err) {
     console.error(err);
