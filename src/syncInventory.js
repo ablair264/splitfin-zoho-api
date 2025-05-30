@@ -1,5 +1,6 @@
 import admin from 'firebase-admin';
 import { fetchItems } from './api/zoho.js';
+import { fetchCustomers } from './api/zoho.js';
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 if (!admin.apps.length) {
@@ -58,4 +59,35 @@ export async function syncInventory() {
   // 5) Commit once
   await batch.commit();
   console.log('✅ syncInventory complete.');
+}
+
+
+export async function syncCustomers() {
+  console.log('⏳ Fetching customers from Zoho…');
+  const customers = await fetchCustomers();
+  console.log(`📝 Received ${customers.length} customers from Zoho`);
+
+  const batch = db.batch();
+  const customerColl = db.collection('customers');
+
+  for (const contact of customers) {
+    const id = contact.contact_id;
+    if (!id) continue;
+
+    const docRef = customerColl.doc(id);
+    const data = {
+      id,
+      Account_Name: contact.contact_name,
+      Phone: contact.phone,
+      Primary_Email: contact.email,
+      Zoho_Contact_ID: contact.contact_id,
+      Zoho_Account_ID: contact.customer_sub_type,
+      createdTime: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    batch.set(docRef, data, { merge: true });
+  }
+
+  await batch.commit();
+  console.log('✅ syncCustomers complete.');
 }
