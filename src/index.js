@@ -183,8 +183,7 @@ app.post('/api/sync', async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
-
-const app = express();
+ 
 app.post('/api/sync-customers', async (req, res) => {
   try {
     await syncCustomers();
