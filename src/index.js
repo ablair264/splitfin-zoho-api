@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import { syncInventory } from './syncInventory.js';
+import { syncCustomers } from './syncInventory.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
@@ -180,6 +181,17 @@ app.post('/api/sync', async (req, res) => {
   } catch (err) {
     console.error('❌ Manual sync failed:', err);
     return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+const app = express();
+app.post('/api/sync-customers', async (req, res) => {
+  try {
+    await syncCustomers();
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
