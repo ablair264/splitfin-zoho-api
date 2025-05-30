@@ -118,3 +118,34 @@ async function fetchPurchaseOrders(status = 'open') {
 
   return allOrders;
 }
+
+export async function fetchCustomers() {
+  const allContacts = [];
+  let page = 1;
+  const per_page = 200;
+
+  while (true) {
+    const token = await getAccessToken();
+    const resp = await axios.get(
+      'https://www.zohoapis.eu/inventory/v1/contacts',
+      {
+        params: {
+          organization_id: ZOHO_ORG_ID,
+          per_page,
+          page
+        },
+        headers: {
+          Authorization: `Zoho-oauthtoken ${token}`
+        }
+      }
+    );
+
+    const contacts = resp.data.contacts || [];
+    allContacts.push(...contacts);
+
+    if (!resp.data.page_context?.has_more_page) break;
+    page++;
+  }
+
+  return allContacts;
+}
