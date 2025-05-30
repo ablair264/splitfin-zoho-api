@@ -119,33 +119,48 @@ async function fetchPurchaseOrders(status = 'open') {
   return allOrders;
 }
 
-export async function fetchCustomers() {
-  const allContacts = [];
+export async function fetchCustomersFromCRM() {
+  const allAccounts = [];
   let page = 1;
   const per_page = 200;
 
+  const fields = [
+    'Account_Name',
+    'Phone',
+    'Primary_Email',
+    'Agent',
+    'Billing_City',
+    'Billing_Code',
+    'Billing_Country',
+    'Billing_State',
+    'Billing_Street',
+    'Primary_First_Name',
+    'Primary_Last_Name'
+  ];
+
   while (true) {
     const token = await getAccessToken();
-    const resp = await axios.get(
-      'https://www.zohoapis.eu/inventory/v1/contacts',
-      {
-        params: {
-          organization_id: ZOHO_ORG_ID,
-          per_page,
-          page
-        },
-        headers: {
-          Authorization: `Zoho-oauthtoken ${token}`
-        }
+    const url = `https://www.zohoapis.eu/crm/v5/Accounts`;
+
+    const resp = await axios.get(url, {
+      params: {
+        fields: fields.join(','),
+        page,
+        per_page
+      },
+      headers: {
+        Authorization: `Zoho-oauthtoken ${token}`
       }
-    );
+    });
 
-    const contacts = resp.data.contacts || [];
-    allContacts.push(...contacts);
+    const accounts = resp.data?.data || [];
+    allAccounts.push(...accounts);
 
-    if (!resp.data.page_context?.has_more_page) break;
+    const morePages = resp.data?.info?.more_records;
+    if (!morePages) break;
+
     page++;
   }
 
-  return allContacts;
+  return allAccounts;
 }
