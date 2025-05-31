@@ -234,9 +234,3 @@ export async function getInventoryContactIdByEmail(email) {
     return null;
   }
 }
-
-export {
-  getAccessToken,
-  fetchItems,
-  fetchCustomersFromCRM,
-};
