@@ -102,25 +102,46 @@ export async function syncCustomersFromCRM() {
 }
 
 
-export async function syncInventoryCustomerIds() {
-  const snapshot = await db.collection('customers').get();
+export async function syncInventoryCustomerIds(singleDocId?: string, singleEmail?: string) {
+  const docsToProcess = [];
 
-  for (const doc of snapshot.docs) {
-    const data = doc.data();
-    const email = data.Primary_Email || data.email;
-
-    if (!email) {
-      console.warn(`⚠️ No email for customer ${doc.id}`);
-      continue;
+  if (singleDocId && singleEmail) {
+    // Only sync a single customer
+    const docRef = db.collection('customers').doc(singleDocId);
+    const docSnap = await docRef.get();
+    if (!docSnap.exists) {
+      console.warn(`❌ Customer doc ${singleDocId} not found`);
+      return;
     }
+    docsToProcess.push({ id: singleDocId, ref: docRef, data: docSnap.data(), email: singleEmail });
+  } else {
+    // Bulk mode — sync all customers
+    const snapshot = await db.collection('customers').get();
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      const email = data.Primary_Email || data.email;
+      if (!email) {
+        console.warn(`⚠️ No email for customer ${doc.id}`);
+        return;
+      }
+      docsToProcess.push({ id: doc.id, ref: doc.ref, data, email });
+    });
+  }
 
-    const inventoryId = await getInventoryContactIdByEmail(email);
-    if (!inventoryId) {
-      console.warn(`❌ No Inventory ID found for ${email}`);
-      continue;
+  for (const item of docsToProcess) {
+    const { id, ref, email } = item;
+
+    try {
+      const inventoryId = await getInventoryContactIdByEmail(email);
+      if (!inventoryId) {
+        console.warn(`❌ No Inventory ID found for ${email}`);
+        continue;
+      }
+
+      await ref.update({ zohoInventoryId: inventoryId });
+      console.log(`✅ Updated ${email} with Inventory ID: ${inventoryId}`);
+    } catch (err) {
+      console.error(`❌ Error updating ${email}:`, err.message);
     }
-
-    await doc.ref.update({ zohoInventoryId: inventoryId });
-    console.log(`✅ Updated ${email} with Inventory ID: ${inventoryId}`);
   }
 }

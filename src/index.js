@@ -203,13 +203,22 @@ app.post('/api/sync-customers', async (req, res) => {
   }
 });
 
-app.post('/api/sync-inventory-contacts', async (req, res) => {
+app.post('/api/sync-inventory-contact', async (req, res) => {
+  const { email, docId } = req.body;
   try {
-    await syncInventoryCustomerIds();
-    res.json({ success: true });
+    const inventoryId = await getInventoryContactIdByEmail(email);
+    if (!inventoryId) {
+      return res.status(404).json({ success: false, error: 'Inventory contact not found' });
+    }
+
+    await db.collection('customers').doc(docId).update({
+      zohoInventoryId: inventoryId
+    });
+
+    res.json({ success: true, inventoryId });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error('❌ Error in sync-inventory-contact:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
