@@ -182,6 +182,16 @@ app.post('/api/sync', async (req, res) => {
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+app.post('/api/zoho/salesorder', async (req, res) => {
+  try {
+    const result = await createSalesOrder(req.body);
+    res.status(200).json({ success: true, zohoSalesOrder: result });
+  } catch (err) {
+    console.error('❌ Error in /api/zoho/salesorder:', err);
+    res.status(500).json({ error: err.message || 'Zoho Sales Order failed' });
+  }
+});
  
 app.post('/api/sync-customers', async (req, res) => {
   try {
