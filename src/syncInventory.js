@@ -107,7 +107,7 @@ export async function syncInventoryCustomerIds() {
 
   for (const doc of snapshot.docs) {
     const data = doc.data();
-    const email = data.email;
+    const email = data.Primary_Email || data.email;
 
     if (!email) {
       console.warn(`⚠️ No email for customer ${doc.id}`);
