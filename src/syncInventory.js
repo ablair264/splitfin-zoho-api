@@ -102,7 +102,7 @@ export async function syncCustomersFromCRM() {
 }
 
 
-export async function syncInventoryCustomerIds(singleDocId?: string, singleEmail?: string) {
+export async function syncInventoryCustomerIds(singleDocId, singleEmail) {
   const docsToProcess = [];
 
   if (singleDocId && singleEmail) {
