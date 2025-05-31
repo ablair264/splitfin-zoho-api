@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import { syncInventory, syncCustomersFromCRM, syncInventoryCustomerIds } from './syncInventory.js';
+import { getInventoryContactIdByEmail } from './api/zoho.js'
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
