@@ -215,3 +215,29 @@ export async function createSalesOrder(order) {
     throw err;
   }
 }
+
+export async function getInventoryContactIdByEmail(email) {
+  const token = await getAccessToken();
+  const url = `https://www.zohoapis.eu/inventory/v1/contacts?email=${encodeURIComponent(email)}&organization_id=${ZOHO_ORG_ID}`;
+
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Zoho-oauthtoken ${token}`
+      }
+    });
+
+    const contacts = response.data.contacts || [];
+    return contacts.length ? contacts[0].contact_id : null;
+  } catch (err) {
+    console.error('❌ Error fetching inventory contact by email:', err.response?.data || err.message);
+    return null;
+  }
+}
+
+export {
+  getAccessToken,
+  fetchItems,
+  fetchCustomersFromCRM,
+  createSalesOrder, // ✅ this is the important one
+};

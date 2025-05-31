@@ -7,7 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
-import { syncInventory, syncCustomersFromCRM } from './syncInventory.js';
+import { syncInventory, syncCustomersFromCRM, syncInventoryCustomerIds } from './syncInventory.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
@@ -196,6 +196,16 @@ app.post('/api/zoho/salesorder', async (req, res) => {
 app.post('/api/sync-customers', async (req, res) => {
   try {
 	await syncCustomersFromCRM();
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/sync-inventory-contacts', async (req, res) => {
+  try {
+    await syncInventoryCustomerIds();
     res.json({ success: true });
   } catch (err) {
     console.error(err);

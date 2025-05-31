@@ -1,6 +1,7 @@
 import admin from 'firebase-admin';
 import { fetchItems } from './api/zoho.js';
 import { fetchCustomersFromCRM } from './api/zoho.js';
+import { getInventoryContactIdByEmail } from './api/zoho.js'; // or adjust the path
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 if (!admin.apps.length) {
@@ -98,4 +99,28 @@ export async function syncCustomersFromCRM() {
 
   await batch.commit();
   console.log('✅ syncCustomersFromCRM complete.');
+}
+
+
+export async function syncInventoryCustomerIds() {
+  const snapshot = await db.collection('customers').get();
+
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+    const email = data.email;
+
+    if (!email) {
+      console.warn(`⚠️ No email for customer ${doc.id}`);
+      continue;
+    }
+
+    const inventoryId = await getInventoryContactIdByEmail(email);
+    if (!inventoryId) {
+      console.warn(`❌ No Inventory ID found for ${email}`);
+      continue;
+    }
+
+    await doc.ref.update({ zohoInventoryId: inventoryId });
+    console.log(`✅ Updated ${email} with Inventory ID: ${inventoryId}`);
+  }
 }
