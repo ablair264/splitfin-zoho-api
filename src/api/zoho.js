@@ -15,6 +15,7 @@ let cachedToken = null;
 let cachedExpiry = 0;
 let refreshPromise = null;
 
+
 /**
  * Retrieves a valid Zoho access token, refreshing if necessary.
  */
@@ -163,4 +164,54 @@ export async function fetchCustomersFromCRM() {
   }
 
   return allAccounts;
+}
+
+export async function createSalesOrder(order) {
+  const token = await getAccessToken();
+
+  const payload = {
+    customer_id: order.zohoCustID,
+    contact_persons: [order.zohoContID],
+    reference_number: `WebOrder-${Date.now()}`,
+    date: new Date().toISOString().split('T')[0],
+    line_items: order.items.map((item) => ({
+      item_id: item.zohoItemId || item.item_id, // Supports either field
+      rate: item.price || item.rate,
+      quantity: item.qty || item.quantity
+    })),
+    custom_fields: [
+      {
+        label: 'Brand',
+        value: order.brand
+      },
+      {
+        label: 'Submitted By',
+        value: order.customerName
+      }
+    ]
+  };
+
+  try {
+    const response = await axios.post(
+      'https://www.zohoapis.eu/inventory/v1/salesorders',
+      payload,
+      {
+        headers: {
+          Authorization: `Zoho-oauthtoken ${token}`,
+          'Content-Type': 'application/json',
+          'X-com-zoho-inventory-organizationid': ZOHO_ORG_ID
+        }
+      }
+    );
+
+    if (response.data.code !== 0) {
+      throw new Error(response.data.message || 'Zoho error');
+    }
+
+    console.log('✅ Zoho Sales Order created:', response.data.salesorder.salesorder_number);
+    return response.data;
+  } catch (err) {
+    console.error('❌ Zoho Sales Order creation failed:', err.response?.data || err.message);
+    throw err;
+  }
 }
