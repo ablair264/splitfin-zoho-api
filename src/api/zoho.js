@@ -239,5 +239,4 @@ export {
   getAccessToken,
   fetchItems,
   fetchCustomersFromCRM,
-  createSalesOrder, // ✅ this is the important one
 };
