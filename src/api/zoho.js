@@ -171,7 +171,6 @@ export async function createSalesOrder(order) {
 
   const payload = {
     customer_id: order.zohoCustID,
-    contact_persons: [order.zohoContID],
     reference_number: `WebOrder-${Date.now()}`,
     date: new Date().toISOString().split('T')[0],
     line_items: order.items.map((item) => ({
@@ -179,16 +178,7 @@ export async function createSalesOrder(order) {
       rate: item.price || item.rate,
       quantity: item.qty || item.quantity
     })),
-    custom_fields: [
-      {
-        label: 'Brand',
-        value: order.brand
-      },
-      {
-        label: 'Submitted By',
-        value: order.customerName
-      }
-    ]
+    cf_agent: order.agentZohoCRMId // 👈 Pass external CRM Agent ID here
   };
 
   try {
@@ -214,7 +204,6 @@ export async function createSalesOrder(order) {
     console.error('❌ Zoho Sales Order creation failed:', err.response?.data || err.message);
     throw err;
   }
-}
 
 export async function getInventoryContactIdByEmail(email) {
   const token = await getAccessToken();
