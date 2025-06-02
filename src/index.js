@@ -223,6 +223,52 @@ app.post('/api/sync-inventory-contact', async (req, res) => {
   }
 });
 
+
+app.post('/api/create-order', async (req, res) => {
+  const { firebaseUID, customer_id, line_items } = req.body;
+
+  if (!firebaseUID || !customer_id || !Array.isArray(line_items)) {
+    return res.status(400).json({ error: 'Missing or invalid payload' });
+  }
+
+  try {
+    // 🔍 Get Sales Agent info
+    const userSnap = await admin.firestore().collection('users').doc(firebaseUID).get();
+    if (!userSnap.exists) {
+      return res.status(404).json({ error: 'SalesAgent not found in Firestore' });
+    }
+
+    const agentData = userSnap.data();
+    const agentZohoID = agentData.zohospID;
+
+    if (!agentZohoID) {
+      return res.status(400).json({ error: 'SalesAgent missing Zoho CRM ID' });
+    }
+
+    // 🔁 Compose payload
+    const salesOrder = await createSalesOrder({
+      zohoCustID: customer_id,
+      items: line_items,
+      agentZohoCRMId: agentZohoID,
+    });
+
+    // ✅ Optionally write to Firestore for tracking
+    await admin.firestore().collection('submittedOrders').add({
+      firebaseUID,
+      customer_id,
+      line_items,
+      agentZohoID,
+      zohoResponse: salesOrder,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.status(200).json({ success: true, zohoSalesOrder: salesOrder });
+  } catch (err) {
+    console.error('❌ Error in /api/create-order:', err);
+    return res.status(500).json({ error: err.message || 'Unexpected error' });
+  }
+});
+
 // ── Start server ────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
