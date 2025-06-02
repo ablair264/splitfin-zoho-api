@@ -224,3 +224,44 @@ export async function getInventoryContactIdByEmail(email) {
     return null;
   }
 }
+
+export async function createSalesOrder(order) {
+  const token = await getAccessToken();
+
+  const payload = {
+    customer_id: order.zohoCustID,
+    reference_number: `WebOrder-${Date.now()}`,
+    date: new Date().toISOString().split('T')[0],
+    line_items: order.items.map(item => ({
+      item_id: item.item_id,
+      name: item.name,
+      quantity: item.quantity,
+      rate: item.item_total / item.quantity, // 💡 calculated from total
+    })),
+    cf_agent: order.agentZohoCRMId // 🔗 External CRM field
+  };
+
+  try {
+    const response = await axios.post(
+      'https://www.zohoapis.eu/inventory/v1/salesorders',
+      payload,
+      {
+        headers: {
+          Authorization: `Zoho-oauthtoken ${token}`,
+          'Content-Type': 'application/json',
+          'X-com-zoho-inventory-organizationid': ZOHO_ORG_ID,
+        }
+      }
+    );
+
+    if (response.data.code !== 0) {
+      throw new Error(response.data.message || 'Zoho Sales Order Error');
+    }
+
+    console.log('✅ Zoho Sales Order created:', response.data.salesorder.salesorder_number);
+    return response.data;
+  } catch (err) {
+    console.error('❌ Zoho API error:', err.response?.data || err.message);
+    throw err;
+  }
+}
