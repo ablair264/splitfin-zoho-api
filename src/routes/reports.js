@@ -254,16 +254,9 @@ router.get('/invoices', validateDateRange, getUserContext, async (req, res) => {
     
     // FIXED: Use proper agent context based on role
 if (req.userContext.role === 'salesAgent') {
-const agentContext = {
-  zohospID: req.userContext.zohospID,
-  email: req.userContext.email
-};
+const zohospID = req.userContext.zohospID;
 
-  invoices = await zohoReportsService.getAgentInvoices(
-    agentContext,
-    dateRange, 
-    customDateRange
-  );
+invoices = await zohoReportsService.getAgentInvoices(zohospID, dateRange, customDateRange);
     } else {
       // Brand managers see all invoices
       invoices = await zohoReportsService.getInvoices(dateRange, customDateRange);
