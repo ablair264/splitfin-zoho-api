@@ -1035,4 +1035,4 @@ class ZohoReportsService {
   }
 }
 
-export default ZohoReportsService;
+export default new ZohoReportsService();
