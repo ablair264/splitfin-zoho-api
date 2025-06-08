@@ -2,6 +2,7 @@
 import express from 'express';
 import admin from 'firebase-admin';
 import firestoreSyncService from '../firestoreSyncService.js';
+import { syncInventory, syncCustomersFromCRM } from '../syncInventory.js';
 
 const router = express.Router();
 
@@ -248,6 +249,37 @@ router.post('/batch', async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+
+// POST /api/sync
+router.post('/', async (req, res) => {
+  try {
+    const result = await syncInventory();
+    res.json({
+      success: true,
+      message: 'Inventory sync complete',
+      result
+    });
+  } catch (error) {
+    console.error('❌ Error during /api/sync:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/sync-customers
+router.post('/customers', async (req, res) => {
+  try {
+    const result = await syncCustomersFromCRM();
+    res.json({
+      success: true,
+      message: 'Customer sync complete',
+      result
+    });
+  } catch (error) {
+    console.error('❌ Error during /api/sync-customers:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
