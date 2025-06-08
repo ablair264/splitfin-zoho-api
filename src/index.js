@@ -85,7 +85,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// ── Firebase Order Listener Management ──────────────────────────────
+// ── Firebase Order 	 Management ──────────────────────────────
 app.get('/api/listener/status', (req, res) => {
   const status = firebaseOrderListener.getStatus();
   res.json({

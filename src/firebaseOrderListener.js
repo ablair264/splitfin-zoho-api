@@ -1,6 +1,6 @@
 // server/src/firebaseOrderListener.js
 import admin from 'firebase-admin';
-import { createSalesOrder } from '../api/zoho.js';
+import { createSalesOrder } from './api/zoho.js';
 
 class FirebaseOrderListener {
   constructor() {
