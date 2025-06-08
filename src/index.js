@@ -315,6 +315,12 @@ app.use((err, req, res, next) => {
   });
 });
 
+try {
+  app.use('/api', webhookRoutes);
+} catch (e) {
+  console.error('❌ Route mount failed:', e.message);
+}
+
 // ── Start server ────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`🚀 Splitfin Zoho Integration API running on port ${PORT}`);
