@@ -1,7 +1,7 @@
 // server/src/routes/sync.js
 import express from 'express';
 import admin from 'firebase-admin';
-import firestoreSyncService from '../services/firestoreSyncService.js';
+import firestoreSyncService from '../firestoreSyncService.js';
 
 const router = express.Router();
 
