@@ -7,7 +7,13 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
-import { syncInventory, syncCustomersFromCRM, syncInventoryCustomerIds } from './syncInventory.js';
+import { 
+  syncInventory, 
+  syncCustomersFromCRM, 
+  syncInventoryCustomerIds,
+  smartSync,
+  getSyncStatus
+} from './syncInventory.js';
 import { getInventoryContactIdByEmail, createSalesOrder } from './api/zoho.js';
 import webhookRoutes from './routes/webhooks.js';
 import syncRoutes from './routes/sync.js';
@@ -401,6 +407,199 @@ app.post('/api/create-order', async (req, res) => {
   } catch (err) {
     console.error('❌ Error in /api/create-order:', err);
     return res.status(500).json({ error: err.message || 'Unexpected error' });
+  }
+});
+
+// Add these updated endpoints to your index.js
+
+// Enhanced manual inventory sync endpoint
+app.post('/api/sync-inventory', async (req, res) => {
+  console.log('👤 Manual inventory sync requested');
+  try {
+    const forceSync = req.body.force === true;
+    const result = await smartSync(forceSync);
+    
+    return res.json({ 
+      success: true, 
+      results: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('❌ Manual sync failed:', err);
+    return res.status(500).json({ 
+      success: false, 
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// New endpoint for sync status
+app.get('/api/sync-status', async (req, res) => {
+  try {
+    const status = await getSyncStatus();
+    res.json({
+      success: true,
+      syncStatus: status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('❌ Sync status fetch failed:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// Separate endpoint for inventory ID mapping
+app.post('/api/sync-inventory-ids', async (req, res) => {
+  try {
+    const result = await syncInventoryCustomerIds();
+    res.json({
+      success: true,
+      result: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('❌ Inventory ID sync failed:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// Enhanced customer sync endpoint
+app.post('/api/sync-customers', async (req, res) => {
+  try {
+    const forceSync = req.body.force === true;
+    
+    if (forceSync) {
+      // Force full customer sync
+      const customerResult = await syncCustomersFromCRM();
+      const inventoryIdResult = await syncInventoryCustomerIds();
+      
+      res.json({ 
+        success: true, 
+        customers: customerResult,
+        inventoryIds: inventoryIdResult,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Use smart sync
+      const result = await smartSync();
+      res.json({ 
+        success: true, 
+        results: result,
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (err) {
+    console.error('❌ Customer sync failed:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+});
+
+// Webhook endpoint for triggering smart sync
+app.post('/api/smart-sync', async (req, res) => {
+  try {
+    const { collections, force } = req.body;
+    
+    let result;
+    if (collections && Array.isArray(collections)) {
+      // Selective sync
+      result = {};
+      
+      if (collections.includes('inventory') || collections.includes('products')) {
+        result.inventory = await syncInventory();
+      }
+      
+      if (collections.includes('customers')) {
+        result.customers = await syncCustomersFromCRM();
+        result.inventoryIds = await syncInventoryCustomerIds();
+      }
+    } else {
+      // Full smart sync
+      result = await smartSync(force);
+    }
+    
+    res.json({
+      success: true,
+      results: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (err) {
+    console.error('❌ Smart sync failed:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// Updated items endpoint to show sync status
+app.get('/api/items', async (req, res) => {
+  try {
+    const includeMetadata = req.query.metadata === 'true';
+    
+    const snap = await db.collection('products').get();
+    const products = snap.docs.map(d => d.data());
+    
+    let response = { items: products };
+    
+    if (includeMetadata) {
+      const syncStatus = await getSyncStatus();
+      response.syncMetadata = syncStatus;
+    }
+    
+    res.json(response);
+  } catch (err) {
+    console.error('Firestore /api/items failed:', err);
+    res.status(500).send('Items fetch failed');
+  }
+});
+
+// Batch sync endpoint for mobile apps
+app.post('/api/sync-batch', async (req, res) => {
+  try {
+    const { lastSyncTime, collections } = req.body;
+    
+    // Get changes since last sync time
+    const changes = await firestoreSyncService.getPendingSyncChanges(null, lastSyncTime);
+    
+    // Filter by requested collections if specified
+    const filteredChanges = collections 
+      ? changes.filter(change => collections.includes(change.collection))
+      : changes;
+    
+    // Check if we need to trigger a sync
+    const shouldSync = !lastSyncTime || (Date.now() - lastSyncTime) > (5 * 60 * 1000);
+    
+    if (shouldSync) {
+      // Trigger background sync without waiting
+      smartSync().catch(error => {
+        console.error('❌ Background sync failed:', error);
+      });
+    }
+    
+    res.json({
+      success: true,
+      changes: filteredChanges,
+      syncTriggered: shouldSync,
+      timestamp: Date.now()
+    });
+    
+  } catch (err) {
+    console.error('❌ Batch sync failed:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
