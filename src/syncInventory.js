@@ -1,7 +1,20 @@
+// server/src/syncInventory.js
 import admin from 'firebase-admin';
 import crypto from 'crypto';
 import { fetchItems, fetchCustomersFromCRM } from './api/zoho.js';
-
+import dotenv from 'dotenv';
+ 
+// Load environment variables
+dotenv.config();
+ 
+// Initialize Firebase Admin if not already initialized
+if (!admin.apps.length) {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+}
+ 
 const db = admin.firestore();
 
 /**
