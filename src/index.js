@@ -296,14 +296,6 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
-// ── 404 handler ─────────────────────────────────────────────────────
-app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `Endpoint ${req.method} ${req.originalUrl} not found`
-  });
-});
-
 // ── Global error handler ────────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('🚨 Unhandled error:', err.stack);
