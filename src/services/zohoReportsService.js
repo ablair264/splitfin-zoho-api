@@ -52,7 +52,7 @@ class ZohoReportsService {
 
       const userData = userDoc.data();
       const userRole = userData.role;
-      const agentId = userData.agentInventoryId
+      const agentId = userData.zohospID
 
       // Return role-specific dashboard
       if (userRole === 'brandManager' || userRole === 'admin') {

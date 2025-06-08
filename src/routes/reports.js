@@ -60,7 +60,7 @@ async function getUserContext(req, res, next) {
       userId,
       role: userData.role,
       agentCRMId: userData.agentID,           // For Firebase customer filtering
-      agentInventoryId: userData.zohospID,    // For Inventory API filtering
+      zohospID: userData.zohospID,    // For Inventory API filtering
       email: userData.email,
       name: userData.name
     };
@@ -253,19 +253,17 @@ router.get('/invoices', validateDateRange, getUserContext, async (req, res) => {
     let invoices;
     
     // FIXED: Use proper agent context based on role
-    if (req.userContext.role === 'salesAgent') {
-      // Sales agents see only their customer's invoices
-      const agentContext = {
-        crmId: req.userContext.agentCRMId,
-        inventoryId: req.userContext.agentInventoryId,
-        email: req.userContext.email
-      };
-      
-      invoices = await zohoReportsService.getAgentInvoices(
-        agentContext,
-        dateRange, 
-        customDateRange
-      );
+if (req.userContext.role === 'salesAgent') {
+const agentContext = {
+  zohospID: req.userContext.zohospID,
+  email: req.userContext.email
+};
+
+  invoices = await zohoReportsService.getAgentInvoices(
+    agentContext,
+    dateRange, 
+    customDateRange
+  );
     } else {
       // Brand managers see all invoices
       invoices = await zohoReportsService.getInvoices(dateRange, customDateRange);
@@ -323,7 +321,7 @@ router.get('/sales-orders', validateDateRange, getUserContext, async (req, res) 
       salesOrders = await zohoReportsService.getSalesOrders(
         dateRange, 
         customDateRange, 
-        req.userContext.agentInventoryId  // Use Inventory ID for Inventory API
+        req.userContext.zohpspID  // Use Inventory ID for Inventory API
       );
     } else {
       // Brand managers see all orders
