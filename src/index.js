@@ -1,4 +1,4 @@
-// server/src/index.js
+// server/src/index.js - Complete setup with both Firebase services
 import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
@@ -10,7 +10,9 @@ import admin from 'firebase-admin';
 import { syncInventory, syncCustomersFromCRM, syncInventoryCustomerIds } from './syncInventory.js';
 import { getInventoryContactIdByEmail, createSalesOrder } from './api/zoho.js';
 import webhookRoutes from './routes/webhooks.js';
+import syncRoutes from './routes/sync.js';
 import firebaseOrderListener from './firebaseOrderListener.js';
+import firestoreSyncService from './firestoreSyncService.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
@@ -68,29 +70,63 @@ app.use((req, res, next) => {
   next();
 });
 
-// ── Mount webhook routes ────────────────────────────────────────────
-app.use('/api', webhookRoutes);
+// ── Root route ──────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Splitfin Zoho Integration API',
+    status: 'running',
+    version: '2.0.0',
+    features: [
+      'OAuth', 
+      'Inventory Sync', 
+      'Sales Orders', 
+      'Webhooks', 
+      'Firebase Order Listener',
+      'Real-time Firestore Sync',
+      'Client Sync API'
+    ],
+    endpoints: {
+      health: '/health',
+      webhooks: '/api/*',
+      sync: '/api/sync/*',
+      oauth: '/oauth/url'
+    }
+  });
+});
 
-// ── Health check endpoint ───────────────────────────────────────────
+// ── Mount routes ────────────────────────────────────────────────────
+app.use('/api', webhookRoutes);
+app.use('/api/sync', syncRoutes);
+
+// ── Enhanced Health check endpoint ──────────────────────────────────
 app.get('/health', (req, res) => {
-  const listenerStatus = firebaseOrderListener.getStatus();
+  const orderListenerStatus = firebaseOrderListener.getStatus();
+  const syncServiceStatus = firestoreSyncService.getStatus();
   
   res.status(200).json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     service: 'Splitfin Zoho Integration API',
-    version: '1.0.0',
-    features: ['OAuth', 'Inventory Sync', 'Sales Orders', 'Webhooks', 'Firebase Listener'],
-    firebaseListener: listenerStatus
+    version: '2.0.0',
+    features: ['OAuth', 'Inventory Sync', 'Sales Orders', 'Webhooks', 'Firebase Listeners', 'Sync Services'],
+    services: {
+      firebaseOrderListener: orderListenerStatus,
+      firestoreSyncService: syncServiceStatus
+    }
   });
 });
 
-// ── Firebase Order 	 Management ──────────────────────────────
+// ── Firebase Services Management ────────────────────────────────────
 app.get('/api/listener/status', (req, res) => {
-  const status = firebaseOrderListener.getStatus();
+  const orderStatus = firebaseOrderListener.getStatus();
+  const syncStatus = firestoreSyncService.getStatus();
+  
   res.json({
     success: true,
-    listener: status,
+    services: {
+      orderListener: orderStatus,
+      syncService: syncStatus
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -98,10 +134,15 @@ app.get('/api/listener/status', (req, res) => {
 app.post('/api/listener/start', (req, res) => {
   try {
     firebaseOrderListener.startListening();
+    firestoreSyncService.startAllListeners();
+    
     res.json({
       success: true,
-      message: 'Firebase order listener started',
-      status: firebaseOrderListener.getStatus()
+      message: 'All Firebase listeners started',
+      status: {
+        orderListener: firebaseOrderListener.getStatus(),
+        syncService: firestoreSyncService.getStatus()
+      }
     });
   } catch (error) {
     res.status(500).json({
@@ -114,10 +155,15 @@ app.post('/api/listener/start', (req, res) => {
 app.post('/api/listener/stop', (req, res) => {
   try {
     firebaseOrderListener.stopListening();
+    firestoreSyncService.stopAllListeners();
+    
     res.json({
       success: true,
-      message: 'Firebase order listener stopped',
-      status: firebaseOrderListener.getStatus()
+      message: 'All Firebase listeners stopped',
+      status: {
+        orderListener: firebaseOrderListener.getStatus(),
+        syncService: firestoreSyncService.getStatus()
+      }
     });
   } catch (error) {
     res.status(500).json({
@@ -147,7 +193,6 @@ app.post('/api/process-order/:orderId', async (req, res) => {
 });
 
 // ── OAuth endpoints ──────────────────────────────────────────────────
-// 1) Redirect to Zoho consent
 app.get('/oauth/url', (req, res) => {
   const AUTH_BASE = 'https://accounts.zoho.eu/oauth/v2/auth';
   const params = new URLSearchParams({
@@ -161,7 +206,6 @@ app.get('/oauth/url', (req, res) => {
   res.redirect(`${AUTH_BASE}?${params}`);
 });
 
-// 2) Callback persists refresh_token
 app.get('/oauth/callback', async (req, res) => {
   const { code } = req.query;
   if (!code) return res.status(400).send('No code received');
@@ -183,7 +227,7 @@ app.get('/oauth/callback', async (req, res) => {
         .status(400)
         .send(`Zoho OAuth error: ${data.error_description||data.error}`);
     }
-    // Persist new refresh_token
+    
     const envPath = path.resolve(__dirname, '../.env');
     fs.writeFileSync(envPath,
 `ZOHO_CLIENT_ID=${ZOHO_CLIENT_ID}
@@ -237,10 +281,10 @@ async function getAccessToken() {
   return await refreshInFly;
 }
 
-// ── Firestore‐backed items endpoint ─────────────────────────────────
+// ── Existing API endpoints ──────────────────────────────────────────
 app.get('/api/items', async (req, res) => {
   try {
-    const snap     = await db.collection('products').get();
+    const snap = await db.collection('products').get();
     const products = snap.docs.map(d => d.data());
     res.json({ items: products });
   } catch (err) {
@@ -249,11 +293,10 @@ app.get('/api/items', async (req, res) => {
   }
 });
 
-// ── Zoho Purchase Orders proxy ──────────────────────────────────────
 app.get('/api/purchaseorders', async (req, res) => {
   try {
-    const status  = req.query.status || 'open';
-    const token   = await getAccessToken();
+    const status = req.query.status || 'open';
+    const token = await getAccessToken();
     const zohoRes = await axios.get(
       `https://www.zohoapis.eu/inventory/v1/purchaseorders?status=${status}&organization_id=${ZOHO_ORG_ID}`,
       { headers: { 'Authorization': `Zoho-oauthtoken ${token}` } }
@@ -265,9 +308,8 @@ app.get('/api/purchaseorders', async (req, res) => {
   }
 });
 
-// ── Manual sync endpoint ────────────────────────────────────────────
-app.post('/api/sync', async (req, res) => {
-  console.log('👤 Manual sync requested');
+app.post('/api/sync-inventory', async (req, res) => {
+  console.log('👤 Manual inventory sync requested');
   try {
     await syncInventory();
     return res.json({ ok: true });
@@ -325,7 +367,6 @@ app.post('/api/create-order', async (req, res) => {
   }
 
   try {
-    // 🔍 Get Sales Agent info
     const userSnap = await admin.firestore().collection('users').doc(firebaseUID).get();
     if (!userSnap.exists) {
       return res.status(404).json({ error: 'SalesAgent not found in Firestore' });
@@ -338,14 +379,12 @@ app.post('/api/create-order', async (req, res) => {
       return res.status(400).json({ error: 'SalesAgent missing Zoho CRM ID' });
     }
 
-    // 🔁 Compose payload
     const salesOrder = await createSalesOrder({
       zohoCustID: customer_id,
       items: line_items,
       agentZohoCRMId: agentZohoID,
     });
 
-    // ✅ Optionally write to Firestore for tracking
     await admin.firestore().collection('submittedOrders').add({
       firebaseUID,
       customer_id,
@@ -362,6 +401,30 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
+// ── Maintenance endpoints ───────────────────────────────────────────
+app.post('/api/maintenance/cleanup-sync', async (req, res) => {
+  try {
+    await firestoreSyncService.cleanupOldSyncChanges();
+    res.json({
+      success: true,
+      message: 'Sync cleanup completed'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Schedule periodic cleanup (every 24 hours)
+setInterval(() => {
+  console.log('🧹 Running periodic sync cleanup...');
+  firestoreSyncService.cleanupOldSyncChanges().catch(error => {
+    console.error('❌ Periodic cleanup failed:', error);
+  });
+}, 24 * 60 * 60 * 1000);
+
 // ── Global error handler ────────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('🚨 Unhandled error:', err.stack);
@@ -375,26 +438,32 @@ app.use((err, req, res, next) => {
 
 // ── Start server ────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
-  console.log(`🚀 Splitfin Zoho Integration API running on port ${PORT}`);
+  console.log(`🚀 Splitfin Zoho Integration API v2.0.0 running on port ${PORT}`);
+  console.log(`📍 Root endpoint: http://localhost:${PORT}/`);
   console.log(`📍 Webhook endpoint: http://localhost:${PORT}/api/create-order`);
   console.log(`🔍 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔄 Sync API: http://localhost:${PORT}/api/sync/*`);
   console.log(`🧪 Test webhook: http://localhost:${PORT}/api/test`);
   console.log(`🔐 OAuth URL: http://localhost:${PORT}/oauth/url`);
   console.log(`📦 Items endpoint: http://localhost:${PORT}/api/items`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🎯 Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
   
-  // Start Firebase order listener
-  console.log('🎧 Initializing Firebase order listener...');
+  // Start both Firebase services
+  console.log('🎧 Initializing Firebase services...');
   firebaseOrderListener.startListening();
+  firestoreSyncService.startAllListeners();
+  
+  console.log('✅ All services started successfully');
 });
 
 // ── Graceful shutdown ───────────────────────────────────────────────
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM received, shutting down gracefully...');
   
-  // Stop Firebase listener
+  // Stop all Firebase listeners
   firebaseOrderListener.stopListening();
+  firestoreSyncService.stopAllListeners();
   
   server.close(() => {
     console.log('✅ Process terminated');
@@ -404,8 +473,9 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('🛑 SIGINT received, shutting down gracefully...');
   
-  // Stop Firebase listener
+  // Stop all Firebase listeners
   firebaseOrderListener.stopListening();
+  firestoreSyncService.stopAllListeners();
   
   server.close(() => {
     console.log('✅ Process terminated');
