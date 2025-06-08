@@ -314,7 +314,7 @@ router.get('/sales-orders', validateDateRange, getUserContext, async (req, res) 
       salesOrders = await zohoReportsService.getSalesOrders(
         dateRange, 
         customDateRange, 
-        req.userContext.zohpspID  // Use Inventory ID for Inventory API
+        req.userContext.zohospID  // Use Inventory ID for Inventory API
       );
     } else {
       // Brand managers see all orders

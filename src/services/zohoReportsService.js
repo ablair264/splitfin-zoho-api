@@ -42,31 +42,33 @@ class ZohoReportsService {
   /**
    * Get comprehensive dashboard data based on user role
    */
-  async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
-    try {
-      // First, get user role from Firebase
-      const userDoc = await this.db.collection('users').doc(userId).get();
-      if (!userDoc.exists) {
-        throw new Error('User not found');
-      }
-
-      const userData = userDoc.data();
-      const userRole = userData.role;
-      const zohospID = userData.zohospID;
-
-      // Return role-specific dashboard
-      if (userRole === 'brandManager' || userRole === 'admin') {
-        return await this.getBrandManagerDashboard(dateRange, customDateRange);
-      } else if (userRole === 'salesAgent') {
-        return await this.getSalesAgentDashboard(zohospID, dateRange, customDateRange);
-      } else {
-        throw new Error('Invalid user role');
-      }
-    } catch (error) {
-      console.error('❌ Error getting dashboard data:', error);
-      throw error;
+async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
+  try {
+    // Get user role from Firebase
+    const userDoc = await this.db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      throw new Error('User not found');
     }
+
+    const userData = userDoc.data();
+    const userRole = userData.role;
+
+    if (userRole === 'brandManager' || userRole === 'admin') {
+      return await this.getBrandManagerDashboard(dateRange, customDateRange);
+    } else if (userRole === 'salesAgent') {
+      const zohospID = userData.zohospID;
+      if (!zohospID) {
+        throw new Error('Sales agent is missing zohospID');
+      }
+      return await this.getSalesAgentDashboard(zohospID, dateRange, customDateRange);
+    } else {
+      throw new Error('Invalid user role');
+    }
+  } catch (error) {
+    console.error('❌ Error getting dashboard data:', error);
+    throw error;
   }
+}
 
   /**
    * Brand Manager Dashboard with comprehensive metrics
