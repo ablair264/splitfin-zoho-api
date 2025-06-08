@@ -52,13 +52,13 @@ class ZohoReportsService {
 
       const userData = userDoc.data();
       const userRole = userData.role;
-      const agentId = userData.zohospID
+      const zohospID = userData.zohospID;
 
       // Return role-specific dashboard
       if (userRole === 'brandManager' || userRole === 'admin') {
         return await this.getBrandManagerDashboard(dateRange, customDateRange);
       } else if (userRole === 'salesAgent') {
-        return await this.getSalesAgentDashboard(agentId, dateRange, customDateRange);
+        return await this.getSalesAgentDashboard(zohospID, dateRange, customDateRange);
       } else {
         throw new Error('Invalid user role');
       }
@@ -134,8 +134,8 @@ class ZohoReportsService {
   /**
    * Sales Agent Dashboard with filtered metrics
    */
-  async getSalesAgentDashboard(agentId, dateRange, customDateRange) {
-    const cacheKey = `sales_agent_dashboard_${agentId}_${dateRange}_${JSON.stringify(customDateRange)}`;
+  async getSalesAgentDashboard(zohospID, dateRange, customDateRange) {
+    const cacheKey = `sales_agent_dashboard_${zohospID}_${dateRange}_${JSON.stringify(customDateRange)}`;
     
     if (this.isCacheValid(cacheKey)) {
       return this.cache.get(cacheKey).data;
@@ -150,11 +150,11 @@ class ZohoReportsService {
         orders,
         invoices
       ] = await Promise.all([
-        this.getSalesOverview(dateRange, agentId),
+        this.getSalesOverview(dateRange, zohospID),
         this.getInventoryInsights(),
-        this.getSalesTrends('monthly', 6, agentId),
-        this.getAgentOrders(agentId, dateRange, customDateRange),
-        this.getAgentInvoices(agentId, dateRange, customDateRange)
+        this.getSalesTrends('monthly', 6, zohospID),
+        this.getAgentOrders(zohospID, dateRange, customDateRange),
+        this.getAgentInvoices(zohospID, dateRange, customDateRange)
       ]);
 
       const dashboard = {
