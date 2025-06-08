@@ -6,19 +6,42 @@ class FirestoreSyncService {
     this.db = admin.firestore();
     this.listeners = new Map();
     this.lastSyncTimestamps = new Map();
+    this.initialSyncCompleted = new Map();
+    this.isProduction = process.env.NODE_ENV === 'production';
   }
 
   /**
    * Start comprehensive Firestore listeners for all collections
    */
-  startAllListeners() {
+  async startAllListeners() {
     console.log('🎧 Starting all Firestore sync listeners...');
+    
+    // Check initial sync status
+    await this.checkInitialSyncStatus();
     
     this.startCustomerListener();
     this.startUsersListener();
     this.startProductsListener();
     
     console.log('✅ All Firestore sync listeners started');
+  }
+
+  /**
+   * Check if initial sync has been completed for all collections
+   */
+  async checkInitialSyncStatus() {
+    const collections = ['customers', 'users', 'products'];
+    
+    for (const collection of collections) {
+      const metaDoc = await this.db.collection('sync_metadata').doc(collection).get();
+      if (metaDoc.exists && metaDoc.data().initialSyncCompleted) {
+        this.initialSyncCompleted.set(collection, true);
+        console.log(`✅ ${collection} initial sync already completed`);
+      } else {
+        this.initialSyncCompleted.set(collection, false);
+        console.log(`⚠️ ${collection} needs initial sync`);
+      }
+    }
   }
 
   /**
@@ -40,11 +63,18 @@ class FirestoreSyncService {
    * Listen for customer changes and broadcast updates
    */
   startCustomerListener() {
-    const unsubscribe = this.db.collection('customers')
-      .onSnapshot(
-        (snapshot) => this.handleCustomerSnapshot(snapshot),
-        (error) => this.handleError('customers', error)
-      );
+    let query = this.db.collection('customers');
+    
+    // In production, only listen for recent changes after initial sync
+    if (this.isProduction && this.initialSyncCompleted.get('customers')) {
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      query = query.where('lastModified', '>', admin.firestore.Timestamp.fromDate(fiveMinutesAgo));
+    }
+    
+    const unsubscribe = query.onSnapshot(
+      (snapshot) => this.handleCustomerSnapshot(snapshot),
+      (error) => this.handleError('customers', error)
+    );
     
     this.listeners.set('customers', unsubscribe);
     console.log('👥 Customer listener started');
@@ -54,12 +84,19 @@ class FirestoreSyncService {
    * Listen for users (sales agents) changes
    */
   startUsersListener() {
-    const unsubscribe = this.db.collection('users')
-      .where('role', '==', 'Sales Agent')
-      .onSnapshot(
-        (snapshot) => this.handleUsersSnapshot(snapshot),
-        (error) => this.handleError('users', error)
-      );
+    let query = this.db.collection('users')
+      .where('role', '==', 'Sales Agent');
+    
+    // In production, only listen for recent changes after initial sync
+    if (this.isProduction && this.initialSyncCompleted.get('users')) {
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      query = query.where('lastModified', '>', admin.firestore.Timestamp.fromDate(fiveMinutesAgo));
+    }
+    
+    const unsubscribe = query.onSnapshot(
+      (snapshot) => this.handleUsersSnapshot(snapshot),
+      (error) => this.handleError('users', error)
+    );
     
     this.listeners.set('users', unsubscribe);
     console.log('👤 Users/Sales Agents listener started');
@@ -69,11 +106,18 @@ class FirestoreSyncService {
    * Listen for product changes
    */
   startProductsListener() {
-    const unsubscribe = this.db.collection('products')
-      .onSnapshot(
-        (snapshot) => this.handleProductsSnapshot(snapshot),
-        (error) => this.handleError('products', error)
-      );
+    let query = this.db.collection('products');
+    
+    // In production, only listen for recent changes after initial sync
+    if (this.isProduction && this.initialSyncCompleted.get('products')) {
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      query = query.where('lastModified', '>', admin.firestore.Timestamp.fromDate(fiveMinutesAgo));
+    }
+    
+    const unsubscribe = query.onSnapshot(
+      (snapshot) => this.handleProductsSnapshot(snapshot),
+      (error) => this.handleError('products', error)
+    );
     
     this.listeners.set('products', unsubscribe);
     console.log('📦 Products listener started');
@@ -87,8 +131,17 @@ class FirestoreSyncService {
 
     const changes = [];
     const now = Date.now();
+    let processedCount = 0;
+
+    // Limit processing in production
+    const maxChangesToProcess = this.isProduction ? 50 : snapshot.size;
 
     for (const docChange of snapshot.docChanges()) {
+      if (processedCount >= maxChangesToProcess) {
+        console.log(`⚠️ Limiting customer changes to ${maxChangesToProcess} items`);
+        break;
+      }
+
       const customerData = {
         id: docChange.doc.id,
         data: docChange.doc.data(),
@@ -100,6 +153,7 @@ class FirestoreSyncService {
       if (this.isRecentChange(customerData.data.lastModified, 'customers')) {
         changes.push(customerData);
         console.log(`👥 Customer ${docChange.type}: ${customerData.data.Account_Name || customerData.id}`);
+        processedCount++;
       }
     }
 
@@ -117,8 +171,17 @@ class FirestoreSyncService {
 
     const changes = [];
     const now = Date.now();
+    let processedCount = 0;
+
+    // Limit processing in production
+    const maxChangesToProcess = this.isProduction ? 20 : snapshot.size;
 
     for (const docChange of snapshot.docChanges()) {
+      if (processedCount >= maxChangesToProcess) {
+        console.log(`⚠️ Limiting user changes to ${maxChangesToProcess} items`);
+        break;
+      }
+
       const userData = {
         id: docChange.doc.id,
         data: docChange.doc.data(),
@@ -128,6 +191,7 @@ class FirestoreSyncService {
 
       changes.push(userData);
       console.log(`👤 User ${docChange.type}: ${userData.data.name || userData.id}`);
+      processedCount++;
     }
 
     if (changes.length > 0) {
@@ -144,8 +208,17 @@ class FirestoreSyncService {
 
     const changes = [];
     const now = Date.now();
+    let processedCount = 0;
+
+    // Limit processing in production
+    const maxChangesToProcess = this.isProduction ? 100 : Math.min(snapshot.size, 500);
 
     for (const docChange of snapshot.docChanges()) {
+      if (processedCount >= maxChangesToProcess) {
+        console.log(`⚠️ Limiting product changes to ${maxChangesToProcess} items`);
+        break;
+      }
+
       const productData = {
         id: docChange.doc.id,
         data: docChange.doc.data(),
@@ -153,8 +226,12 @@ class FirestoreSyncService {
         timestamp: now
       };
 
-      changes.push(productData);
-      console.log(`📦 Product ${docChange.type}: ${productData.data.name || productData.id}`);
+      // Only include products that have been modified recently
+      if (this.isRecentChange(productData.data.lastModified, 'products')) {
+        changes.push(productData);
+        console.log(`📦 Product ${docChange.type}: ${productData.data.name || productData.id}`);
+        processedCount++;
+      }
     }
 
     if (changes.length > 0) {
@@ -172,6 +249,12 @@ class FirestoreSyncService {
     const lastSyncTime = this.lastSyncTimestamps.get(collection) || 0;
     const changeTime = lastModified.toDate ? lastModified.toDate().getTime() : lastModified;
     
+    // In production, only sync changes from last 5 minutes
+    if (this.isProduction) {
+      const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+      return changeTime > Math.max(lastSyncTime, fiveMinutesAgo);
+    }
+    
     return changeTime > lastSyncTime;
   }
 
@@ -183,36 +266,108 @@ class FirestoreSyncService {
   }
 
   /**
-   * Broadcast changes to connected clients
-   * This could be WebSockets, Server-Sent Events, or a push notification service
+   * Optimized broadcast changes with batching and notifications
    */
   async broadcastChanges(collection, changes) {
     console.log(`📡 Broadcasting ${changes.length} changes for ${collection}`);
     
-    // Store changes in a 'sync_queue' collection for apps to poll
-    const batch = this.db.batch();
+    // Skip if no changes
+    if (changes.length === 0) return;
     
-    changes.forEach(change => {
-      const syncDoc = this.db.collection('sync_queue').doc();
-      batch.set(syncDoc, {
-        collection,
-        changeType: change.changeType,
-        documentId: change.id,
-        data: change.data,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        processed: false
+    // For large change sets, use bulk notification instead
+    if (changes.length > 100) {
+      await this.createBulkNotification(collection, changes.length);
+      return;
+    }
+    
+    // For smaller changes, batch them
+    const BATCH_SIZE = 500;
+    const chunks = [];
+    
+    for (let i = 0; i < changes.length; i += BATCH_SIZE) {
+      chunks.push(changes.slice(i, i + BATCH_SIZE));
+    }
+    
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const batch = this.db.batch();
+      
+      chunk.forEach(change => {
+        const syncDoc = this.db.collection('sync_queue').doc();
+        
+        // Store minimal data to reduce document size
+        const syncData = {
+          collection,
+          changeType: change.changeType,
+          documentId: change.id,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          processed: false
+        };
+        
+        // Only include essential fields for each collection type
+        if (collection === 'products' && change.data) {
+          syncData.essentialData = {
+            name: change.data.name,
+            sku: change.data.sku,
+            rate: change.data.rate,
+            stock_on_hand: change.data.stock_on_hand,
+            status: change.data.status
+          };
+        } else if (collection === 'customers' && change.data) {
+          syncData.essentialData = {
+            Account_Name: change.data.Account_Name,
+            Primary_Email: change.data.Primary_Email,
+            Agent: change.data.Agent,
+            Phone: change.data.Phone
+          };
+        } else if (collection === 'users' && change.data) {
+          syncData.essentialData = {
+            name: change.data.name,
+            email: change.data.email,
+            role: change.data.role,
+            zohoCRMId: change.data.zohoCRMId
+          };
+        }
+        
+        batch.set(syncDoc, syncData);
       });
-    });
 
-    try {
-      await batch.commit();
-      console.log(`✅ Queued ${changes.length} changes for ${collection}`);
-    } catch (error) {
-      console.error(`❌ Failed to queue changes for ${collection}:`, error);
+      try {
+        await batch.commit();
+        console.log(`✅ Queued batch ${i + 1}/${chunks.length} (${chunk.length} changes) for ${collection}`);
+        
+        // Add delay between batches to avoid overwhelming the system
+        if (i < chunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      } catch (error) {
+        console.error(`❌ Failed to queue batch ${i + 1} for ${collection}:`, error);
+      }
     }
 
-    // Optional: Send push notifications to apps
+    // Send push notifications
     await this.sendPushNotifications(collection, changes);
+  }
+
+  /**
+   * Create bulk notification for large change sets
+   */
+  async createBulkNotification(collection, changeCount) {
+    try {
+      const notification = {
+        type: 'bulk_update',
+        collection,
+        changeCount,
+        message: `${changeCount} ${collection} have been updated. Please sync to get latest data.`,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        processed: false
+      };
+      
+      await this.db.collection('sync_notifications').add(notification);
+      console.log(`📢 Bulk update notification created for ${changeCount} ${collection}`);
+    } catch (error) {
+      console.error(`❌ Failed to create bulk notification:`, error);
+    }
   }
 
   /**
@@ -248,7 +403,7 @@ class FirestoreSyncService {
     let query = this.db.collection('sync_queue')
       .where('processed', '==', false)
       .orderBy('timestamp', 'desc')
-      .limit(100);
+      .limit(100); // Always limit to prevent large reads
 
     if (lastSyncTime) {
       query = query.where('timestamp', '>', admin.firestore.Timestamp.fromDate(new Date(lastSyncTime)));
@@ -276,13 +431,42 @@ class FirestoreSyncService {
   }
 
   /**
+   * Get bulk notifications for a collection
+   */
+  async getBulkNotifications(collection = null, since = null) {
+    let query = this.db.collection('sync_notifications')
+      .where('processed', '==', false)
+      .orderBy('timestamp', 'desc')
+      .limit(10);
+
+    if (collection) {
+      query = query.where('collection', '==', collection);
+    }
+
+    if (since) {
+      query = query.where('timestamp', '>', admin.firestore.Timestamp.fromDate(new Date(since)));
+    }
+
+    try {
+      const snapshot = await query.get();
+      return snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+    } catch (error) {
+      console.error('❌ Error fetching bulk notifications:', error);
+      return [];
+    }
+  }
+
+  /**
    * Filter changes based on agent permissions
    */
   filterChangesForAgent(changes, agentId) {
     return changes.filter(change => {
       // For customers, only return customers assigned to this agent
       if (change.collection === 'customers') {
-        return change.data?.Agent?.id === agentId;
+        return change.essentialData?.Agent?.id === agentId;
       }
       
       // For users and products, return all changes
@@ -296,21 +480,45 @@ class FirestoreSyncService {
   async markChangesAsProcessed(changeIds) {
     if (!changeIds || changeIds.length === 0) return;
 
-    const batch = this.db.batch();
+    const BATCH_SIZE = 500;
+    const chunks = [];
     
-    changeIds.forEach(changeId => {
-      const docRef = this.db.collection('sync_queue').doc(changeId);
-      batch.update(docRef, { 
+    for (let i = 0; i < changeIds.length; i += BATCH_SIZE) {
+      chunks.push(changeIds.slice(i, i + BATCH_SIZE));
+    }
+
+    for (const chunk of chunks) {
+      const batch = this.db.batch();
+      
+      chunk.forEach(changeId => {
+        const docRef = this.db.collection('sync_queue').doc(changeId);
+        batch.update(docRef, { 
+          processed: true,
+          processedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      });
+
+      try {
+        await batch.commit();
+        console.log(`✅ Marked ${chunk.length} changes as processed`);
+      } catch (error) {
+        console.error('❌ Error marking changes as processed:', error);
+      }
+    }
+  }
+
+  /**
+   * Mark bulk notifications as processed
+   */
+  async markNotificationAsProcessed(notificationId) {
+    try {
+      await this.db.collection('sync_notifications').doc(notificationId).update({
         processed: true,
         processedAt: admin.firestore.FieldValue.serverTimestamp()
       });
-    });
-
-    try {
-      await batch.commit();
-      console.log(`✅ Marked ${changeIds.length} changes as processed`);
+      console.log(`✅ Marked notification ${notificationId} as processed`);
     } catch (error) {
-      console.error('❌ Error marking changes as processed:', error);
+      console.error('❌ Error marking notification as processed:', error);
     }
   }
 
@@ -318,26 +526,64 @@ class FirestoreSyncService {
    * Clean up old processed sync changes
    */
   async cleanupOldSyncChanges() {
-    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const cleanupAge = this.isProduction 
+      ? 3 * 24 * 60 * 60 * 1000  // 3 days in production
+      : 7 * 24 * 60 * 60 * 1000; // 7 days in development
+      
+    const cutoffDate = new Date(Date.now() - cleanupAge);
     
     try {
-      const snapshot = await this.db.collection('sync_queue')
+      // Clean sync_queue
+      const syncSnapshot = await this.db.collection('sync_queue')
         .where('processed', '==', true)
-        .where('processedAt', '<', admin.firestore.Timestamp.fromDate(oneWeekAgo))
+        .where('processedAt', '<', admin.firestore.Timestamp.fromDate(cutoffDate))
         .limit(500)
         .get();
 
-      if (snapshot.empty) return;
+      if (!syncSnapshot.empty) {
+        const batch = this.db.batch();
+        syncSnapshot.docs.forEach(doc => {
+          batch.delete(doc.ref);
+        });
 
-      const batch = this.db.batch();
-      snapshot.docs.forEach(doc => {
-        batch.delete(doc.ref);
-      });
+        await batch.commit();
+        console.log(`🧹 Cleaned up ${syncSnapshot.size} old sync changes`);
+      }
 
-      await batch.commit();
-      console.log(`🧹 Cleaned up ${snapshot.size} old sync changes`);
+      // Clean sync_notifications
+      const notifSnapshot = await this.db.collection('sync_notifications')
+        .where('processed', '==', true)
+        .where('processedAt', '<', admin.firestore.Timestamp.fromDate(cutoffDate))
+        .limit(100)
+        .get();
+
+      if (!notifSnapshot.empty) {
+        const batch = this.db.batch();
+        notifSnapshot.docs.forEach(doc => {
+          batch.delete(doc.ref);
+        });
+
+        await batch.commit();
+        console.log(`🧹 Cleaned up ${notifSnapshot.size} old notifications`);
+      }
     } catch (error) {
       console.error('❌ Error cleaning up old sync changes:', error);
+    }
+  }
+
+  /**
+   * Mark initial sync as completed for a collection
+   */
+  async markInitialSyncComplete(collection) {
+    try {
+      this.initialSyncCompleted.set(collection, true);
+      await this.db.collection('sync_metadata').doc(collection).set({
+        initialSyncCompleted: true,
+        initialSyncDate: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      console.log(`✅ Marked initial sync complete for ${collection}`);
+    } catch (error) {
+      console.error(`❌ Error marking initial sync complete for ${collection}:`, error);
     }
   }
 
@@ -348,7 +594,9 @@ class FirestoreSyncService {
     return {
       activeListeners: Array.from(this.listeners.keys()),
       lastSyncTimestamps: Object.fromEntries(this.lastSyncTimestamps),
-      isRunning: this.listeners.size > 0
+      initialSyncStatus: Object.fromEntries(this.initialSyncCompleted),
+      isRunning: this.listeners.size > 0,
+      environment: this.isProduction ? 'production' : 'development'
     };
   }
 }
