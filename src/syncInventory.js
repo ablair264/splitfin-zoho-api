@@ -3,10 +3,10 @@ import admin from 'firebase-admin';
 import crypto from 'crypto';
 import { fetchItems, fetchProductsFromCRM, fetchCustomersFromCRM } from './api/zoho.js';
 import dotenv from 'dotenv';
- 
+
 // Load environment variables
 dotenv.config();
- 
+
 // Initialize Firebase Admin if not already initialized
 if (!admin.apps.length) {
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
@@ -14,7 +14,7 @@ if (!admin.apps.length) {
     credential: admin.credential.cert(serviceAccount),
   });
 }
- 
+
 const db = admin.firestore();
 
 // Environment configuration
@@ -22,6 +22,9 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '100');
 const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30') * 60 * 1000;
 
+function logError(context, error) {
+  console.error(`❌ Error in ${context}:`, error);
+  
 /**
  * Check if initial sync has been completed
  */
