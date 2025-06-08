@@ -1,4 +1,4 @@
-// server/src/services/firebaseOrderListener.js
+// server/src/firebaseOrderListener.js
 import admin from 'firebase-admin';
 import { createSalesOrder } from '../api/zoho.js';
 
