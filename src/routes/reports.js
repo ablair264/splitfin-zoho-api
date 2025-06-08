@@ -6,7 +6,7 @@ const router = express.Router();
 
 // Middleware to validate date range
 function validateDateRange(req, res, next) {
-  const validRanges = ['7_days', '30_days', '90_days', 'this_month', 'last_month', 'this_year'];
+  const validRanges = ['today', '7_days', '30_days', 'quarter', 'year', 'this_month', 'last_month', 'this_year', 'custom'];
   const { dateRange } = req.query;
   
   if (dateRange && !validRanges.includes(dateRange)) {
@@ -16,18 +16,44 @@ function validateDateRange(req, res, next) {
     });
   }
   
+  // Validate custom date range
+  if (dateRange === 'custom') {
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Custom date range requires startDate and endDate parameters'
+      });
+    }
+  }
+  
   next();
 }
 
 /**
- * Get comprehensive dashboard data
- * Query params: agentId, dateRange
+ * Get role-based dashboard data
+ * Query params: userId, dateRange, startDate (for custom), endDate (for custom)
  */
 router.get('/dashboard', validateDateRange, async (req, res) => {
   try {
-    const { agentId, dateRange = '30_days' } = req.query;
+    const { userId, dateRange = '30_days', startDate, endDate } = req.query;
     
-    const dashboardData = await zohoReportsService.getDashboardData(agentId, dateRange);
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'userId is required'
+      });
+    }
+    
+    const customDateRange = dateRange === 'custom' 
+      ? { start: startDate, end: endDate }
+      : null;
+    
+    const dashboardData = await zohoReportsService.getDashboardData(
+      userId, 
+      dateRange, 
+      customDateRange
+    );
     
     res.json({
       success: true,
@@ -45,321 +71,250 @@ router.get('/dashboard', validateDateRange, async (req, res) => {
 });
 
 /**
- * Get sales overview
- * Query params: agentId, dateRange
+ * Get revenue analysis (Brand Managers only)
  */
-router.get('/sales/overview', validateDateRange, async (req, res) => {
+router.get('/revenue/analysis', validateDateRange, async (req, res) => {
   try {
-    const { agentId, dateRange = '30_days' } = req.query;
+    const { dateRange = '30_days', startDate, endDate } = req.query;
     
-    const overview = await zohoReportsService.getSalesOverview(dateRange, agentId);
+    const customDateRange = dateRange === 'custom' 
+      ? { start: startDate, end: endDate }
+      : null;
+    
+    const revenue = await zohoReportsService.getRevenueAnalysis(dateRange, customDateRange);
     
     res.json({
       success: true,
-      data: overview,
+      data: revenue,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Error fetching sales overview:', error);
+    console.error('❌ Error fetching revenue analysis:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to fetch sales overview'
+      error: error.message || 'Failed to fetch revenue analysis'
     });
   }
 });
 
 /**
- * Get sales trends
- * Query params: agentId, period (daily/weekly/monthly), months
+ * Get brand performance metrics
  */
-router.get('/sales/trends', async (req, res) => {
+router.get('/brands/performance', validateDateRange, async (req, res) => {
+  try {
+    const { dateRange = '30_days', startDate, endDate } = req.query;
+    
+    const customDateRange = dateRange === 'custom' 
+      ? { start: startDate, end: endDate }
+      : null;
+    
+    const brands = await zohoReportsService.getBrandPerformance(dateRange, customDateRange);
+    
+    res.json({
+      success: true,
+      data: brands,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching brand performance:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch brand performance'
+    });
+  }
+});
+
+/**
+ * Get regional performance metrics
+ */
+router.get('/regions/performance', validateDateRange, async (req, res) => {
+  try {
+    const { dateRange = '30_days', startDate, endDate } = req.query;
+    
+    const customDateRange = dateRange === 'custom' 
+      ? { start: startDate, end: endDate }
+      : null;
+    
+    const regions = await zohoReportsService.getRegionalPerformance(dateRange, customDateRange);
+    
+    res.json({
+      success: true,
+      data: regions,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching regional performance:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch regional performance'
+    });
+  }
+});
+
+/**
+ * Get invoices with filtering
+ */
+router.get('/invoices', validateDateRange, async (req, res) => {
   try {
     const { 
-      agentId, 
-      period = 'monthly', 
-      months = 12 
-    } = req.query;
-    
-    const validPeriods = ['daily', 'weekly', 'monthly'];
-    if (!validPeriods.includes(period)) {
-      return res.status(400).json({
-        success: false,
-        error: `Invalid period. Must be one of: ${validPeriods.join(', ')}`
-      });
-    }
-    
-    const monthsNum = parseInt(months);
-    if (isNaN(monthsNum) || monthsNum < 1 || monthsNum > 24) {
-      return res.status(400).json({
-        success: false,
-        error: 'Months must be a number between 1 and 24'
-      });
-    }
-    
-    const trends = await zohoReportsService.getSalesTrends(period, monthsNum, agentId);
-    
-    res.json({
-      success: true,
-      data: trends,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Error fetching sales trends:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to fetch sales trends'
-    });
-  }
-});
-
-/**
- * Get inventory insights
- */
-router.get('/inventory/insights', async (req, res) => {
-  try {
-    const insights = await zohoReportsService.getInventoryInsights();
-    
-    res.json({
-      success: true,
-      data: insights,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Error fetching inventory insights:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to fetch inventory insights'
-    });
-  }
-});
-
-/**
- * Get agent performance
- * Query params: dateRange
- */
-router.get('/agents/performance', validateDateRange, async (req, res) => {
-  try {
-    const { dateRange = '30_days' } = req.query;
-    
-    const performance = await zohoReportsService.getAgentPerformance(dateRange);
-    
-    res.json({
-      success: true,
-      data: performance,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Error fetching agent performance:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to fetch agent performance'
-    });
-  }
-});
-
-/**
- * Get top selling items
- * Query params: agentId, dateRange, limit
- */
-router.get('/sales/top-items', validateDateRange, async (req, res) => {
-  try {
-    const { 
-      agentId, 
-      dateRange = '30_days',
-      limit = 20 
-    } = req.query;
-    
-    const limitNum = parseInt(limit);
-    if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
-      return res.status(400).json({
-        success: false,
-        error: 'Limit must be a number between 1 and 100'
-      });
-    }
-    
-    const items = await zohoReportsService.getTopSellingItems(dateRange, agentId);
-    
-    res.json({
-      success: true,
-      data: {
-        items: items.slice(0, limitNum),
-        period: dateRange,
-        agentId,
-        total: items.length
-      },
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Error fetching top selling items:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to fetch top selling items'
-    });
-  }
-});
-
-/**
- * Get customer statistics
- * Query params: agentId, dateRange
- */
-router.get('/customers/stats', validateDateRange, async (req, res) => {
-  try {
-    const { agentId, dateRange = '30_days' } = req.query;
-    
-    const stats = await zohoReportsService.getCustomerStats(dateRange, agentId);
-    
-    res.json({
-      success: true,
-      data: {
-        ...stats,
-        period: dateRange,
-        agentId
-      },
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Error fetching customer stats:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to fetch customer stats'
-    });
-  }
-});
-
-/**
- * Get sales orders with filtering
- * Query params: agentId, dateRange, status, limit, offset
- */
-router.get('/sales/orders', validateDateRange, async (req, res) => {
-  try {
-    const { 
-      agentId, 
-      dateRange = '30_days',
+      dateRange = '30_days', 
+      startDate, 
+      endDate,
       status,
-      limit = 50,
-      offset = 0
+      agentId 
     } = req.query;
     
-    const limitNum = parseInt(limit);
-    const offsetNum = parseInt(offset);
+    const customDateRange = dateRange === 'custom' 
+      ? { start: startDate, end: endDate }
+      : null;
     
-    if (isNaN(limitNum) || limitNum < 1 || limitNum > 200) {
-      return res.status(400).json({
-        success: false,
-        error: 'Limit must be a number between 1 and 200'
-      });
+    let invoices;
+    
+    if (agentId) {
+      // Get agent's customer IDs from Firebase
+      const db = admin.firestore();
+      const customersSnapshot = await db.collection('customers')
+        .where('Agent.id', '==', agentId)
+        .get();
+      
+      const agentCustomerIds = customersSnapshot.docs.map(doc => 
+        doc.data().zohoInventoryId || doc.id
+      );
+      
+      invoices = await zohoReportsService.getAgentInvoices(
+        agentCustomerIds, 
+        dateRange, 
+        customDateRange
+      );
+    } else {
+      invoices = await zohoReportsService.getInvoices(dateRange, customDateRange);
     }
-    
-    if (isNaN(offsetNum) || offsetNum < 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Offset must be a non-negative number'
-      });
-    }
-    
-    let orders = await zohoReportsService.getSalesOrders(dateRange, agentId);
     
     // Filter by status if specified
-    if (status) {
-      orders = orders.filter(order => order.status === status);
+    let filteredInvoices = invoices;
+    if (status === 'outstanding') {
+      filteredInvoices = {
+        ...invoices,
+        all: invoices.outstanding
+      };
+    } else if (status === 'paid') {
+      filteredInvoices = {
+        ...invoices,
+        all: invoices.paid
+      };
     }
     
-    // Apply pagination
-    const paginatedOrders = orders.slice(offsetNum, offsetNum + limitNum);
+    res.json({
+      success: true,
+      data: filteredInvoices,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching invoices:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch invoices'
+    });
+  }
+});
+
+/**
+ * Get purchase orders (Brand Managers only)
+ */
+router.get('/purchase-orders', validateDateRange, async (req, res) => {
+  try {
+    const { dateRange = '30_days', startDate, endDate } = req.query;
+    
+    const customDateRange = dateRange === 'custom' 
+      ? { start: startDate, end: endDate }
+      : null;
+    
+    const purchaseOrders = await zohoReportsService.getPurchaseOrders(
+      dateRange, 
+      customDateRange
+    );
     
     res.json({
       success: true,
       data: {
-        orders: paginatedOrders,
-        pagination: {
-          total: orders.length,
-          limit: limitNum,
-          offset: offsetNum,
-          hasMore: offsetNum + limitNum < orders.length
-        },
-        filters: {
-          agentId,
-          dateRange,
-          status
+        orders: purchaseOrders,
+        summary: {
+          total: purchaseOrders.length,
+          totalValue: purchaseOrders.reduce((sum, order) => 
+            sum + parseFloat(order.total || 0), 0
+          ),
+          averageValue: purchaseOrders.length > 0
+            ? purchaseOrders.reduce((sum, order) => 
+                sum + parseFloat(order.total || 0), 0
+              ) / purchaseOrders.length
+            : 0
         }
       },
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Error fetching sales orders:', error);
+    console.error('❌ Error fetching purchase orders:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to fetch sales orders'
+      error: error.message || 'Failed to fetch purchase orders'
     });
   }
 });
 
 /**
- * Clear reports cache (for development/testing)
- */
-router.post('/cache/clear', async (req, res) => {
-  try {
-    zohoReportsService.clearCache();
-    
-    res.json({
-      success: true,
-      message: 'Reports cache cleared successfully',
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Error clearing cache:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to clear cache'
-    });
-  }
-});
-
-/**
- * Get available report options/metadata
+ * Enhanced metadata endpoint with all date ranges
  */
 router.get('/metadata', (req, res) => {
   res.json({
     success: true,
     data: {
       dateRanges: [
+        { value: 'today', label: 'Today' },
         { value: '7_days', label: 'Last 7 days' },
         { value: '30_days', label: 'Last 30 days' },
-        { value: '90_days', label: 'Last 90 days' },
+        { value: 'quarter', label: 'Last Quarter' },
+        { value: 'year', label: 'Last Year' },
         { value: 'this_month', label: 'This month' },
         { value: 'last_month', label: 'Last month' },
-        { value: 'this_year', label: 'This year' }
+        { value: 'this_year', label: 'This year' },
+        { value: 'custom', label: 'Custom Date Range' }
       ],
-      trendPeriods: [
-        { value: 'daily', label: 'Daily' },
-        { value: 'weekly', label: 'Weekly' },
-        { value: 'monthly', label: 'Monthly' }
+      roles: [
+        { value: 'brandManager', label: 'Brand Manager' },
+        { value: 'salesAgent', label: 'Sales Agent' }
       ],
-      orderStatuses: [
-        { value: 'draft', label: 'Draft' },
-        { value: 'pending', label: 'Pending' },
-        { value: 'confirmed', label: 'Confirmed' },
-        { value: 'shipped', label: 'Shipped' },
-        { value: 'delivered', label: 'Delivered' },
-        { value: 'cancelled', label: 'Cancelled' }
+      brandManagerMetrics: [
+        'Total Revenue (Gross & Net)',
+        'Average Sales Order Value',
+        'Average Purchase Order Value',
+        'Latest Sales Orders',
+        'Latest Paid Invoices',
+        'Outstanding Invoices',
+        'Top Performing Salespersons',
+        'Top Performing Customers',
+        'Top Selling Items',
+        'Brand Performance',
+        'Regional Performance'
+      ],
+      salesAgentMetrics: [
+        'Total Orders (Number and Value)',
+        'Latest Orders',
+        'Customer Performance',
+        'Top Selling Items',
+        'Outstanding Invoices'
       ],
       endpoints: {
         dashboard: '/api/reports/dashboard',
-        salesOverview: '/api/reports/sales/overview',
-        salesTrends: '/api/reports/sales/trends',
-        inventoryInsights: '/api/reports/inventory/insights',
-        agentPerformance: '/api/reports/agents/performance',
-        topItems: '/api/reports/sales/top-items',
-        customerStats: '/api/reports/customers/stats',
-        salesOrders: '/api/reports/sales/orders'
+        revenue: '/api/reports/revenue/analysis',
+        brands: '/api/reports/brands/performance',
+        regions: '/api/reports/regions/performance',
+        invoices: '/api/reports/invoices',
+        purchaseOrders: '/api/reports/purchase-orders'
       }
     },
     timestamp: new Date().toISOString()
