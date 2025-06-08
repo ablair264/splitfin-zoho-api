@@ -1,7 +1,7 @@
 // server/src/syncInventory.js
 import admin from 'firebase-admin';
 import crypto from 'crypto';
-import { fetchItems, fetchCustomersFromCRM } from './api/zoho.js';
+import { fetchItems, fetchCustomersFromCRM, getInventoryContactIdByEmail } from './api/zoho.js';
 import dotenv from 'dotenv';
  
 // Load environment variables
@@ -16,6 +16,30 @@ if (!admin.apps.length) {
 }
  
 const db = admin.firestore();
+
+// Environment configuration
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '100');
+const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30') * 60 * 1000;
+
+/**
+ * Check if initial sync has been completed
+ */
+async function isInitialSyncCompleted(collection) {
+  const doc = await db.collection('sync_metadata').doc(collection).get();
+  return doc.exists && doc.data().initialSyncCompleted === true;
+}
+
+/**
+ * Get last successful sync timestamp
+ */
+async function getLastSyncTimestamp(collection) {
+  const doc = await db.collection('sync_metadata').doc(collection).get();
+  if (doc.exists && doc.data().lastSync) {
+    return doc.data().lastSync.toDate();
+  }
+  return null;
+}
 
 /**
  * Compute a stable hash of relevant fields on an inventory item for change detection
@@ -38,7 +62,6 @@ function computeItemHash(item) {
  * Compute a stable hash of relevant fields on a customer record for change detection
  */
 function computeCustomerHash(customer) {
-  // We omit zohoInventoryId because that may be updated independently and not part of main sync fields
   const relevant = {
     Account_Name: customer.Account_Name,
     Phone: customer.Phone,
@@ -57,71 +80,109 @@ function computeCustomerHash(customer) {
 }
 
 /**
- * Optimized syncInventory with bulk doc fetch and hash comparison
+ * Process a batch of items
  */
-export async function syncInventory() {
-  console.log('🔄 Starting optimized inventory sync...');
+async function processBatch(items) {
+  const docRefs = items.map(item => db.collection('products').doc(item.item_id));
+  const existingDocs = await db.getAll(...docRefs);
 
-  try {
-    const items = await fetchItems();
+  const batch = db.batch();
+  let addedCount = 0, updatedCount = 0, unchangedCount = 0;
 
-    if (items.length === 0) {
-      console.log('ℹ️ No inventory items fetched from Zoho.');
-      return { success: true, stats: { added: 0, updated: 0, unchanged: 0 } };
-    }
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const doc = existingDocs[i];
+    const newHash = computeItemHash(item);
 
-    // Bulk fetch existing products
-    const docRefs = items.map(item => db.collection('products').doc(item.item_id));
-    const existingDocs = await db.getAll(...docRefs);
-
-    const batch = db.batch();
-    let addedCount = 0;
-    let updatedCount = 0;
-    let unchangedCount = 0;
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      const doc = existingDocs[i];
-      const newHash = computeItemHash(item);
-
-      if (!doc.exists) {
-        batch.set(db.collection('products').doc(item.item_id), {
+    if (!doc.exists) {
+      batch.set(db.collection('products').doc(item.item_id), {
+        ...item,
+        lastModified: admin.firestore.FieldValue.serverTimestamp(),
+        syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+        dataHash: newHash
+      });
+      addedCount++;
+    } else {
+      const existingData = doc.data();
+      if (existingData.dataHash !== newHash) {
+        batch.update(doc.ref, {
           ...item,
           lastModified: admin.firestore.FieldValue.serverTimestamp(),
           syncedAt: admin.firestore.FieldValue.serverTimestamp(),
           dataHash: newHash
         });
-        addedCount++;
+        updatedCount++;
       } else {
-        const existingData = doc.data();
-        if (existingData.dataHash !== newHash) {
-          batch.update(doc.ref, {
-            ...item,
-            lastModified: admin.firestore.FieldValue.serverTimestamp(),
-            syncedAt: admin.firestore.FieldValue.serverTimestamp(),
-            dataHash: newHash
-          });
-          updatedCount++;
-        } else {
-          unchangedCount++;
-        }
+        unchangedCount++;
+      }
+    }
+  }
+
+  if (addedCount > 0 || updatedCount > 0) {
+    await batch.commit();
+  }
+
+  return { added: addedCount, updated: updatedCount, unchanged: unchangedCount };
+}
+
+/**
+ * Optimized syncInventory with incremental updates
+ */
+export async function syncInventory(forceFullSync = false) {
+  console.log('🔄 Starting inventory sync...');
+
+  try {
+    const isInitialDone = await isInitialSyncCompleted('inventory');
+    const lastSync = await getLastSyncTimestamp('inventory');
+    
+    // For production, only sync items modified after last sync
+    let items;
+    if (!forceFullSync && IS_PRODUCTION && isInitialDone && lastSync) {
+      console.log(`📅 Fetching items modified after ${lastSync.toISOString()}`);
+      items = await fetchItems({ modifiedAfter: lastSync });
+    } else {
+      console.log('📦 Performing full inventory sync...');
+      items = await fetchItems();
+    }
+
+    if (items.length === 0) {
+      console.log('ℹ️ No inventory items to sync.');
+      return { success: true, stats: { added: 0, updated: 0, unchanged: 0 } };
+    }
+
+    console.log(`📊 Processing ${items.length} items...`);
+
+    // Process in smaller batches to avoid memory issues
+    let totalAdded = 0, totalUpdated = 0, totalUnchanged = 0;
+
+    for (let i = 0; i < items.length; i += BATCH_SIZE) {
+      const batchItems = items.slice(i, i + BATCH_SIZE);
+      const result = await processBatch(batchItems);
+      
+      totalAdded += result.added;
+      totalUpdated += result.updated;
+      totalUnchanged += result.unchanged;
+      
+      console.log(`📦 Processed batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(items.length/BATCH_SIZE)}`);
+      
+      // Add delay between batches in production to avoid overwhelming the system
+      if (IS_PRODUCTION && i + BATCH_SIZE < items.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
-    if (addedCount > 0 || updatedCount > 0) {
-      await batch.commit();
-      // Update sync metadata
-      await db.collection('sync_metadata').doc('inventory').set({
-        lastSync: admin.firestore.FieldValue.serverTimestamp(),
-        itemsProcessed: items.length,
-        added: addedCount,
-        updated: updatedCount,
-        unchanged: unchangedCount
-      });
-    }
+    // Update sync metadata
+    await db.collection('sync_metadata').doc('inventory').set({
+      lastSync: admin.firestore.FieldValue.serverTimestamp(),
+      itemsProcessed: items.length,
+      added: totalAdded,
+      updated: totalUpdated,
+      unchanged: totalUnchanged,
+      initialSyncCompleted: true
+    }, { merge: true });
 
-    console.log(`✅ Inventory sync complete: ${addedCount} added, ${updatedCount} updated, ${unchangedCount} unchanged`);
-    return { success: true, stats: { added: addedCount, updated: updatedCount, unchanged: unchangedCount } };
+    console.log(`✅ Inventory sync complete: ${totalAdded} added, ${totalUpdated} updated, ${totalUnchanged} unchanged`);
+    return { success: true, stats: { added: totalAdded, updated: totalUpdated, unchanged: totalUnchanged } };
 
   } catch (error) {
     console.error('❌ Inventory sync failed:', error);
@@ -130,92 +191,128 @@ export async function syncInventory() {
 }
 
 /**
- * Optimized syncCustomersFromCRM with bulk doc fetch and hash comparison
+ * Process a batch of customers
  */
-export async function syncCustomersFromCRM() {
-  console.log('👥 Starting optimized customer sync from CRM...');
+async function processCustomerBatch(accounts) {
+  const docRefs = accounts.map(account => db.collection('customers').doc(account.id));
+  const existingDocs = await db.getAll(...docRefs);
+
+  const batch = db.batch();
+  let addedCount = 0, updatedCount = 0, unchangedCount = 0;
+
+  for (let i = 0; i < accounts.length; i++) {
+    const account = accounts[i];
+    const doc = existingDocs[i];
+
+    const customerData = {
+      zohoCRMId: account.id,
+      zohoInventoryId: null,
+      Account_Name: account.Account_Name,
+      Phone: account.Phone,
+      Primary_Email: account.Primary_Email,
+      Agent: account.Agent ? {
+        id: account.Agent.id,
+        name: account.Agent.name
+      } : null,
+      Billing_City: account.Billing_City,
+      Billing_Code: account.Billing_Code,
+      Billing_Country: account.Billing_Country,
+      Billing_State: account.Billing_State,
+      Billing_Street: account.Billing_Street,
+      Primary_First_Name: account.Primary_First_Name,
+      Primary_Last_Name: account.Primary_Last_Name,
+      lastModified: admin.firestore.FieldValue.serverTimestamp(),
+      syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    const newHash = computeCustomerHash(customerData);
+
+    if (!doc.exists) {
+      customerData.dataHash = newHash;
+      batch.set(db.collection('customers').doc(account.id), customerData);
+      addedCount++;
+    } else {
+      const existingData = doc.data();
+
+      if (existingData.zohoInventoryId) {
+        customerData.zohoInventoryId = existingData.zohoInventoryId;
+      }
+
+      if (existingData.dataHash !== newHash) {
+        customerData.dataHash = newHash;
+        batch.update(doc.ref, customerData);
+        updatedCount++;
+      } else {
+        unchangedCount++;
+      }
+    }
+  }
+
+  if (addedCount > 0 || updatedCount > 0) {
+    await batch.commit();
+  }
+
+  return { added: addedCount, updated: updatedCount, unchanged: unchangedCount };
+}
+
+/**
+ * Optimized syncCustomersFromCRM with incremental updates
+ */
+export async function syncCustomersFromCRM(forceFullSync = false) {
+  console.log('👥 Starting customer sync from CRM...');
 
   try {
-    const accounts = await fetchCustomersFromCRM();
+    const isInitialDone = await isInitialSyncCompleted('customers');
+    const lastSync = await getLastSyncTimestamp('customers');
+    
+    // For production, only sync customers modified after last sync
+    let accounts;
+    if (!forceFullSync && IS_PRODUCTION && isInitialDone && lastSync) {
+      console.log(`📅 Fetching customers modified after ${lastSync.toISOString()}`);
+      accounts = await fetchCustomersFromCRM({ modifiedAfter: lastSync });
+    } else {
+      console.log('👥 Performing full customer sync...');
+      accounts = await fetchCustomersFromCRM();
+    }
 
     if (accounts.length === 0) {
-      console.log('ℹ️ No customers fetched from Zoho CRM.');
+      console.log('ℹ️ No customers to sync.');
       return { success: true, stats: { added: 0, updated: 0, unchanged: 0 } };
     }
 
-    // Bulk fetch existing customer docs by zohoCRMId (account.id)
-    const docRefs = accounts.map(account => db.collection('customers').doc(account.id));
-    const existingDocs = await db.getAll(...docRefs);
+    console.log(`📊 Processing ${accounts.length} customers...`);
 
-    const batch = db.batch();
-    let addedCount = 0;
-    let updatedCount = 0;
-    let unchangedCount = 0;
+    // Process in smaller batches
+    let totalAdded = 0, totalUpdated = 0, totalUnchanged = 0;
 
-    for (let i = 0; i < accounts.length; i++) {
-      const account = accounts[i];
-      const doc = existingDocs[i];
-
-      // Prepare customer data to sync
-      const customerData = {
-        zohoCRMId: account.id,
-        zohoInventoryId: null, // default to null, will preserve if existing
-        Account_Name: account.Account_Name,
-        Phone: account.Phone,
-        Primary_Email: account.Primary_Email,
-        Agent: account.Agent ? {
-          id: account.Agent.id,
-          name: account.Agent.name
-        } : null,
-        Billing_City: account.Billing_City,
-        Billing_Code: account.Billing_Code,
-        Billing_Country: account.Billing_Country,
-        Billing_State: account.Billing_State,
-        Billing_Street: account.Billing_Street,
-        Primary_First_Name: account.Primary_First_Name,
-        Primary_Last_Name: account.Primary_Last_Name,
-        lastModified: admin.firestore.FieldValue.serverTimestamp(),
-        syncedAt: admin.firestore.FieldValue.serverTimestamp(),
-      };
-
-      const newHash = computeCustomerHash(customerData);
-
-      if (!doc.exists) {
-        customerData.dataHash = newHash;
-        batch.set(db.collection('customers').doc(account.id), customerData);
-        addedCount++;
-      } else {
-        const existingData = doc.data();
-
-        // Preserve existing zohoInventoryId if available
-        if (existingData.zohoInventoryId) {
-          customerData.zohoInventoryId = existingData.zohoInventoryId;
-        }
-
-        // Check hash to detect changes
-        if (existingData.dataHash !== newHash) {
-          customerData.dataHash = newHash;
-          batch.update(doc.ref, customerData);
-          updatedCount++;
-        } else {
-          unchangedCount++;
-        }
+    for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
+      const batchAccounts = accounts.slice(i, i + BATCH_SIZE);
+      const result = await processCustomerBatch(batchAccounts);
+      
+      totalAdded += result.added;
+      totalUpdated += result.updated;
+      totalUnchanged += result.unchanged;
+      
+      console.log(`👥 Processed batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(accounts.length/BATCH_SIZE)}`);
+      
+      // Add delay between batches in production
+      if (IS_PRODUCTION && i + BATCH_SIZE < accounts.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
-    if (addedCount > 0 || updatedCount > 0) {
-      await batch.commit();
-      await db.collection('sync_metadata').doc('customers').set({
-        lastSync: admin.firestore.FieldValue.serverTimestamp(),
-        customersProcessed: accounts.length,
-        added: addedCount,
-        updated: updatedCount,
-        unchanged: unchangedCount
-      });
-    }
+    // Update sync metadata
+    await db.collection('sync_metadata').doc('customers').set({
+      lastSync: admin.firestore.FieldValue.serverTimestamp(),
+      customersProcessed: accounts.length,
+      added: totalAdded,
+      updated: totalUpdated,
+      unchanged: totalUnchanged,
+      initialSyncCompleted: true
+    }, { merge: true });
 
-    console.log(`✅ Customer sync complete: ${addedCount} added, ${updatedCount} updated, ${unchangedCount} unchanged`);
-    return { success: true, stats: { added: addedCount, updated: updatedCount, unchanged: unchangedCount } };
+    console.log(`✅ Customer sync complete: ${totalAdded} added, ${totalUpdated} updated, ${totalUnchanged} unchanged`);
+    return { success: true, stats: { added: totalAdded, updated: totalUpdated, unchanged: totalUnchanged } };
 
   } catch (error) {
     console.error('❌ Customer sync failed:', error);
@@ -278,40 +375,6 @@ export async function syncInventoryCustomerIds() {
 }
 
 /**
- * Check if item data has actually changed
- */
-function hasItemChanged(existing, newItem) {
-  const fieldsToCheck = [
-    'name', 'sku', 'rate', 'stock_on_hand', 
-    'available_stock', 'status', 'description'
-  ];
-  
-  return fieldsToCheck.some(field => existing[field] !== newItem[field]);
-}
-
-/**
- * Check if customer data has actually changed
- */
-function hasCustomerChanged(existing, newCustomer) {
-  const fieldsToCheck = [
-    'Account_Name', 'Phone', 'Primary_Email',
-    'Billing_City', 'Billing_Code', 'Billing_Country',
-    'Billing_State', 'Billing_Street',
-    'Primary_First_Name', 'Primary_Last_Name'
-  ];
-  
-  // Check simple fields
-  const simpleFieldsChanged = fieldsToCheck.some(field => 
-    existing[field] !== newCustomer[field]
-  );
-  
-  // Check agent assignment
-  const agentChanged = JSON.stringify(existing.Agent) !== JSON.stringify(newCustomer.Agent);
-  
-  return simpleFieldsChanged || agentChanged;
-}
-
-/**
  * Get last sync timestamps
  */
 export async function getSyncStatus() {
@@ -322,9 +385,10 @@ export async function getSyncStatus() {
     return {
       inventory: inventorySync.exists ? inventorySync.data() : null,
       customers: customerSync.exists ? customerSync.data() : null,
-      inMemoryTimestamps: {
-        lastInventorySync,
-        lastCustomerSync
+      environment: IS_PRODUCTION ? 'production' : 'development',
+      config: {
+        batchSize: BATCH_SIZE,
+        syncInterval: SYNC_INTERVAL
       }
     };
   } catch (error) {
@@ -334,32 +398,44 @@ export async function getSyncStatus() {
 }
 
 /**
- * Smart sync that only runs if enough time has passed
+ * Smart sync with configurable intervals
  */
 export async function smartSync(forceSync = false) {
-  const SYNC_INTERVAL = 5 * 60 * 1000; // 5 minutes
   const now = Date.now();
   
   try {
+    // Check last sync times from database
+    const inventoryMeta = await db.collection('sync_metadata').doc('inventory').get();
+    const customerMeta = await db.collection('sync_metadata').doc('customers').get();
+    
+    const lastInventorySync = inventoryMeta.exists && inventoryMeta.data().lastSync 
+      ? inventoryMeta.data().lastSync.toMillis() 
+      : 0;
+    const lastCustomerSync = customerMeta.exists && customerMeta.data().lastSync 
+      ? customerMeta.data().lastSync.toMillis() 
+      : 0;
+    
     let shouldSyncInventory = forceSync || (now - lastInventorySync) > SYNC_INTERVAL;
     let shouldSyncCustomers = forceSync || (now - lastCustomerSync) > SYNC_INTERVAL;
     
     const results = {};
     
     if (shouldSyncInventory) {
-      results.inventory = await syncInventory();
+      results.inventory = await syncInventory(forceSync);
     } else {
-      console.log('⏭️ Skipping inventory sync - too soon since last sync');
+      console.log(`⏭️ Skipping inventory sync - ${Math.round((SYNC_INTERVAL - (now - lastInventorySync)) / 60000)} minutes until next sync`);
       results.inventory = { skipped: true, reason: 'Recent sync' };
     }
     
     if (shouldSyncCustomers) {
-      results.customers = await syncCustomersFromCRM();
+      results.customers = await syncCustomersFromCRM(forceSync);
       
       // Also run inventory ID sync for new customers
-      results.inventoryIds = await syncInventoryCustomerIds();
+      if (!forceSync) {
+        results.inventoryIds = await syncInventoryCustomerIds();
+      }
     } else {
-      console.log('⏭️ Skipping customer sync - too soon since last sync');
+      console.log(`⏭️ Skipping customer sync - ${Math.round((SYNC_INTERVAL - (now - lastCustomerSync)) / 60000)} minutes until next sync`);
       results.customers = { skipped: true, reason: 'Recent sync' };
     }
     
@@ -367,6 +443,40 @@ export async function smartSync(forceSync = false) {
     
   } catch (error) {
     console.error('❌ Smart sync failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * Perform initial sync for production deployment
+ */
+export async function performInitialSync() {
+  console.log('🚀 Starting initial sync for production...');
+  
+  try {
+    // First sync inventory
+    console.log('📦 Phase 1: Syncing inventory...');
+    const inventoryResult = await syncInventory(true);
+    
+    // Then sync customers
+    console.log('👥 Phase 2: Syncing customers...');
+    const customerResult = await syncCustomersFromCRM(true);
+    
+    // Finally sync inventory IDs
+    console.log('🔗 Phase 3: Mapping inventory IDs...');
+    const inventoryIdResult = await syncInventoryCustomerIds();
+    
+    console.log('✅ Initial sync completed successfully!');
+    
+    return {
+      success: true,
+      inventory: inventoryResult,
+      customers: customerResult,
+      inventoryIds: inventoryIdResult
+    };
+    
+  } catch (error) {
+    console.error('❌ Initial sync failed:', error);
     throw error;
   }
 }

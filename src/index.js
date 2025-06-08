@@ -1,4 +1,4 @@
-// server/src/index.js - Complete setup with both Firebase services
+// server/src/index.js - Complete setup with optimizations
 import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
@@ -12,13 +12,14 @@ import {
   syncCustomersFromCRM, 
   syncInventoryCustomerIds,
   smartSync,
-  getSyncStatus
+  getSyncStatus,
+  performInitialSync
 } from './syncInventory.js';
 import { getInventoryContactIdByEmail, createSalesOrder } from './api/zoho.js';
 import webhookRoutes from './routes/webhooks.js';
 import syncRoutes from './routes/sync.js';
 import firebaseOrderListener from './firebaseOrderListener.js';
-import firestoreSyncService from './firestoreSyncService.js';
+import firestoreSyncService from './services/firestoreSyncService.js';
 import reportsRoutes from './routes/reports.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
@@ -27,6 +28,11 @@ const __dirname  = path.dirname(__filename);
 
 // ── Load .env ───────────────────────────────────────────────────────
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
+// ── Environment Configuration ───────────────────────────────────────
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const ENABLE_AUTO_SYNC = process.env.ENABLE_AUTO_SYNC !== 'false';
+const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30') * 60 * 1000;
 
 // ── Firebase init (only once) ───────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
@@ -82,7 +88,8 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Splitfin Zoho Integration API',
     status: 'running',
-    version: '2.1.0',
+    version: '2.2.0',
+    environment: IS_PRODUCTION ? 'production' : 'development',
     features: [
       'OAuth', 
       'Inventory Sync', 
@@ -91,14 +98,20 @@ app.get('/', (req, res) => {
       'Firebase Order Listener',
       'Real-time Firestore Sync',
       'Client Sync API',
-      'Reports & Analytics'  // Add this
+      'Reports & Analytics',
+      'Incremental Sync'
     ],
+    config: {
+      autoSync: ENABLE_AUTO_SYNC,
+      syncInterval: `${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`
+    },
     endpoints: {
       health: '/health',
       webhooks: '/api/*',
       sync: '/api/sync/*',
-      reports: '/api/reports/*',  // Add this
-      oauth: '/oauth/url'
+      reports: '/api/reports/*',
+      oauth: '/oauth/url',
+      initialSync: '/api/initial-sync'
     }
   });
 });
@@ -106,23 +119,60 @@ app.get('/', (req, res) => {
 // ── Mount routes ────────────────────────────────────────────────────
 app.use('/api', webhookRoutes);
 app.use('/api/sync', syncRoutes);
+app.use('/api/reports', reportsRoutes);
 
 // ── Enhanced Health check endpoint ──────────────────────────────────
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
   const orderListenerStatus = firebaseOrderListener.getStatus();
   const syncServiceStatus = firestoreSyncService.getStatus();
+  const syncStatus = await getSyncStatus();
   
   res.status(200).json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     service: 'Splitfin Zoho Integration API',
-    version: '2.0.0',
+    version: '2.2.0',
+    environment: IS_PRODUCTION ? 'production' : 'development',
     features: ['OAuth', 'Inventory Sync', 'Sales Orders', 'Webhooks', 'Firebase Listeners', 'Sync Services'],
     services: {
       firebaseOrderListener: orderListenerStatus,
-      firestoreSyncService: syncServiceStatus
+      firestoreSyncService: syncServiceStatus,
+      syncMetadata: syncStatus
     }
   });
+});
+
+// ── Initial Sync Endpoint (Production) ──────────────────────────────
+app.post('/api/initial-sync', async (req, res) => {
+  try {
+    const { secret } = req.body;
+    
+    // Add a secret to prevent accidental triggers
+    if (IS_PRODUCTION && secret !== process.env.INITIAL_SYNC_SECRET) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid secret'
+      });
+    }
+    
+    console.log('🚀 Starting initial sync...');
+    
+    const result = await performInitialSync();
+    
+    res.json({
+      success: true,
+      result,
+      message: 'Initial sync completed. You can now enable auto-sync.',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Initial sync failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // ── Firebase Services Management ────────────────────────────────────
@@ -136,14 +186,27 @@ app.get('/api/listener/status', (req, res) => {
       orderListener: orderStatus,
       syncService: syncStatus
     },
+    autoSyncEnabled: ENABLE_AUTO_SYNC,
+    environment: IS_PRODUCTION ? 'production' : 'development',
     timestamp: new Date().toISOString()
   });
 });
 
-app.post('/api/listener/start', (req, res) => {
+app.post('/api/listener/start', async (req, res) => {
   try {
+    // Check if initial sync has been done in production
+    if (IS_PRODUCTION) {
+      const syncStatus = await getSyncStatus();
+      if (!syncStatus?.inventory?.initialSyncCompleted || !syncStatus?.customers?.initialSyncCompleted) {
+        return res.status(400).json({
+          success: false,
+          error: 'Initial sync must be completed before starting listeners. Run POST /api/initial-sync first.'
+        });
+      }
+    }
+    
     firebaseOrderListener.startListening();
-    firestoreSyncService.startAllListeners();
+    await firestoreSyncService.startAllListeners();
     
     res.json({
       success: true,
@@ -238,17 +301,17 @@ app.get('/oauth/callback', async (req, res) => {
     }
     
     const envPath = path.resolve(__dirname, '../.env');
-    fs.writeFileSync(envPath,
-`ZOHO_CLIENT_ID=${ZOHO_CLIENT_ID}
-ZOHO_CLIENT_SECRET=${ZOHO_CLIENT_SECRET}
-ZOHO_REDIRECT_URI=${ZOHO_REDIRECT_URI}
-ZOHO_ORG_ID=${ZOHO_ORG_ID}
-ZOHO_REFRESH_TOKEN=${data.refresh_token}
-PORT=${PORT}
-`, 'utf8');
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    const updatedEnv = envContent.replace(
+      /ZOHO_REFRESH_TOKEN=.*/,
+      `ZOHO_REFRESH_TOKEN=${data.refresh_token}`
+    );
+    fs.writeFileSync(envPath, updatedEnv, 'utf8');
+    
     return res.send(`
       <h1>Connected to Zoho!</h1>
       <p>Token expires in ${data.expires_in}s</p>
+      <p>Refresh token has been saved.</p>
     `);
   } catch (err) {
     console.error(err.response?.data||err);
@@ -293,254 +356,7 @@ async function getAccessToken() {
 // ── Existing API endpoints ──────────────────────────────────────────
 app.get('/api/items', async (req, res) => {
   try {
-    const snap = await db.collection('products').get();
-    const products = snap.docs.map(d => d.data());
-    res.json({ items: products });
-  } catch (err) {
-    console.error('Firestore /api/items failed:', err);
-    res.status(500).send('Items fetch failed');
-  }
-});
-
-app.get('/api/purchaseorders', async (req, res) => {
-  try {
-    const status = req.query.status || 'open';
-    const token = await getAccessToken();
-    const zohoRes = await axios.get(
-      `https://www.zohoapis.eu/inventory/v1/purchaseorders?status=${status}&organization_id=${ZOHO_ORG_ID}`,
-      { headers: { 'Authorization': `Zoho-oauthtoken ${token}` } }
-    );
-    res.json(zohoRes.data);
-  } catch (err) {
-    console.error('Proxy /api/purchaseorders failed:', err.response?.data || err);
-    res.status(500).send('Purchase Orders fetch failed');
-  }
-});
-
-app.post('/api/sync-inventory', async (req, res) => {
-  console.log('👤 Manual inventory sync requested');
-  try {
-    await syncInventory();
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error('❌ Manual sync failed:', err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.post('/api/zoho/salesorder', async (req, res) => {
-  try {
-    const result = await createSalesOrder(req.body);
-    res.status(200).json({ success: true, zohoSalesOrder: result });
-  } catch (err) {
-    console.error('❌ Error in /api/zoho/salesorder:', err);
-    res.status(500).json({ error: err.message || 'Zoho Sales Order failed' });
-  }
-});
- 
-app.post('/api/sync-customers', async (req, res) => {
-  try {
-	await syncCustomersFromCRM();
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/sync-inventory-contact', async (req, res) => {
-  const { email, docId } = req.body;
-  try {
-    const inventoryId = await getInventoryContactIdByEmail(email);
-    if (!inventoryId) {
-      return res.status(404).json({ success: false, error: 'Inventory contact not found' });
-    }
-
-    await db.collection('customers').doc(docId).update({
-      zohoInventoryId: inventoryId
-    });
-
-    res.json({ success: true, inventoryId });
-  } catch (err) {
-    console.error('❌ Error in sync-inventory-contact:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Legacy webhook endpoint (kept for backward compatibility)
-app.post('/api/create-order', async (req, res) => {
-  const { firebaseUID, customer_id, line_items } = req.body;
-
-  if (!firebaseUID || !customer_id || !Array.isArray(line_items)) {
-    return res.status(400).json({ error: 'Missing or invalid payload' });
-  }
-
-  try {
-    const userSnap = await admin.firestore().collection('users').doc(firebaseUID).get();
-    if (!userSnap.exists) {
-      return res.status(404).json({ error: 'SalesAgent not found in Firestore' });
-    }
-
-    const agentData = userSnap.data();
-    const agentZohoID = agentData.zohospID;
-
-    if (!agentZohoID) {
-      return res.status(400).json({ error: 'SalesAgent missing Zoho CRM ID' });
-    }
-
-    const salesOrder = await createSalesOrder({
-      zohoCustID: customer_id,
-      items: line_items,
-      agentZohoCRMId: agentZohoID,
-    });
-
-    await admin.firestore().collection('submittedOrders').add({
-      firebaseUID,
-      customer_id,
-      line_items,
-      agentZohoID,
-      zohoResponse: salesOrder,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    return res.status(200).json({ success: true, zohoSalesOrder: salesOrder });
-  } catch (err) {
-    console.error('❌ Error in /api/create-order:', err);
-    return res.status(500).json({ error: err.message || 'Unexpected error' });
-  }
-});
-
-// Add these updated endpoints to your index.js
-
-// Enhanced manual inventory sync endpoint
-app.post('/api/sync-inventory', async (req, res) => {
-  console.log('👤 Manual inventory sync requested');
-  try {
-    const forceSync = req.body.force === true;
-    const result = await smartSync(forceSync);
-    
-    return res.json({ 
-      success: true, 
-      results: result,
-      timestamp: new Date().toISOString()
-    });
-  } catch (err) {
-    console.error('❌ Manual sync failed:', err);
-    return res.status(500).json({ 
-      success: false, 
-      error: err.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// New endpoint for sync status
-app.get('/api/sync-status', async (req, res) => {
-  try {
-    const status = await getSyncStatus();
-    res.json({
-      success: true,
-      syncStatus: status,
-      timestamp: new Date().toISOString()
-    });
-  } catch (err) {
-    console.error('❌ Sync status fetch failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
-// Separate endpoint for inventory ID mapping
-app.post('/api/sync-inventory-ids', async (req, res) => {
-  try {
-    const result = await syncInventoryCustomerIds();
-    res.json({
-      success: true,
-      result: result,
-      timestamp: new Date().toISOString()
-    });
-  } catch (err) {
-    console.error('❌ Inventory ID sync failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
-// Enhanced customer sync endpoint
-app.post('/api/sync-customers', async (req, res) => {
-  try {
-    const forceSync = req.body.force === true;
-    
-    if (forceSync) {
-      // Force full customer sync
-      const customerResult = await syncCustomersFromCRM();
-      const inventoryIdResult = await syncInventoryCustomerIds();
-      
-      res.json({ 
-        success: true, 
-        customers: customerResult,
-        inventoryIds: inventoryIdResult,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      // Use smart sync
-      const result = await smartSync();
-      res.json({ 
-        success: true, 
-        results: result,
-        timestamp: new Date().toISOString()
-      });
-    }
-  } catch (err) {
-    console.error('❌ Customer sync failed:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
-    });
-  }
-});
-
-// Webhook endpoint for triggering smart sync
-app.post('/api/smart-sync', async (req, res) => {
-  try {
-    const { collections, force } = req.body;
-    
-    let result;
-    if (collections && Array.isArray(collections)) {
-      // Selective sync
-      result = {};
-      
-      if (collections.includes('inventory') || collections.includes('products')) {
-        result.inventory = await syncInventory();
-      }
-      
-      if (collections.includes('customers')) {
-        result.customers = await syncCustomersFromCRM();
-        result.inventoryIds = await syncInventoryCustomerIds();
-      }
-    } else {
-      // Full smart sync
-      result = await smartSync(force);
-    }
-    
-    res.json({
-      success: true,
-      results: result,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (err) {
-    console.error('❌ Smart sync failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-});
+    const { limit = 1000
 
 // Updated items endpoint to show sync status
 app.get('/api/items', async (req, res) => {
