@@ -1,6 +1,7 @@
 // server/src/routes/reports.js
 import express from 'express';
 import zohoReportsService from '../services/zohoReportsService.js';
+import admin from 'firebase-admin';
 
 const router = express.Router();
 
