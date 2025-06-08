@@ -13,6 +13,7 @@ import webhookRoutes from './routes/webhooks.js';
 import syncRoutes from './routes/sync.js';
 import firebaseOrderListener from './firebaseOrderListener.js';
 import firestoreSyncService from './firestoreSyncService.js';
+import reportsRoutes from './routes/reports.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
@@ -75,7 +76,7 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Splitfin Zoho Integration API',
     status: 'running',
-    version: '2.0.0',
+    version: '2.1.0',
     features: [
       'OAuth', 
       'Inventory Sync', 
@@ -83,12 +84,14 @@ app.get('/', (req, res) => {
       'Webhooks', 
       'Firebase Order Listener',
       'Real-time Firestore Sync',
-      'Client Sync API'
+      'Client Sync API',
+      'Reports & Analytics'  // Add this
     ],
     endpoints: {
       health: '/health',
       webhooks: '/api/*',
       sync: '/api/sync/*',
+      reports: '/api/reports/*',  // Add this
       oauth: '/oauth/url'
     }
   });
@@ -416,6 +419,8 @@ app.post('/api/maintenance/cleanup-sync', async (req, res) => {
     });
   }
 });
+
+app.use('/api/reports', reportsRoutes);
 
 // Schedule periodic cleanup (every 24 hours)
 setInterval(() => {
