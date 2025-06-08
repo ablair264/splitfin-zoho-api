@@ -1,4 +1,3 @@
-// server/src/index.js - Complete setup with CRM-first optimizations
 import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
@@ -22,19 +21,15 @@ import firebaseOrderListener from './firebaseOrderListener.js';
 import firestoreSyncService from './firestoreSyncService.js';
 import reportsRoutes from './routes/reports.js';
 
-// ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ── Load .env ───────────────────────────────────────────────────────
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-// ── Environment Configuration ───────────────────────────────────────
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const ENABLE_AUTO_SYNC = process.env.ENABLE_AUTO_SYNC !== 'false';
 const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30') * 60 * 1000;
 
-// ── Firebase init (only once) ───────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -43,7 +38,6 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// ── Express setup ───────────────────────────────────────────────────
 const app = express();
 const {
   ZOHO_CLIENT_ID,
@@ -54,7 +48,6 @@ const {
   PORT = 3001
 } = process.env;
 
-// Enhanced CORS configuration
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
   'http://localhost:3000',
@@ -73,26 +66,23 @@ app.use(cors({
   credentials: true
 }));
 
-// ── Enhanced Middleware ─────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Request logging middleware
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
 
-// ── Root route ──────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     message: 'Splitfin Zoho Integration API',
     status: 'running',
-    version: '2.3.0', // Updated version
+    version: '2.3.0',
     environment: IS_PRODUCTION ? 'production' : 'development',
     features: [
       'OAuth', 
-      'CRM-first Product Sync', // Updated
+      'CRM-first Product Sync',
       'Sales Orders', 
       'Webhooks', 
       'Firebase Order Listener',
@@ -101,7 +91,7 @@ app.get('/', (req, res) => {
       'Reports & Analytics',
       'Incremental Sync'
     ],
-    dataStrategy: 'CRM-first with Inventory fallback', // NEW
+    dataStrategy: 'CRM-first with Inventory fallback',
     config: {
       autoSync: ENABLE_AUTO_SYNC,
       syncInterval: `${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`
@@ -117,10 +107,31 @@ app.get('/', (req, res) => {
   });
 });
 
-// ── Mount routes ────────────────────────────────────────────────────
 app.use('/api', webhookRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/reports', reportsRoutes);
+
+app.post('/api/sync', async (req, res) => {
+  try {
+    console.log('🔄 Triggering syncInventory from POST /api/sync');
+    const result = await syncInventory();
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error('❌ Error in /api/sync:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/sync-customers', async (req, res) => {
+  try {
+    console.log('🔄 Triggering syncCustomersFromCRM from POST /api/sync-customers');
+    const result = await syncCustomersFromCRM();
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error('❌ Error in /api/sync-customers:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // ── Enhanced Health check endpoint ──────────────────────────────────
 app.get('/health', async (req, res) => {
