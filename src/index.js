@@ -353,12 +353,9 @@ async function getAccessToken() {
   return await refreshInFly;
 }
 
-// ── Existing API endpoints ──────────────────────────────────────────
-app.get('/api/items', async (req, res) => {
-  try {
-    const { limit = 1000
+// ── API endpoints ───────────────────────────────────────────────────
 
-// Updated items endpoint to show sync status
+// Items endpoint with sync status metadata
 app.get('/api/items', async (req, res) => {
   try {
     const includeMetadata = req.query.metadata === 'true';
@@ -434,8 +431,6 @@ app.post('/api/maintenance/cleanup-sync', async (req, res) => {
     });
   }
 });
-
-app.use('/api/reports', reportsRoutes);
 
 // Schedule periodic cleanup (every 24 hours)
 setInterval(() => {
