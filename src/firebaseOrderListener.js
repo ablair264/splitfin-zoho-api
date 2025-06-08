@@ -121,7 +121,7 @@ class FirebaseOrderListener {
       }
 
       const userData = userDoc.data();
-      return userData.zohospID || userData.zohoAgentId || null;
+      const agentId = userData.zohospID || userData.agentID;
     } catch (error) {
       console.error(`❌ Error fetching agent data for ${firebaseUID}:`, error.message);
       return null;

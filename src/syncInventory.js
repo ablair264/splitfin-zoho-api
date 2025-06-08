@@ -1,7 +1,7 @@
 // server/src/syncInventory.js
 import admin from 'firebase-admin';
 import crypto from 'crypto';
-import { fetchItems, fetchCustomersFromCRM, getInventoryContactIdByEmail } from './api/zoho.js';
+import { fetchItems, fetchProductsFromCRM, fetchCustomersFromCRM, getInventoryContactIdByEmail } from './api/zoho.js';
 import dotenv from 'dotenv';
  
 // Load environment variables
@@ -42,7 +42,29 @@ async function getLastSyncTimestamp(collection) {
 }
 
 /**
+ * Compute a stable hash of relevant fields on a product for change detection
+ * Updated for CRM product data
+ */
+function computeProductHash(product) {
+  const relevant = {
+    name: product.name,
+    sku: product.sku,
+    basePrice: product.basePrice,
+    retailPrice: product.retailPrice,
+    stock_on_hand: product.stock_on_hand,
+    available_stock: product.available_stock,
+    status: product.status,
+    description: product.description,
+    brand: product.brand,
+    category: product.category
+  };
+  const str = JSON.stringify(relevant);
+  return crypto.createHash('md5').update(str).digest('hex');
+}
+
+/**
  * Compute a stable hash of relevant fields on an inventory item for change detection
+ * LEGACY - keeping for backward compatibility
  */
 function computeItemHash(item) {
   const relevant = {
@@ -80,7 +102,122 @@ function computeCustomerHash(customer) {
 }
 
 /**
- * Process a batch of items
+ * Normalize brand names for consistent searching
+ */
+function normalizeBrandName(brandName) {
+  if (!brandName) return '';
+  
+  return brandName
+    .toLowerCase()
+    .replace(/[äàáâãå]/g, 'a')
+    .replace(/[ëèéê]/g, 'e')
+    .replace(/[ïìíî]/g, 'i')
+    .replace(/[öòóôõø]/g, 'o')
+    .replace(/[üùúû]/g, 'u')
+    .replace(/[ÿý]/g, 'y')
+    .replace(/[ñ]/g, 'n')
+    .replace(/[ç]/g, 'c')
+    .replace(/[ß]/g, 'ss')
+    .replace(/[^\w\s]/g, '')
+    .trim();
+}
+
+/**
+ * Process a batch of products from CRM
+ * NEW - replaces processBatch for CRM products
+ */
+async function processProductBatch(products) {
+  // Use CRM Product ID as document ID for consistency
+  const docRefs = products.map(product => db.collection('products').doc(product.id));
+  const existingDocs = await db.getAll(...docRefs);
+
+  const batch = db.batch();
+  let addedCount = 0, updatedCount = 0, unchangedCount = 0;
+
+  for (let i = 0; i < products.length; i++) {
+    const product = products[i];
+    const doc = existingDocs[i];
+    
+    // Transform CRM product to your existing Firebase structure
+    const productData = {
+      // IDs for mapping
+      zohoCRMId: product.id,                    // CRM Product ID
+      zohoItemID: product.id,                   // For backward compatibility, use same ID
+      
+      // Core product info (matching your existing structure)
+      name: product.Product_Name || '',
+      sku: product.Product_Code || '',
+      description: product.Description || '',
+      
+      // Pricing (from CRM)
+      basePrice: parseFloat(product.Unit_Price) || 0,
+      retailPrice: parseFloat(product.List_Price) || parseFloat(product.Unit_Price) || 0,
+      
+      // Stock info (from CRM - synced from Inventory)
+      stockLevel: parseInt(product.Qty_in_Stock) || 0,
+      stock_on_hand: parseInt(product.Qty_in_Stock) || 0,
+      available_stock: parseInt(product.Qty_Available) || parseInt(product.Qty_in_Stock) || 0,
+      actual_available_stock: parseInt(product.Qty_Available) || 0,
+      
+      // Product status
+      status: product.Product_Active !== false ? 'active' : 'inactive',
+      
+      // Category/Brand info
+      brand: product.Manufacturer || '',
+      category: product.Product_Category || '',
+      
+      // Brand normalization (keep your existing logic)
+      brand_lowercase: (product.Manufacturer || '').toLowerCase(),
+      brand_normalized: normalizeBrandName(product.Manufacturer || ''),
+      
+      // Image URL (if available from CRM)
+      imageURL: product.Product_Image || '',
+      
+      // Sync metadata
+      lastModified: admin.firestore.FieldValue.serverTimestamp(),
+      syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+      source: 'CRM',
+      
+      // Keep date added if exists, otherwise set current date
+      dateAdded: doc.exists && doc.data().dateAdded ? doc.data().dateAdded : admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    const newHash = computeProductHash(productData);
+
+    if (!doc.exists) {
+      productData.dataHash = newHash;
+      batch.set(db.collection('products').doc(product.id), productData);
+      addedCount++;
+      console.log(`➕ Adding new product: ${product.Product_Name} (${product.Product_Code})`);
+    } else {
+      const existingData = doc.data();
+      
+      // Preserve existing fields that aren't in CRM
+      if (existingData.zohoItemID && existingData.zohoItemID !== product.id) {
+        productData.zohoItemID = existingData.zohoItemID; // Keep existing Inventory Item ID if different
+      }
+      
+      if (existingData.dataHash !== newHash) {
+        productData.dataHash = newHash;
+        batch.update(doc.ref, productData);
+        updatedCount++;
+        console.log(`🔄 Updating product: ${product.Product_Name} (${product.Product_Code})`);
+      } else {
+        unchangedCount++;
+      }
+    }
+  }
+
+  if (addedCount > 0 || updatedCount > 0) {
+    await batch.commit();
+  }
+
+  return { added: addedCount, updated: updatedCount, unchanged: unchangedCount };
+}
+
+/**
+ * Process a batch of items - LEGACY function for backward compatibility
  */
 async function processBatch(items) {
   const docRefs = items.map(item => db.collection('products').doc(item.item_id));
@@ -126,47 +263,50 @@ async function processBatch(items) {
 }
 
 /**
- * Optimized syncInventory with incremental updates
+ * Optimized syncInventory - now pulls from CRM instead of Inventory
+ * Maintains all timestamp logic and incremental updates
  */
 export async function syncInventory(forceFullSync = false) {
-  console.log('🔄 Starting inventory sync...');
+  console.log('🔄 Starting product sync from CRM...');
 
   try {
     const isInitialDone = await isInitialSyncCompleted('inventory');
     const lastSync = await getLastSyncTimestamp('inventory');
     
     // For production, only sync items modified after last sync
-    let items;
+    let products;
     if (!forceFullSync && IS_PRODUCTION && isInitialDone && lastSync) {
-      console.log(`📅 Fetching items modified after ${lastSync.toISOString()}`);
-      items = await fetchItems({ modifiedAfter: lastSync });
+      console.log(`📅 Fetching products modified after ${lastSync.toISOString()}`);
+      // Fetch from CRM with modifiedAfter parameter
+      products = await fetchProductsFromCRM({ modifiedAfter: lastSync });
     } else {
-      console.log('📦 Performing full inventory sync...');
-      items = await fetchItems();
+      console.log('📦 Performing full product sync from CRM...');
+      // Fetch all products from CRM
+      products = await fetchProductsFromCRM();
     }
 
-    if (items.length === 0) {
-      console.log('ℹ️ No inventory items to sync.');
+    if (products.length === 0) {
+      console.log('ℹ️ No products to sync.');
       return { success: true, stats: { added: 0, updated: 0, unchanged: 0 } };
     }
 
-    console.log(`📊 Processing ${items.length} items...`);
+    console.log(`📊 Processing ${products.length} products from CRM...`);
 
     // Process in smaller batches to avoid memory issues
     let totalAdded = 0, totalUpdated = 0, totalUnchanged = 0;
 
-    for (let i = 0; i < items.length; i += BATCH_SIZE) {
-      const batchItems = items.slice(i, i + BATCH_SIZE);
-      const result = await processBatch(batchItems);
+    for (let i = 0; i < products.length; i += BATCH_SIZE) {
+      const batchProducts = products.slice(i, i + BATCH_SIZE);
+      const result = await processProductBatch(batchProducts);
       
       totalAdded += result.added;
       totalUpdated += result.updated;
       totalUnchanged += result.unchanged;
       
-      console.log(`📦 Processed batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(items.length/BATCH_SIZE)}`);
+      console.log(`📦 Processed batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(products.length/BATCH_SIZE)}`);
       
       // Add delay between batches in production to avoid overwhelming the system
-      if (IS_PRODUCTION && i + BATCH_SIZE < items.length) {
+      if (IS_PRODUCTION && i + BATCH_SIZE < products.length) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
@@ -174,18 +314,19 @@ export async function syncInventory(forceFullSync = false) {
     // Update sync metadata
     await db.collection('sync_metadata').doc('inventory').set({
       lastSync: admin.firestore.FieldValue.serverTimestamp(),
-      itemsProcessed: items.length,
+      itemsProcessed: products.length,
       added: totalAdded,
       updated: totalUpdated,
       unchanged: totalUnchanged,
-      initialSyncCompleted: true
+      initialSyncCompleted: true,
+      dataSource: 'CRM' // Track that we're now using CRM
     }, { merge: true });
 
-    console.log(`✅ Inventory sync complete: ${totalAdded} added, ${totalUpdated} updated, ${totalUnchanged} unchanged`);
+    console.log(`✅ Product sync complete: ${totalAdded} added, ${totalUpdated} updated, ${totalUnchanged} unchanged`);
     return { success: true, stats: { added: totalAdded, updated: totalUpdated, unchanged: totalUnchanged } };
 
   } catch (error) {
-    console.error('❌ Inventory sync failed:', error);
+    console.error('❌ Product sync failed:', error);
     throw error;
   }
 }
@@ -454,8 +595,8 @@ export async function performInitialSync() {
   console.log('🚀 Starting initial sync for production...');
   
   try {
-    // First sync inventory
-    console.log('📦 Phase 1: Syncing inventory...');
+    // First sync inventory (now from CRM)
+    console.log('📦 Phase 1: Syncing products from CRM...');
     const inventoryResult = await syncInventory(true);
     
     // Then sync customers

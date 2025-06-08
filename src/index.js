@@ -1,4 +1,4 @@
-// server/src/index.js - Complete setup with optimizations
+// server/src/index.js - Complete setup with CRM-first optimizations
 import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
@@ -88,11 +88,11 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Splitfin Zoho Integration API',
     status: 'running',
-    version: '2.2.0',
+    version: '2.3.0', // Updated version
     environment: IS_PRODUCTION ? 'production' : 'development',
     features: [
       'OAuth', 
-      'Inventory Sync', 
+      'CRM-first Product Sync', // Updated
       'Sales Orders', 
       'Webhooks', 
       'Firebase Order Listener',
@@ -101,6 +101,7 @@ app.get('/', (req, res) => {
       'Reports & Analytics',
       'Incremental Sync'
     ],
+    dataStrategy: 'CRM-first with Inventory fallback', // NEW
     config: {
       autoSync: ENABLE_AUTO_SYNC,
       syncInterval: `${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`
@@ -131,9 +132,10 @@ app.get('/health', async (req, res) => {
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     service: 'Splitfin Zoho Integration API',
-    version: '2.2.0',
+    version: '2.3.0', // Updated version
     environment: IS_PRODUCTION ? 'production' : 'development',
-    features: ['OAuth', 'Inventory Sync', 'Sales Orders', 'Webhooks', 'Firebase Listeners', 'Sync Services'],
+    features: ['OAuth', 'CRM-first Product Sync', 'Sales Orders', 'Webhooks', 'Firebase Listeners', 'Sync Services'], // Updated
+    dataStrategy: 'CRM-first with Inventory fallback', // NEW
     services: {
       firebaseOrderListener: orderListenerStatus,
       firestoreSyncService: syncServiceStatus,
@@ -155,14 +157,15 @@ app.post('/api/initial-sync', async (req, res) => {
       });
     }
     
-    console.log('🚀 Starting initial sync...');
+    console.log('🚀 Starting initial CRM-first sync...'); // Updated message
     
     const result = await performInitialSync();
     
     res.json({
       success: true,
       result,
-      message: 'Initial sync completed. You can now enable auto-sync.',
+      message: 'Initial CRM-first sync completed. You can now enable auto-sync.', // Updated message
+      dataStrategy: 'Products synced from CRM, customers from CRM with Inventory mapping', // NEW
       timestamp: new Date().toISOString()
     });
     
@@ -188,6 +191,7 @@ app.get('/api/listener/status', (req, res) => {
     },
     autoSyncEnabled: ENABLE_AUTO_SYNC,
     environment: IS_PRODUCTION ? 'production' : 'development',
+    dataStrategy: 'CRM-first with Inventory fallback', // NEW
     timestamp: new Date().toISOString()
   });
 });
@@ -200,7 +204,7 @@ app.post('/api/listener/start', async (req, res) => {
       if (!syncStatus?.inventory?.initialSyncCompleted || !syncStatus?.customers?.initialSyncCompleted) {
         return res.status(400).json({
           success: false,
-          error: 'Initial sync must be completed before starting listeners. Run POST /api/initial-sync first.'
+          error: 'Initial CRM-first sync must be completed before starting listeners. Run POST /api/initial-sync first.' // Updated message
         });
       }
     }
@@ -355,7 +359,7 @@ async function getAccessToken() {
 
 // ── API endpoints ───────────────────────────────────────────────────
 
-// Items endpoint with sync status metadata
+// Items endpoint with sync status metadata (enhanced with CRM info)
 app.get('/api/items', async (req, res) => {
   try {
     const includeMetadata = req.query.metadata === 'true';
@@ -363,11 +367,15 @@ app.get('/api/items', async (req, res) => {
     const snap = await db.collection('products').get();
     const products = snap.docs.map(d => d.data());
     
-    let response = { items: products };
+    let response = { 
+      items: products,
+      dataStrategy: 'CRM-first with Inventory fallback' // NEW
+    };
     
     if (includeMetadata) {
       const syncStatus = await getSyncStatus();
       response.syncMetadata = syncStatus;
+      response.syncMetadata.dataSource = 'CRM'; // NEW
     }
     
     res.json(response);
@@ -404,6 +412,7 @@ app.post('/api/sync-batch', async (req, res) => {
       success: true,
       changes: filteredChanges,
       syncTriggered: shouldSync,
+      dataStrategy: 'CRM-first with Inventory fallback', // NEW
       timestamp: Date.now()
     });
     
@@ -453,7 +462,7 @@ app.use((err, req, res, next) => {
 
 // ── Start server ────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
-  console.log(`🚀 Splitfin Zoho Integration API v2.0.0 running on port ${PORT}`);
+  console.log(`🚀 Splitfin Zoho Integration API v2.3.0 running on port ${PORT}`); // Updated version
   console.log(`📍 Root endpoint: http://localhost:${PORT}/`);
   console.log(`📍 Webhook endpoint: http://localhost:${PORT}/api/create-order`);
   console.log(`🔍 Health check: http://localhost:${PORT}/health`);
@@ -463,6 +472,7 @@ const server = app.listen(PORT, () => {
   console.log(`📦 Items endpoint: http://localhost:${PORT}/api/items`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🎯 Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
+  console.log(`📊 Data Strategy: CRM-first with Inventory fallback`); // NEW
   
   // Start both Firebase services
   console.log('🎧 Initializing Firebase services...');
