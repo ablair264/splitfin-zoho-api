@@ -51,6 +51,15 @@ function validateOrderData(req, res, next) {
     next();
 }
 
+// Test endpoint - moved to top to avoid conflicts
+router.get('/test', (req, res) => {
+    res.status(200).json({
+        success: true,
+        message: 'Webhook endpoint is working',
+        timestamp: new Date().toISOString()
+    });
+});
+
 // Main webhook endpoint to create sales order
 router.post('/create-order', validateOrderData, async (req, res) => {
     try {
@@ -112,10 +121,18 @@ router.post('/create-order', validateOrderData, async (req, res) => {
     }
 });
 
-// Endpoint to get order status (optional)
-router.get('/order-status/:orderId', async (req, res) => {
+// Endpoint to get order status - simplified route parameter
+router.get('/order-status/:id', async (req, res) => {
     try {
-        const { orderId } = req.params;
+        const orderId = req.params.id;
+        
+        // Validate orderId
+        if (!orderId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Order ID is required'
+            });
+        }
         
         // You can implement this using your Zoho API if needed
         // For now, just return a placeholder
@@ -136,15 +153,6 @@ router.get('/order-status/:orderId', async (req, res) => {
             error: error.message
         });
     }
-});
-
-// Test endpoint
-router.get('/test', (req, res) => {
-    res.status(200).json({
-        success: true,
-        message: 'Webhook endpoint is working',
-        timestamp: new Date().toISOString()
-    });
 });
 
 export default router;
