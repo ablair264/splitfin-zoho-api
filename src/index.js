@@ -15,7 +15,7 @@ import {
   getSyncStatus,
   performInitialSync
 } from './syncInventory.js';
-import { getInventoryContactIdByEmail, createSalesOrder } from './api/zoho.js';
+import { createSalesOrder } from './api/zoho.js';
 import webhookRoutes from './routes/webhooks.js';
 import syncRoutes from './routes/sync.js';
 import firebaseOrderListener from './firebaseOrderListener.js';
