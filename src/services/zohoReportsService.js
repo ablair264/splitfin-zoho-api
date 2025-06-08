@@ -294,67 +294,58 @@ class ZohoReportsService {
   /**
    * Get agent invoices (filtered by agent's customers)
    */
-async getAgentInvoices(agentId, dateRange, customDateRange) {
-  if (!agentId) {
-    throw new Error('Agent ID is required to fetch agent invoices');
+async getAgentInvoices(zohospID, dateRange, customDateRange) {
+
+  if (!zohospID) {
+    throw new Error('zohospID is required to fetch agent invoices');
   }
 
   try {
-    // 👇 Guarded — only query if agentId is valid
-    const customersSnapshot = await this.db.collection('customers')
-      .where('Agent.id', '==', agentId)
-      .get();
-      
-      const agentCustomerIds = customersSnapshot.docs.map(doc => 
-        doc.data().zohoInventoryId || doc.id
-      );
+    const allInvoices = await this.getInvoices(dateRange, customDateRange);
 
-      const allInvoices = await this.getInvoices(dateRange, customDateRange);
-      
-      // Filter invoices for agent's customers
-      const agentInvoices = allInvoices.all.filter(inv => 
-        agentCustomerIds.includes(inv.customer_id)
-      );
+    // ✅ Filter where salesperson_id matches zohospID
+    const agentInvoices = allInvoices.all.filter(inv =>
+      inv.salesperson_id === zohospID
+    );
 
-      const outstanding = agentInvoices.filter(inv => 
-        inv.status === 'sent' || inv.status === 'overdue' || parseFloat(inv.balance || 0) > 0
-      );
-      
-      const paid = agentInvoices.filter(inv => 
-        inv.status === 'paid' || parseFloat(inv.balance || 0) === 0
-      );
+    const outstanding = agentInvoices.filter(inv =>
+      inv.status === 'sent' || inv.status === 'overdue' || parseFloat(inv.balance || 0) > 0
+    );
 
-      return {
-        all: agentInvoices,
-        outstanding: outstanding.map(inv => ({
-          ...inv,
-          daysOverdue: this.calculateDaysOverdue(inv.due_date)
-        })),
-        paid: paid.sort((a, b) => new Date(b.date) - new Date(a.date)),
-        summary: {
-          totalOutstanding: outstanding.reduce((sum, inv) => sum + parseFloat(inv.balance || 0), 0),
-          totalPaid: paid.reduce((sum, inv) => sum + parseFloat(inv.total || 0), 0),
-          count: {
-            outstanding: outstanding.length,
-            paid: paid.length
-          }
+    const paid = agentInvoices.filter(inv =>
+      inv.status === 'paid' || parseFloat(inv.balance || 0) === 0
+    );
+
+    return {
+      all: agentInvoices,
+      outstanding: outstanding.map(inv => ({
+        ...inv,
+        daysOverdue: this.calculateDaysOverdue(inv.due_date)
+      })),
+      paid: paid.sort((a, b) => new Date(b.date) - new Date(a.date)),
+      summary: {
+        totalOutstanding: outstanding.reduce((sum, inv) => sum + parseFloat(inv.balance || 0), 0),
+        totalPaid: paid.reduce((sum, inv) => sum + parseFloat(inv.total || 0), 0),
+        count: {
+          outstanding: outstanding.length,
+          paid: paid.length
         }
-      };
-
-    } catch (error) {
-      console.error('❌ Error getting agent invoices:', error);
-      return {
-        all: [],
-        outstanding: [],
-        paid: [],
-        summary: {
-          totalOutstanding: 0,
-          totalPaid: 0,
-          count: { outstanding: 0, paid: 0 }
-        }
-      };
-    }
+      }
+    };
+  } catch (error) {
+    console.error('❌ Error getting agent invoices:', error);
+    return {
+      all: [],
+      outstanding: [],
+      paid: [],
+      summary: {
+        totalOutstanding: 0,
+        totalPaid: 0,
+        count: { outstanding: 0, paid: 0 }
+      }
+    };
   }
+}
 
   /**
    * Get customer statistics - matches your Swift model
