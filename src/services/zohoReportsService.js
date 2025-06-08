@@ -12,6 +12,34 @@ class ZohoReportsService {
   }
 
   /**
+   * Cache helper methods
+   */
+  isCacheValid(key) {
+    const cached = this.cache.get(key);
+    if (!cached) return false;
+    return Date.now() - cached.timestamp < this.cacheTimeout;
+  }
+
+  setCache(key, data) {
+    this.cache.set(key, {
+      data,
+      timestamp: Date.now()
+    });
+  }
+
+  clearCache(pattern = null) {
+    if (pattern) {
+      for (const key of this.cache.keys()) {
+        if (key.includes(pattern)) {
+          this.cache.delete(key);
+        }
+      }
+    } else {
+      this.cache.clear();
+    }
+  }
+
+  /**
    * Get comprehensive dashboard data based on user role
    */
   async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
@@ -556,7 +584,455 @@ class ZohoReportsService {
     }
   }
 
-  // ... (rest of the helper methods remain the same)
+  // Helper methods that are referenced but missing
+  async getSalesOrders(dateRange, customDateRange = null, agentId = null) {
+    try {
+      const token = await getAccessToken();
+      const { startDate, endDate } = this.getDateFilter(dateRange, customDateRange);
+      
+      let url = `https://www.zohoapis.eu/inventory/v1/salesorders?organization_id=${this.orgId}&per_page=200`;
+      url += `&date_start=${startDate.toISOString().split('T')[0]}`;
+      url += `&date_end=${endDate.toISOString().split('T')[0]}`;
+
+      const response = await axios.get(url, {
+        headers: { 'Authorization': `Zoho-oauthtoken ${token}` }
+      });
+
+      let orders = response.data.salesorders || [];
+
+      // Filter by agent if specified
+      if (agentId) {
+        orders = orders.filter(order => 
+          order.cf_agent === agentId || order.salesperson_id === agentId
+        );
+      }
+
+      return orders;
+    } catch (error) {
+      console.error('❌ Error getting sales orders:', error);
+      return [];
+    }
+  }
+
+  async getPurchaseOrders(dateRange, customDateRange = null) {
+    try {
+      const token = await getAccessToken();
+      const { startDate, endDate } = this.getDateFilter(dateRange, customDateRange);
+      
+      let url = `https://www.zohoapis.eu/inventory/v1/purchaseorders?organization_id=${this.orgId}&per_page=200`;
+      url += `&date_start=${startDate.toISOString().split('T')[0]}`;
+      url += `&date_end=${endDate.toISOString().split('T')[0]}`;
+
+      const response = await axios.get(url, {
+        headers: { 'Authorization': `Zoho-oauthtoken ${token}` }
+      });
+
+      return response.data.purchaseorders || [];
+    } catch (error) {
+      console.error('❌ Error getting purchase orders:', error);
+      return [];
+    }
+  }
+
+  async getInvoices(dateRange, customDateRange = null) {
+    try {
+      const token = await getAccessToken();
+      const { startDate, endDate } = this.getDateFilter(dateRange, customDateRange);
+      
+      let url = `https://www.zohoapis.eu/inventory/v1/invoices?organization_id=${this.orgId}&per_page=200`;
+      url += `&date_start=${startDate.toISOString().split('T')[0]}`;
+      url += `&date_end=${endDate.toISOString().split('T')[0]}`;
+
+      const response = await axios.get(url, {
+        headers: { 'Authorization': `Zoho-oauthtoken ${token}` }
+      });
+
+      const invoices = response.data.invoices || [];
+      
+      const outstanding = invoices.filter(inv => 
+        inv.status === 'sent' || inv.status === 'overdue' || parseFloat(inv.balance || 0) > 0
+      );
+      
+      const paid = invoices.filter(inv => 
+        inv.status === 'paid' || parseFloat(inv.balance || 0) === 0
+      );
+
+      return {
+        all: invoices,
+        outstanding: outstanding.map(inv => ({
+          ...inv,
+          daysOverdue: this.calculateDaysOverdue(inv.due_date)
+        })),
+        paid: paid.sort((a, b) => new Date(b.date) - new Date(a.date)),
+        summary: {
+          totalOutstanding: outstanding.reduce((sum, inv) => sum + parseFloat(inv.balance || 0), 0),
+          totalPaid: paid.reduce((sum, inv) => sum + parseFloat(inv.total || 0), 0),
+          count: {
+            outstanding: outstanding.length,
+            paid: paid.length
+          }
+        }
+      };
+    } catch (error) {
+      console.error('❌ Error getting invoices:', error);
+      return {
+        all: [],
+        outstanding: [],
+        paid: [],
+        summary: {
+          totalOutstanding: 0,
+          totalPaid: 0,
+          count: { outstanding: 0, paid: 0 }
+        }
+      };
+    }
+  }
+
+  async getTopSellingItems(dateRange, customDateRange = null, agentId = null) {
+    try {
+      const salesOrders = await this.getSalesOrders(dateRange, customDateRange, agentId);
+      const itemStats = new Map();
+
+      // Process line items from all sales orders
+      salesOrders.forEach(order => {
+        if (order.line_items) {
+          order.line_items.forEach(item => {
+            const existing = itemStats.get(item.item_id) || {
+              itemId: item.item_id,
+              name: item.name,
+              sku: item.sku,
+              quantity: 0,
+              revenue: 0
+            };
+
+            existing.quantity += parseFloat(item.quantity || 0);
+            existing.revenue += parseFloat(item.item_total || 0);
+
+            itemStats.set(item.item_id, existing);
+          });
+        }
+      });
+
+      return Array.from(itemStats.values())
+        .sort((a, b) => b.revenue - a.revenue);
+    } catch (error) {
+      console.error('❌ Error getting top selling items:', error);
+      return [];
+    }
+  }
+
+  async getRevenueAnalysis(dateRange, customDateRange) {
+    try {
+      const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
+      const purchaseOrders = await this.getPurchaseOrders(dateRange, customDateRange);
+
+      const grossRevenue = salesOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
+      const costs = purchaseOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
+      const netRevenue = grossRevenue - costs;
+
+      return {
+        gross: grossRevenue,
+        net: netRevenue,
+        costs: costs,
+        margin: grossRevenue > 0 ? (netRevenue / grossRevenue) * 100 : 0,
+        period: dateRange
+      };
+    } catch (error) {
+      console.error('❌ Error getting revenue analysis:', error);
+      return {
+        gross: 0,
+        net: 0,
+        costs: 0,
+        margin: 0,
+        period: dateRange
+      };
+    }
+  }
+
+  async getBrandPerformance(dateRange, customDateRange) {
+    try {
+      const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
+      const brandStats = new Map();
+
+      salesOrders.forEach(order => {
+        if (order.line_items) {
+          order.line_items.forEach(item => {
+            const brand = item.cf_brand || item.brand || 'Unknown';
+            const existing = brandStats.get(brand) || {
+              brand,
+              revenue: 0,
+              quantity: 0,
+              orders: 0
+            };
+
+            existing.revenue += parseFloat(item.item_total || 0);
+            existing.quantity += parseFloat(item.quantity || 0);
+            existing.orders += 1;
+
+            brandStats.set(brand, existing);
+          });
+        }
+      });
+
+      return Array.from(brandStats.values())
+        .sort((a, b) => b.revenue - a.revenue);
+    } catch (error) {
+      console.error('❌ Error getting brand performance:', error);
+      return [];
+    }
+  }
+
+  async getRegionalPerformance(dateRange, customDateRange) {
+    try {
+      const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
+      const regionStats = new Map();
+
+      salesOrders.forEach(order => {
+        const region = order.shipping_address?.state || order.billing_address?.state || 'Unknown';
+        const existing = regionStats.get(region) || {
+          region,
+          revenue: 0,
+          orders: 0,
+          customers: new Set()
+        };
+
+        existing.revenue += parseFloat(order.total || 0);
+        existing.orders += 1;
+        existing.customers.add(order.customer_id);
+
+        regionStats.set(region, existing);
+      });
+
+      return Array.from(regionStats.values())
+        .map(stat => ({
+          ...stat,
+          customers: stat.customers.size
+        }))
+        .sort((a, b) => b.revenue - a.revenue);
+    } catch (error) {
+      console.error('❌ Error getting regional performance:', error);
+      return [];
+    }
+  }
+
+// Utility methods (continuation from where it cut off)
+  getDateFilter(dateRange, customDateRange = null) {
+    const endDate = new Date();
+    let startDate = new Date();
+
+    if (dateRange === 'custom' && customDateRange) {
+      return {
+        startDate: new Date(customDateRange.start),
+        endDate: new Date(customDateRange.end)
+      };
+    }
+
+    switch (dateRange) {
+      case 'today':
+        startDate = new Date(endDate);
+        break;
+      case '7_days':
+        startDate.setDate(endDate.getDate() - 7);
+        break;
+      case '30_days':
+        startDate.setDate(endDate.getDate() - 30);
+        break;
+      case 'quarter':
+        startDate.setMonth(endDate.getMonth() - 3);
+        break;
+      case 'year':
+        startDate.setFullYear(endDate.getFullYear() - 1);
+        break;
+      case 'this_month':
+        startDate = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+        break;
+      case 'last_month':
+        startDate = new Date(endDate.getFullYear(), endDate.getMonth() - 1, 1);
+        endDate = new Date(endDate.getFullYear(), endDate.getMonth(), 0); // Last day of previous month
+        break;
+      case 'this_year':
+        startDate = new Date(endDate.getFullYear(), 0, 1);
+        break;
+      case 'last_year':
+        startDate = new Date(endDate.getFullYear() - 1, 0, 1);
+        endDate = new Date(endDate.getFullYear() - 1, 11, 31);
+        break;
+      default:
+        startDate.setDate(endDate.getDate() - 30);
+    }
+
+    return { startDate, endDate };
+  }
+
+  groupOrdersByPeriod(orders, period) {
+    const groups = new Map();
+
+    orders.forEach(order => {
+      const orderDate = new Date(order.date);
+      let key;
+
+      switch (period) {
+        case 'daily':
+          key = orderDate.toISOString().split('T')[0];
+          break;
+        case 'weekly':
+          const weekStart = new Date(orderDate);
+          weekStart.setDate(orderDate.getDate() - orderDate.getDay());
+          key = weekStart.toISOString().split('T')[0];
+          break;
+        case 'monthly':
+          key = `${orderDate.getFullYear()}-${String(orderDate.getMonth() + 1).padStart(2, '0')}`;
+          break;
+        case 'quarterly':
+          const quarter = Math.floor(orderDate.getMonth() / 3) + 1;
+          key = `${orderDate.getFullYear()}-Q${quarter}`;
+          break;
+        case 'yearly':
+          key = orderDate.getFullYear().toString();
+          break;
+        default:
+          key = `${orderDate.getFullYear()}-${String(orderDate.getMonth() + 1).padStart(2, '0')}`;
+      }
+
+      const existing = groups.get(key) || {
+        period: key,
+        orders: 0,
+        revenue: 0,
+        date: orderDate
+      };
+
+      existing.orders += 1;
+      existing.revenue += parseFloat(order.total || 0);
+
+      groups.set(key, existing);
+    });
+
+    return Array.from(groups.values())
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+  }
+
+  calculateDaysOverdue(dueDate) {
+    if (!dueDate) return 0;
+    
+    const due = new Date(dueDate);
+    const today = new Date();
+    const diffTime = today - due;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    return diffDays > 0 ? diffDays : 0;
+  }
+
+  // Additional utility methods that might be useful
+
+  /**
+   * Format currency values consistently
+   */
+  formatCurrency(amount, currency = 'GBP') {
+    return new Intl.NumberFormat('en-GB', {
+      style: 'currency',
+      currency: currency
+    }).format(amount || 0);
+  }
+
+  /**
+   * Calculate percentage change between two values
+   */
+  calculatePercentageChange(current, previous) {
+    if (!previous || previous === 0) return 0;
+    return ((current - previous) / previous) * 100;
+  }
+
+  /**
+   * Get business days between two dates
+   */
+  getBusinessDaysBetween(startDate, endDate) {
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    let businessDays = 0;
+    
+    while (start <= end) {
+      const dayOfWeek = start.getDay();
+      if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Not Sunday (0) or Saturday (6)
+        businessDays++;
+      }
+      start.setDate(start.getDate() + 1);
+    }
+    
+    return businessDays;
+  }
+
+  /**
+   * Clean up expired cache entries
+   */
+  cleanupCache() {
+    const now = Date.now();
+    for (const [key, value] of this.cache.entries()) {
+      if (now - value.timestamp > this.cacheTimeout) {
+        this.cache.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Get cache statistics
+   */
+  getCacheStats() {
+    const stats = {
+      totalEntries: this.cache.size,
+      validEntries: 0,
+      expiredEntries: 0,
+      memoryUsage: 0
+    };
+
+    const now = Date.now();
+    for (const [key, value] of this.cache.entries()) {
+      if (now - value.timestamp < this.cacheTimeout) {
+        stats.validEntries++;
+      } else {
+        stats.expiredEntries++;
+      }
+      
+      // Rough estimate of memory usage
+      stats.memoryUsage += JSON.stringify(value).length;
+    }
+
+    return stats;
+  }
+
+  /**
+   * Validate date range parameters
+   */
+  validateDateRange(dateRange, customDateRange = null) {
+    const validRanges = [
+      'today', '7_days', '30_days', 'quarter', 'year',
+      'this_month', 'last_month', 'this_year', 'last_year', 'custom'
+    ];
+
+    if (!validRanges.includes(dateRange)) {
+      throw new Error(`Invalid date range: ${dateRange}`);
+    }
+
+    if (dateRange === 'custom') {
+      if (!customDateRange || !customDateRange.start || !customDateRange.end) {
+        throw new Error('Custom date range requires start and end dates');
+      }
+
+      const start = new Date(customDateRange.start);
+      const end = new Date(customDateRange.end);
+
+      if (start > end) {
+        throw new Error('Start date must be before end date');
+      }
+
+      // Limit custom range to 2 years max
+      const maxRange = 2 * 365 * 24 * 60 * 60 * 1000; // 2 years in milliseconds
+      if (end - start > maxRange) {
+        throw new Error('Custom date range cannot exceed 2 years');
+      }
+    }
+
+    return true;
+  }
 }
 
-export default new ZohoReportsService();
+export default ZohoReportsService;
