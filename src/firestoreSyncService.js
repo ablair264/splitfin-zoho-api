@@ -266,6 +266,19 @@ class FirestoreSyncService {
   }
 
   /**
+   * Helper function to safely extract field values, filtering out undefined values
+   */
+  safeExtractFields(data, fields) {
+    const result = {};
+    fields.forEach(field => {
+      if (data[field] !== undefined && data[field] !== null) {
+        result[field] = data[field];
+      }
+    });
+    return result;
+  }
+
+  /**
    * Optimized broadcast changes with batching and notifications
    */
   async broadcastChanges(collection, changes) {
@@ -304,29 +317,24 @@ class FirestoreSyncService {
           processed: false
         };
         
-        // Only include essential fields for each collection type
+        // Only include essential fields for each collection type, filtering out undefined values
         if (collection === 'products' && change.data) {
-          syncData.essentialData = {
-            name: change.data.name,
-            sku: change.data.sku,
-            rate: change.data.rate,
-            stock_on_hand: change.data.stock_on_hand,
-            status: change.data.status
-          };
+          syncData.essentialData = this.safeExtractFields(change.data, [
+            'name', 'sku', 'rate', 'stock_on_hand', 'status'
+          ]);
         } else if (collection === 'customers' && change.data) {
-          syncData.essentialData = {
-            Account_Name: change.data.Account_Name,
-            Primary_Email: change.data.Primary_Email,
-            Agent: change.data.Agent,
-            Phone: change.data.Phone
-          };
+          syncData.essentialData = this.safeExtractFields(change.data, [
+            'Account_Name', 'Primary_Email', 'Phone'
+          ]);
+          
+          // Handle Agent field separately as it might be an object
+          if (change.data.Agent !== undefined && change.data.Agent !== null) {
+            syncData.essentialData.Agent = change.data.Agent;
+          }
         } else if (collection === 'users' && change.data) {
-          syncData.essentialData = {
-            name: change.data.name,
-            email: change.data.email,
-            role: change.data.role,
-            zohoCRMId: change.data.zohoCRMId
-          };
+          syncData.essentialData = this.safeExtractFields(change.data, [
+            'name', 'email', 'role', 'zohoCRMId'
+          ]);
         }
         
         batch.set(syncDoc, syncData);
