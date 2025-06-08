@@ -10,6 +10,7 @@ import admin from 'firebase-admin';
 import { syncInventory, syncCustomersFromCRM, syncInventoryCustomerIds } from './syncInventory.js';
 import { getInventoryContactIdByEmail, createSalesOrder } from './api/zoho.js';
 import webhookRoutes from './routes/webhooks.js';
+import firebaseOrderListener from './services/firebaseOrderListener.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
@@ -72,13 +73,77 @@ app.use('/api', webhookRoutes);
 
 // ── Health check endpoint ───────────────────────────────────────────
 app.get('/health', (req, res) => {
+  const listenerStatus = firebaseOrderListener.getStatus();
+  
   res.status(200).json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     service: 'Splitfin Zoho Integration API',
     version: '1.0.0',
-    features: ['OAuth', 'Inventory Sync', 'Sales Orders', 'Webhooks']
+    features: ['OAuth', 'Inventory Sync', 'Sales Orders', 'Webhooks', 'Firebase Listener'],
+    firebaseListener: listenerStatus
   });
+});
+
+// ── Firebase Order Listener Management ──────────────────────────────
+app.get('/api/listener/status', (req, res) => {
+  const status = firebaseOrderListener.getStatus();
+  res.json({
+    success: true,
+    listener: status,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.post('/api/listener/start', (req, res) => {
+  try {
+    firebaseOrderListener.startListening();
+    res.json({
+      success: true,
+      message: 'Firebase order listener started',
+      status: firebaseOrderListener.getStatus()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/listener/stop', (req, res) => {
+  try {
+    firebaseOrderListener.stopListening();
+    res.json({
+      success: true,
+      message: 'Firebase order listener stopped',
+      status: firebaseOrderListener.getStatus()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Manual order processing endpoint
+app.post('/api/process-order/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const result = await firebaseOrderListener.processOrderById(orderId);
+    
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(400).json(result);
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // ── OAuth endpoints ──────────────────────────────────────────────────
@@ -251,6 +316,7 @@ app.post('/api/sync-inventory-contact', async (req, res) => {
   }
 });
 
+// Legacy webhook endpoint (kept for backward compatibility)
 app.post('/api/create-order', async (req, res) => {
   const { firebaseUID, customer_id, line_items } = req.body;
 
@@ -307,12 +373,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-try {
-  app.use('/api', webhookRoutes);
-} catch (e) {
-  console.error('❌ Route mount failed:', e.message);
-}
-
 // ── Start server ────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`🚀 Splitfin Zoho Integration API running on port ${PORT}`);
@@ -323,11 +383,30 @@ const server = app.listen(PORT, () => {
   console.log(`📦 Items endpoint: http://localhost:${PORT}/api/items`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🎯 Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
+  
+  // Start Firebase order listener
+  console.log('🎧 Initializing Firebase order listener...');
+  firebaseOrderListener.startListening();
 });
 
 // ── Graceful shutdown ───────────────────────────────────────────────
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM received, shutting down gracefully...');
+  
+  // Stop Firebase listener
+  firebaseOrderListener.stopListening();
+  
+  server.close(() => {
+    console.log('✅ Process terminated');
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('🛑 SIGINT received, shutting down gracefully...');
+  
+  // Stop Firebase listener
+  firebaseOrderListener.stopListening();
+  
   server.close(() => {
     console.log('✅ Process terminated');
   });
