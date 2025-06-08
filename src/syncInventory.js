@@ -1,7 +1,7 @@
 // server/src/syncInventory.js
 import admin from 'firebase-admin';
 import crypto from 'crypto';
-import { fetchItems, fetchProductsFromCRM, fetchCustomersFromCRM, getInventoryContactIdByEmail } from './api/zoho.js';
+import { fetchItems, fetchProductsFromCRM, fetchCustomersFromCRM } from './api/zoho.js';
 import dotenv from 'dotenv';
  
 // Load environment variables
