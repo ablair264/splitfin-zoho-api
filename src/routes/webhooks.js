@@ -51,17 +51,47 @@ function validateOrderData(req, res, next) {
     next();
 }
 
-// Test endpoint - moved to top to avoid conflicts
+// Test endpoint - moved to top and enhanced for debugging
 router.get('/test', (req, res) => {
     res.status(200).json({
         success: true,
         message: 'Webhook endpoint is working',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        server: {
+            uptime: process.uptime(),
+            memory: process.memoryUsage(),
+            nodeVersion: process.version
+        }
     });
 });
 
-// Main webhook endpoint to create sales order
+// Health check specifically for webhooks
+router.get('/health', (req, res) => {
+    res.status(200).json({
+        success: true,
+        message: 'Webhook service is healthy',
+        timestamp: new Date().toISOString(),
+        endpoints: {
+            'POST /api/create-order': 'Create sales order',
+            'GET /api/order-status/:id': 'Get order status',
+            'GET /api/test': 'Test endpoint'
+        }
+    });
+});
+
+// Main webhook endpoint with timeout optimization
 router.post('/create-order', validateOrderData, async (req, res) => {
+    // Set a shorter timeout to prevent Render timeout
+    const timeout = setTimeout(() => {
+        if (!res.headersSent) {
+            res.status(408).json({
+                success: false,
+                message: 'Request timeout - order processing is taking too long',
+                error: 'TIMEOUT'
+            });
+        }
+    }, 12000); // 12 seconds to stay under Render's 15-second limit
+
     try {
         console.log('📥 Received order creation request:', JSON.stringify(req.body, null, 2));
         
@@ -84,6 +114,14 @@ router.post('/create-order', validateOrderData, async (req, res) => {
         // Create sales order using your existing function
         const result = await createSalesOrder(orderData);
         
+        // Clear timeout since we got a response
+        clearTimeout(timeout);
+        
+        if (res.headersSent) {
+            console.log('⚠️ Response already sent due to timeout');
+            return;
+        }
+        
         console.log('✅ Sales order created successfully:', result.salesorder?.salesorder_number);
         
         res.status(200).json({
@@ -99,6 +137,13 @@ router.post('/create-order', validateOrderData, async (req, res) => {
         });
         
     } catch (error) {
+        clearTimeout(timeout);
+        
+        if (res.headersSent) {
+            console.log('⚠️ Response already sent due to timeout');
+            return;
+        }
+        
         console.error('❌ Webhook error:', error.message);
         console.error('Full error:', error);
         
@@ -121,7 +166,7 @@ router.post('/create-order', validateOrderData, async (req, res) => {
     }
 });
 
-// Endpoint to get order status - simplified route parameter
+// Simplified endpoint to get order status
 router.get('/order-status/:id', async (req, res) => {
     try {
         const orderId = req.params.id;
