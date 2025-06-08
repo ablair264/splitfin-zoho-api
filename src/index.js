@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import { syncInventory, syncCustomersFromCRM, syncInventoryCustomerIds } from './syncInventory.js';
 import { getInventoryContactIdByEmail, createSalesOrder } from './api/zoho.js';
+import webhookRoutes from './routes/webhooks.js';
 
 // ── ESM __dirname hack ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
@@ -37,11 +38,14 @@ const {
   PORT = 3001
 } = process.env;
 
-const ALLOWED_ORIGINS = [
+// Enhanced CORS configuration
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
+  'http://localhost:3000',
   'https://splitfin.co.uk',
   'https://splitfin-zoho-api.onrender.com'
 ];
+
 app.use(cors({
   origin: (incomingOrigin, callback) => {
     if (!incomingOrigin || ALLOWED_ORIGINS.includes(incomingOrigin)) {
@@ -49,9 +53,33 @@ app.use(cors({
     } else {
       callback(new Error(`CORS blocked for origin: ${incomingOrigin}`));
     }
-  }
+  },
+  credentials: true
 }));
-app.use(express.json());
+
+// ── Enhanced Middleware ─────────────────────────────────────────────
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+// ── Mount webhook routes ────────────────────────────────────────────
+app.use('/api', webhookRoutes);
+
+// ── Health check endpoint ───────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    service: 'Splitfin Zoho Integration API',
+    version: '1.0.0',
+    features: ['OAuth', 'Inventory Sync', 'Sales Orders', 'Webhooks']
+  });
+});
 
 // ── OAuth endpoints ──────────────────────────────────────────────────
 // 1) Redirect to Zoho consent
@@ -223,7 +251,6 @@ app.post('/api/sync-inventory-contact', async (req, res) => {
   }
 });
 
-
 app.post('/api/create-order', async (req, res) => {
   const { firebaseUID, customer_id, line_items } = req.body;
 
@@ -269,7 +296,43 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
-// ── Start server ────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+// ── 404 handler ─────────────────────────────────────────────────────
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Endpoint ${req.method} ${req.originalUrl} not found`
+  });
 });
+
+// ── Global error handler ────────────────────────────────────────────
+app.use((err, req, res, next) => {
+  console.error('🚨 Unhandled error:', err.stack);
+  
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+// ── Start server ────────────────────────────────────────────────────
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Splitfin Zoho Integration API running on port ${PORT}`);
+  console.log(`📍 Webhook endpoint: http://localhost:${PORT}/api/create-order`);
+  console.log(`🔍 Health check: http://localhost:${PORT}/health`);
+  console.log(`🧪 Test webhook: http://localhost:${PORT}/api/test`);
+  console.log(`🔐 OAuth URL: http://localhost:${PORT}/oauth/url`);
+  console.log(`📦 Items endpoint: http://localhost:${PORT}/api/items`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🎯 Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
+});
+
+// ── Graceful shutdown ───────────────────────────────────────────────
+process.on('SIGTERM', () => {
+  console.log('🛑 SIGTERM received, shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ Process terminated');
+  });
+});
+
+export default app;
