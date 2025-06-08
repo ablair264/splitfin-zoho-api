@@ -166,6 +166,21 @@ export async function fetchCustomersFromCRM() {
   return allAccounts;
 }
 
+export async function getInventoryContactIdByEmail(email) {
+  const token = await getAccessToken();
+  const url = `https://www.zohoapis.eu/inventory/v1/contacts?email=${encodeURIComponent(email)}&organization_id=${ZOHO_ORG_ID}`;
+  try {
+    const res = await axios.get(url, {
+      headers: { Authorization: `Zoho-oauthtoken ${token}` }
+    });
+    const contacts = res.data.contacts;
+    return contacts && contacts[0]?.contact_id || null;
+  } catch (err) {
+    console.error(`❌ Failed to fetch inventory contact for ${email}:`, err.response?.data || err.message);
+    return null;
+  }
+}
+
 export async function createSalesOrder(order) {
   const token = await getAccessToken();
 
