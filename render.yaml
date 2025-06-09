@@ -1,0 +1,88 @@
+# render.yaml - Render Configuration File
+# Place this file in your repository root
+
+services:
+  # Main web service
+  - type: web
+    name: splitfin-zoho-api
+    env: node
+    plan: starter # or whatever plan you're using
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ZOHO_CLIENT_ID
+        fromService: splitfin-zoho-api
+        fromEnvVar: ZOHO_CLIENT_ID
+      - key: ZOHO_CLIENT_SECRET
+        fromService: splitfin-zoho-api
+        fromEnvVar: ZOHO_CLIENT_SECRET
+      - key: ZOHO_REFRESH_TOKEN
+        fromService: splitfin-zoho-api
+        fromEnvVar: ZOHO_REFRESH_TOKEN
+      - key: ZOHO_ORG_ID
+        fromService: splitfin-zoho-api
+        fromEnvVar: ZOHO_ORG_ID
+      - key: CRON_SECRET
+        generateValue: true
+
+  # High frequency CRON jobs (every 15 minutes during business hours)
+  - type: cron
+    name: high-frequency-sync
+    env: node
+    schedule: "0,15,30,45 9-17 * * 1-5"  # Every 15 min, 9 AM-5 PM, Mon-Fri (UTC)
+    buildCommand: npm install
+    startCommand: |
+      curl -X POST \
+      -H "X-Cron-Secret: $CRON_SECRET" \
+      https://splitfin-zoho-api.onrender.com/api/cron/high-frequency
+    envVars:
+      - key: CRON_SECRET
+        fromService: splitfin-zoho-api
+        fromEnvVar: CRON_SECRET
+
+  # Medium frequency CRON jobs (every 2 hours)
+  - type: cron
+    name: medium-frequency-sync
+    env: node
+    schedule: "0 */2 * * *"  # Every 2 hours
+    buildCommand: npm install
+    startCommand: |
+      curl -X POST \
+      -H "X-Cron-Secret: $CRON_SECRET" \
+      https://splitfin-zoho-api.onrender.com/api/cron/medium-frequency
+    envVars:
+      - key: CRON_SECRET
+        fromService: splitfin-zoho-api
+        fromEnvVar: CRON_SECRET
+
+  # Low frequency CRON jobs (daily at 2 AM)
+  - type: cron
+    name: low-frequency-sync
+    env: node
+    schedule: "0 2 * * *"  # Daily at 2 AM UTC
+    buildCommand: npm install
+    startCommand: |
+      curl -X POST \
+      -H "X-Cron-Secret: $CRON_SECRET" \
+      https://splitfin-zoho-api.onrender.com/api/cron/low-frequency
+    envVars:
+      - key: CRON_SECRET
+        fromService: splitfin-zoho-api
+        fromEnvVar: CRON_SECRET
+
+  # Weekly deep sync (Sundays at 1 AM)
+  - type: cron
+    name: weekly-sync
+    env: node
+    schedule: "0 1 * * 0"  # Sunday at 1 AM UTC
+    buildCommand: npm install
+    startCommand: |
+      curl -X POST \
+      -H "X-Cron-Secret: $CRON_SECRET" \
+      https://splitfin-zoho-api.onrender.com/api/cron/low-frequency
+    envVars:
+      - key: CRON_SECRET
+        fromService: splitfin-zoho-api
+        fromEnvVar: CRON_SECRET

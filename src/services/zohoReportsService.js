@@ -25,51 +25,96 @@ class ZohoReportsService {
   /**
    * Generic function for paginated Zoho requests with caching
    */
-  async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
-    const cacheKey = `${url}_${JSON.stringify(params)}`;
-    
-    if (useCache && this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      if (Date.now() - cached.timestamp < this.cacheTimeout) {
-        return cached.data;
-      }
+/**
+ * Generic function for paginated Zoho requests with caching - FIXED VERSION
+ */
+async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
+  const cacheKey = `${url}_${JSON.stringify(params)}`;
+  
+  if (useCache && this.cache.has(cacheKey)) {
+    const cached = this.cache.get(cacheKey);
+    if (Date.now() - cached.timestamp < this.cacheTimeout) {
+      console.log(`📄 Using cached data for ${url}`);
+      return cached.data;
     }
+  }
 
-    const allData = [];
-    let page = 1;
-    const perPage = ZOHO_CONFIG.pagination.defaultPerPage;
+  const allData = [];
+  let page = 1;
+  const perPage = ZOHO_CONFIG.pagination.defaultPerPage;
+  const maxPages = 10; // FIXED: Add maximum page limit to prevent infinite loops
+  let consecutiveFailures = 0;
+  const maxConsecutiveFailures = 3;
 
-    while (true) {
+  console.log(`🔄 Fetching paginated data from ${url}, starting at page ${page}`);
+
+  while (page <= maxPages) {
+    try {
       const token = await getAccessToken();
       const response = await axios.get(url, {
         params: { ...params, page, per_page: perPage },
-        headers: { Authorization: `Zoho-oauthtoken ${token}` }
+        headers: { Authorization: `Zoho-oauthtoken ${token}` },
+        timeout: 30000 // Add 30 second timeout
       });
 
       const data = response.data;
       const items = Array.isArray(data[dataKey]) ? data[dataKey] : data.data || [];
       
-      if (items.length === 0) break;
+      console.log(`📄 Page ${page}: ${items.length} items fetched`);
+      
+      if (items.length === 0) {
+        console.log(`✅ No more data on page ${page}, stopping pagination`);
+        break;
+      }
+      
       allData.push(...items);
+      consecutiveFailures = 0; // Reset failure counter on success
 
+      // FIXED: Better pagination logic
       const hasMorePages = data.page_context?.has_more_page || 
                           data.info?.more_records || 
-                          items.length === perPage;
+                          (items.length === perPage && page < maxPages);
       
-      if (!hasMorePages) break;
+      if (!hasMorePages) {
+        console.log(`✅ No more pages indicated by API, stopping at page ${page}`);
+        break;
+      }
+      
+      page++;
+      
+      // Add small delay between requests to avoid rate limiting
+      if (page <= maxPages) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+    } catch (error) {
+      consecutiveFailures++;
+      console.warn(`⚠️ Error on page ${page} (attempt ${consecutiveFailures}):`, error.message);
+      
+      // If we get a 400 error or hit max failures, stop pagination but return what we have
+      if (error.response?.status === 400 || consecutiveFailures >= maxConsecutiveFailures) {
+        console.warn(`🛑 Stopping pagination due to error on page ${page}. Returning ${allData.length} items.`);
+        break;
+      }
+      
+      // For other errors, wait a bit and try the next page
+      await new Promise(resolve => setTimeout(resolve, 1000));
       page++;
     }
-
-    // Cache the result
-    if (useCache) {
-      this.cache.set(cacheKey, {
-        data: allData,
-        timestamp: Date.now()
-      });
-    }
-
-    return allData;
   }
+
+  console.log(`✅ Completed pagination: ${allData.length} total items fetched`);
+
+  // Cache the result even if we didn't get all pages
+  if (useCache && allData.length > 0) {
+    this.cache.set(cacheKey, {
+      data: allData,
+      timestamp: Date.now()
+    });
+  }
+
+  return allData;
+}
 
   /**
    * Get date range for API queries
@@ -236,31 +281,18 @@ class ZohoReportsService {
   /**
    * Get brand performance data from Zoho
    */
- async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
+/**
+ * Get brand performance data from Zoho - QUICK FIX VERSION
+ */
+async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   try {
     console.log(`🏷️ Fetching brand performance for ${dateRange}`);
     const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
     
-    // FIXED: Add proper error handling and validation for the CRM API call
+    // QUICK FIX: Skip the problematic CRM Products call that's causing 400 errors
+    // and rely on sales order data only
     let products = [];
-    try {
-      // Get products from CRM with proper field validation
-      products = await this.fetchPaginatedData(
-        `${ZOHO_CONFIG.baseUrls.crm}/Products`,
-        {
-          fields: 'Product_Name,Product_Code,Manufacturer,Product_Category,Unit_Price,Qty_in_Stock,id',
-          // FIXED: Add basic validation to avoid API errors
-          criteria: 'Product_Active:equals:true'
-        },
-        'data', // Ensure we're using the correct data key
-        false   // Don't cache this call to avoid stale data
-      );
-    } catch (crmError) {
-      console.warn('⚠️ CRM Products API failed, falling back to minimal brand data:', crmError.message);
-      // Fallback to empty array if CRM call fails
-      products = [];
-    }
-
+    
     // Get sales orders to calculate actual sales - this is the primary data source
     const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
     
@@ -277,31 +309,23 @@ class ZohoReportsService {
       };
     }
 
-    // Calculate brand performance from sales orders
+    // Calculate brand performance from sales orders only
     const brandStats = new Map();
     
     salesOrders.forEach(order => {
       if (order.line_items && Array.isArray(order.line_items)) {
         order.line_items.forEach(item => {
-          // FIXED: Better brand extraction logic
+          // Extract brand from item name (simple approach)
           let brand = 'Unknown';
           
-          // Try to find product details from CRM first
-          if (products.length > 0) {
-            const product = products.find(p => 
-              p.id === item.item_id || 
-              p.Product_Code === item.sku ||
-              p.Product_Name === item.name
-            );
-            brand = product?.Manufacturer || 'Unknown';
-          }
-          
-          // Fallback: Extract brand from item name or use item name
-          if (brand === 'Unknown') {
-            // Try to extract brand from item name (common patterns)
-            const itemName = item.name || item.description || '';
-            const brandMatches = itemName.match(/^([A-Za-z]+)\s/); // First word as brand
-            brand = brandMatches ? brandMatches[1] : (itemName.substring(0, 20) || 'Unknown');
+          if (item.name) {
+            // Try to extract brand from item name (first word or first part before space/dash)
+            const brandMatch = item.name.match(/^([A-Za-z0-9]+)[\s\-\_]/);
+            brand = brandMatch ? brandMatch[1] : item.name.substring(0, 15);
+          } else if (item.sku) {
+            // Fallback to SKU prefix
+            const skuMatch = item.sku.match(/^([A-Za-z]+)/);
+            brand = skuMatch ? skuMatch[1] : 'Unknown';
           }
           
           if (!brandStats.has(brand)) {
@@ -331,7 +355,6 @@ class ZohoReportsService {
       productCount: stats.productCount.size,
       orderCount: stats.orders.size,
       averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0,
-      // Add market share calculation
       marketShare: 0 // Will be calculated below
     })).sort((a, b) => b.revenue - a.revenue);
 

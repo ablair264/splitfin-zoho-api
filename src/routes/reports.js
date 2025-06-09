@@ -2,6 +2,7 @@
 import express from 'express';
 import zohoReportsService from '../services/zohoReportsService.js';
 import admin from 'firebase-admin';
+import fastDashboardService from '../services/fastDashboardService.js';
 
 const router = express.Router();
 
@@ -110,9 +111,8 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
       ? { start: startDate, end: endDate }
       : null;
     
-    console.log(`📊 Fetching dashboard data for user ${userId}, role: ${req.userContext.role}`);
-    
-    const dashboardData = await zohoReportsService.getDashboardData(
+    // Use the fast dashboard service instead of direct API calls
+    const dashboardData = await fastDashboardService.getDashboardData(
       userId, 
       dateRange, 
       customDateRange
@@ -123,10 +123,8 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
       data: dashboardData,
       userContext: {
         role: req.userContext.role,
-        userId: req.userContext.userId,
-        name: req.userContext.name
+        userId: req.userContext.userId
       },
-      dataSource: 'Zoho APIs (CRM + Inventory)',
       timestamp: new Date().toISOString()
     });
     
@@ -135,6 +133,25 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to fetch dashboard data'
+    });
+  }
+});
+
+/**
+ * Dashboard health check endpoint
+ */
+router.get('/dashboard/health', async (req, res) => {
+  try {
+    const health = await fastDashboardService.healthCheck();
+    res.json({
+      success: true,
+      health,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
