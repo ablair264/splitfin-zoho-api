@@ -27,6 +27,7 @@ const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30') * 60 *
 
 function logError(context, error) {
   console.error(`❌ Error in ${context}:`, error);
+  }
   
 /**
  * Check if initial sync has been completed
