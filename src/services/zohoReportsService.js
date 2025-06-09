@@ -2,6 +2,7 @@
 import axios from 'axios';
 import { getAccessToken } from '../api/zoho.js';
 import admin from 'firebase-admin';
+import { generateAIInsights } from './aiAnalyticsService.js'; 
 
 class ZohoReportsService {
   constructor() {
@@ -71,6 +72,7 @@ async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
 }
 
   /**
+/**
    * Brand Manager Dashboard with comprehensive metrics
    */
   async getBrandManagerDashboard(dateRange, customDateRange) {
@@ -123,6 +125,9 @@ async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
         },
         lastUpdated: new Date().toISOString()
       };
+
+      const aiInsights = await generateAIInsights(dashboard);
+      dashboard.ai = aiInsights;
 
       this.setCache(cacheKey, dashboard);
       return dashboard;
@@ -178,6 +183,9 @@ async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
         },
         lastUpdated: new Date().toISOString()
       };
+      
+        const aiInsights = await generateAIInsights(dashboard);
+  dashboard.ai = aiInsights;
 
       this.setCache(cacheKey, dashboard);
       return dashboard;
