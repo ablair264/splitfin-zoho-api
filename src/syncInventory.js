@@ -13,11 +13,6 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const serviceAccountPath = path.join(__dirname, '../serviceAccountKey.json'); // adjust if needed
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccountPath),
-});
-
 const db = admin.firestore();
 
 // Environment configuration
