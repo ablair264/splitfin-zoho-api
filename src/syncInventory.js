@@ -9,10 +9,6 @@ import { fileURLToPath } from 'url';
 // Load environment variables
 dotenv.config();
 
-// Needed because you're using ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 // Environment configuration
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '100');
