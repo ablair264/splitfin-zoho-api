@@ -1,10 +1,12 @@
 // server/src/firebaseOrderListener.js
-import admin from 'firebase-admin';
+import { db } from './config/firebase.js'; // <-- IMPORT DB
 import { createSalesOrder } from './api/zoho.js';
+import admin from 'firebase-admin';
+
 
 class FirebaseOrderListener {
   constructor() {
-    this.db = admin.firestore();
+    this.db = db; // <-- USE THE IMPORTED DB
     this.isListening = false;
     this.unsubscribe = null;
   }

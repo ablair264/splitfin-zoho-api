@@ -3,7 +3,7 @@ import admin from 'firebase-admin';
 import crypto from 'crypto';
 import { fetchItems, fetchProductsFromCRM, fetchCustomersFromCRM } from './api/zoho.js';
 import dotenv from 'dotenv';
-import path from 'path';
+import { db } from './config/firebase.js'
 import { fileURLToPath } from 'url';
 
 // Load environment variables
@@ -12,8 +12,6 @@ dotenv.config();
 // Needed because you're using ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const db = admin.firestore();
 
 // Environment configuration
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';

@@ -1,3 +1,4 @@
+import './config/firebase.js'; 
 import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
@@ -5,7 +6,6 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import admin from 'firebase-admin';
 import { 
   syncInventory, 
   syncCustomersFromCRM, 
@@ -30,13 +30,6 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const ENABLE_AUTO_SYNC = process.env.ENABLE_AUTO_SYNC !== 'false';
 const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30') * 60 * 1000;
 
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-}
-const db = admin.firestore();
 
 const app = express();
 const {
