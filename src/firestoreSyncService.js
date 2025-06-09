@@ -1,9 +1,10 @@
 // server/src/services/firestoreSyncService.js
+import { db } from './config/firebase.js'; // <-- IMPORT DB
 import admin from 'firebase-admin';
 
 class FirestoreSyncService {
   constructor() {
-    this.db = admin.firestore();
+    this.db = db; // <-- USE THE IMPORTED DB
     this.listeners = new Map();
     this.lastSyncTimestamps = new Map();
     this.initialSyncCompleted = new Map();
