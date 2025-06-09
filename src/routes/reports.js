@@ -1,4 +1,4 @@
-// server/src/routes/reports.js
+// server/src/routes/reports.js - UPDATED TO USE DIRECT ZOHO DATA
 import express from 'express';
 import zohoReportsService from '../services/zohoReportsService.js';
 import admin from 'firebase-admin';
@@ -32,7 +32,7 @@ function validateDateRange(req, res, next) {
 }
 
 /**
- * NEW: Middleware to get user context and validate access
+ * Middleware to get user context and validate access
  */
 async function getUserContext(req, res, next) {
   try {
@@ -60,7 +60,7 @@ async function getUserContext(req, res, next) {
       userId,
       role: userData.role,
       agentCRMId: userData.agentID,           // For Firebase customer filtering
-      zohospID: userData.zohospID,    // For Inventory API filtering
+      zohospID: userData.zohospID,            // For Inventory API filtering
       email: userData.email,
       name: userData.name
     };
@@ -76,7 +76,7 @@ async function getUserContext(req, res, next) {
 }
 
 /**
- * NEW: Middleware to check role permissions
+ * Middleware to check role permissions
  */
 function requireRole(allowedRoles) {
   return (req, res, next) => {
@@ -99,7 +99,7 @@ function requireRole(allowedRoles) {
 }
 
 /**
- * Get role-based dashboard data - UPDATED with proper user context
+ * ENHANCED: Get comprehensive dashboard data from Zoho APIs
  */
 router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => {
   try {
@@ -109,6 +109,8 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
     const customDateRange = dateRange === 'custom' 
       ? { start: startDate, end: endDate }
       : null;
+    
+    console.log(`📊 Fetching dashboard data for user ${userId}, role: ${req.userContext.role}`);
     
     const dashboardData = await zohoReportsService.getDashboardData(
       userId, 
@@ -121,8 +123,10 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
       data: dashboardData,
       userContext: {
         role: req.userContext.role,
-        userId: req.userContext.userId
+        userId: req.userContext.userId,
+        name: req.userContext.name
       },
+      dataSource: 'Zoho APIs (CRM + Inventory)',
       timestamp: new Date().toISOString()
     });
     
@@ -136,8 +140,273 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
 });
 
 /**
- * Get revenue analysis (Brand Managers only) - UPDATED with role check
+ * NEW: Get detailed revenue analytics from Zoho
  */
+router.get('/revenue/detailed', 
+  validateDateRange, 
+  getUserContext, 
+  requireRole(['brandManager', 'admin']), 
+  async (req, res) => {
+    try {
+      const { dateRange = '30_days', startDate, endDate, breakdown = 'daily' } = req.query;
+      
+      const customDateRange = dateRange === 'custom' 
+        ? { start: startDate, end: endDate }
+        : null;
+      
+      const revenue = await zohoReportsService.getRevenueAnalysis(dateRange, customDateRange);
+      const salesOrders = await zohoReportsService.getSalesOrders(dateRange, customDateRange);
+      const brandPerformance = await zohoReportsService.getBrandPerformance(dateRange, customDateRange);
+      
+      // Calculate trends by period
+      const trends = zohoReportsService.calculateTrends(salesOrders);
+      
+      // Calculate breakdown by source
+      const revenueBySource = brandPerformance.brands.map(brand => ({
+        source: brand.brand,
+        revenue: brand.revenue,
+        percentage: revenue.grossRevenue > 0 ? (brand.revenue / revenue.grossRevenue) * 100 : 0,
+        growth: 0 // TODO: Calculate vs previous period
+      }));
+      
+      res.json({
+        success: true,
+        data: {
+          summary: revenue,
+          trends: trends,
+          breakdown: revenueBySource,
+          topSources: revenueBySource.slice(0, 10)
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error fetching detailed revenue:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to fetch detailed revenue'
+      });
+    }
+  }
+);
+
+/**
+ * NEW: Get individual agent performance details
+ */
+router.get('/agents/individual/:agentId', 
+  validateDateRange, 
+  getUserContext, 
+  async (req, res) => {
+    try {
+      const { agentId } = req.params;
+      const { dateRange = '30_days', startDate, endDate } = req.query;
+      
+      // Check permissions - agents can only see their own data
+      if (req.userContext.role === 'salesAgent' && req.userContext.zohospID !== agentId) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied - can only view your own performance'
+        });
+      }
+      
+      const customDateRange = dateRange === 'custom' 
+        ? { start: startDate, end: endDate }
+        : null;
+      
+      const [salesOrders, invoices] = await Promise.all([
+        zohoReportsService.getSalesOrders(dateRange, customDateRange, agentId),
+        zohoReportsService.getAgentInvoices(agentId, dateRange, customDateRange)
+      ]);
+      
+      // Calculate agent-specific metrics
+      const totalRevenue = salesOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
+      const totalOrders = salesOrders.length;
+      const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+      
+      const uniqueCustomers = new Set(salesOrders.map(order => order.customer_id)).size;
+      
+      res.json({
+        success: true,
+        data: {
+          agentId,
+          summary: {
+            totalOrders,
+            totalRevenue,
+            avgOrderValue,
+            customers: uniqueCustomers,
+            outstandingInvoices: invoices.summary.totalOutstanding
+          },
+          orders: salesOrders.slice(0, 20), // Latest 20 orders
+          invoices: invoices.outstanding.slice(0, 10), // Latest 10 outstanding invoices
+          trends: zohoReportsService.calculateTrends(salesOrders)
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error fetching agent performance:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to fetch agent performance'
+      });
+    }
+  }
+);
+
+/**
+ * NEW: Get customer segmentation analysis
+ */
+router.get('/customers/segmentation', 
+  validateDateRange, 
+  getUserContext, 
+  async (req, res) => {
+    try {
+      const { dateRange = '30_days', startDate, endDate } = req.query;
+      
+      const customDateRange = dateRange === 'custom' 
+        ? { start: startDate, end: endDate }
+        : null;
+      
+      const customerAnalytics = await zohoReportsService.getCustomerAnalytics(dateRange, customDateRange);
+      
+      res.json({
+        success: true,
+        data: customerAnalytics,
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error fetching customer segmentation:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to fetch customer segmentation'
+      });
+    }
+  }
+);
+
+/**
+ * NEW: Get product performance matrix
+ */
+router.get('/products/performance', 
+  validateDateRange, 
+  getUserContext, 
+  async (req, res) => {
+    try {
+      const { dateRange = '30_days', startDate, endDate } = req.query;
+      
+      const customDateRange = dateRange === 'custom' 
+        ? { start: startDate, end: endDate }
+        : null;
+      
+      const salesOrders = await zohoReportsService.getSalesOrders(dateRange, customDateRange);
+      const topItems = zohoReportsService.calculateTopItems(salesOrders);
+      
+      // Get all products from CRM for inventory data
+      const token = await zohoReportsService.getAccessToken();
+      const products = await zohoReportsService.fetchPaginatedData(
+        'https://www.zohoapis.eu/crm/v5/Products',
+        {
+          fields: 'Product_Name,Product_Code,Manufacturer,Unit_Price,Qty_in_Stock,Product_Active'
+        }
+      );
+      
+      // Enhance top items with inventory data
+      const enhancedItems = topItems.map(item => {
+        const product = products.find(p => p.id === item.itemId);
+        return {
+          ...item,
+          unitPrice: product?.Unit_Price || 0,
+          stockOnHand: product?.Qty_in_Stock || 0,
+          manufacturer: product?.Manufacturer || '',
+          isActive: product?.Product_Active !== false
+        };
+      });
+      
+      res.json({
+        success: true,
+        data: {
+          topItems: enhancedItems,
+          summary: {
+            totalProducts: products.length,
+            activeProducts: products.filter(p => p.Product_Active !== false).length,
+            avgProductValue: enhancedItems.length > 0 ? 
+              enhancedItems.reduce((sum, item) => sum + item.unitPrice, 0) / enhancedItems.length : 0,
+            totalInventoryValue: products.reduce((sum, p) => 
+              sum + (parseFloat(p.Unit_Price || 0) * parseInt(p.Qty_in_Stock || 0)), 0)
+          }
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error fetching product performance:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to fetch product performance'
+      });
+    }
+  }
+);
+
+/**
+ * ENHANCED: Get brand performance comparison
+ */
+router.get('/brands/comparison', 
+  validateDateRange, 
+  getUserContext, 
+  requireRole(['brandManager', 'admin']), 
+  async (req, res) => {
+    try {
+      const { dateRange = '30_days', startDate, endDate } = req.query;
+      
+      const customDateRange = dateRange === 'custom' 
+        ? { start: startDate, end: endDate }
+        : null;
+      
+      const brandPerformance = await zohoReportsService.getBrandPerformance(dateRange, customDateRange);
+      
+      // Add comparison metrics
+      const enhancedBrands = brandPerformance.brands.map((brand, index) => ({
+        ...brand,
+        rank: index + 1,
+        marketShare: brandPerformance.summary.totalRevenue > 0 ? 
+          (brand.revenue / brandPerformance.summary.totalRevenue) * 100 : 0,
+        color: ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444'][index % 5]
+      }));
+      
+      res.json({
+        success: true,
+        data: {
+          brands: enhancedBrands,
+          summary: brandPerformance.summary,
+          comparison: {
+            topBrand: enhancedBrands[0],
+            marketLeader: {
+              name: enhancedBrands[0]?.brand,
+              percentage: enhancedBrands[0]?.marketShare || 0
+            },
+            brandDiversity: enhancedBrands.length > 1 ? 
+              1 - Math.pow(enhancedBrands[0].marketShare / 100, 2) : 0
+          }
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error fetching brand comparison:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to fetch brand comparison'
+      });
+    }
+  }
+);
+
+/**
+ * EXISTING ENDPOINTS WITH ZOHO DATA - Updated to use new service
+ */
+
 router.get('/revenue/analysis', 
   validateDateRange, 
   getUserContext, 
@@ -155,6 +424,7 @@ router.get('/revenue/analysis',
       res.json({
         success: true,
         data: revenue,
+        dataSource: 'Zoho Inventory API',
         timestamp: new Date().toISOString()
       });
       
@@ -168,9 +438,6 @@ router.get('/revenue/analysis',
   }
 );
 
-/**
- * Get brand performance metrics - UPDATED with role check
- */
 router.get('/brands/performance', 
   validateDateRange, 
   getUserContext, 
@@ -188,6 +455,7 @@ router.get('/brands/performance',
       res.json({
         success: true,
         data: brands,
+        dataSource: 'Zoho CRM + Inventory APIs',
         timestamp: new Date().toISOString()
       });
       
@@ -201,42 +469,6 @@ router.get('/brands/performance',
   }
 );
 
-/**
- * Get regional performance metrics - UPDATED with role check
- */
-router.get('/regions/performance', 
-  validateDateRange, 
-  getUserContext, 
-  requireRole(['brandManager', 'admin']), 
-  async (req, res) => {
-    try {
-      const { dateRange = '30_days', startDate, endDate } = req.query;
-      
-      const customDateRange = dateRange === 'custom' 
-        ? { start: startDate, end: endDate }
-        : null;
-      
-      const regions = await zohoReportsService.getRegionalPerformance(dateRange, customDateRange);
-      
-      res.json({
-        success: true,
-        data: regions,
-        timestamp: new Date().toISOString()
-      });
-      
-    } catch (error) {
-      console.error('❌ Error fetching regional performance:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message || 'Failed to fetch regional performance'
-      });
-    }
-  }
-);
-
-/**
- * Get invoices with filtering - FIXED agent filtering
- */
 router.get('/invoices', validateDateRange, getUserContext, async (req, res) => {
   try {
     const { 
@@ -252,13 +484,10 @@ router.get('/invoices', validateDateRange, getUserContext, async (req, res) => {
     
     let invoices;
     
-    // FIXED: Use proper agent context based on role
-if (req.userContext.role === 'salesAgent') {
-const zohospID = req.userContext.zohospID;
-
-invoices = await zohoReportsService.getAgentInvoices(zohospID, dateRange, customDateRange);
+    if (req.userContext.role === 'salesAgent') {
+      const zohospID = req.userContext.zohospID;
+      invoices = await zohoReportsService.getAgentInvoices(zohospID, dateRange, customDateRange);
     } else {
-      // Brand managers see all invoices
       invoices = await zohoReportsService.getInvoices(dateRange, customDateRange);
     }
     
@@ -280,6 +509,7 @@ invoices = await zohoReportsService.getAgentInvoices(zohospID, dateRange, custom
       success: true,
       data: filteredInvoices,
       userRole: req.userContext.role,
+      dataSource: 'Zoho Inventory API',
       timestamp: new Date().toISOString()
     });
     
@@ -292,9 +522,6 @@ invoices = await zohoReportsService.getAgentInvoices(zohospID, dateRange, custom
   }
 });
 
-/**
- * Get sales orders - NEW endpoint with proper agent filtering
- */
 router.get('/sales-orders', validateDateRange, getUserContext, async (req, res) => {
   try {
     const { 
@@ -310,14 +537,12 @@ router.get('/sales-orders', validateDateRange, getUserContext, async (req, res) 
     let salesOrders;
     
     if (req.userContext.role === 'salesAgent') {
-      // Sales agents see only their orders (using Inventory ID)
       salesOrders = await zohoReportsService.getSalesOrders(
         dateRange, 
         customDateRange, 
-        req.userContext.zohospID  // Use Inventory ID for Inventory API
+        req.userContext.zohospID
       );
     } else {
-      // Brand managers see all orders
       salesOrders = await zohoReportsService.getSalesOrders(dateRange, customDateRange);
     }
     
@@ -338,6 +563,7 @@ router.get('/sales-orders', validateDateRange, getUserContext, async (req, res) 
         }
       },
       userRole: req.userContext.role,
+      dataSource: 'Zoho Inventory API',
       timestamp: new Date().toISOString()
     });
     
@@ -350,10 +576,7 @@ router.get('/sales-orders', validateDateRange, getUserContext, async (req, res) 
   }
 });
 
-/**
- * Get purchase orders (Brand Managers only) - UPDATED with role check
- */
-router.get('/purchase-orders', 
+router.get('/agents/performance', 
   validateDateRange, 
   getUserContext, 
   requireRole(['brandManager', 'admin']), 
@@ -365,56 +588,12 @@ router.get('/purchase-orders',
         ? { start: startDate, end: endDate }
         : null;
       
-      const purchaseOrders = await zohoReportsService.getPurchaseOrders(
-        dateRange, 
-        customDateRange
-      );
-      
-      res.json({
-        success: true,
-        data: {
-          orders: purchaseOrders,
-          summary: {
-            total: purchaseOrders.length,
-            totalValue: purchaseOrders.reduce((sum, order) => 
-              sum + parseFloat(order.total || 0), 0
-            ),
-            averageValue: purchaseOrders.length > 0
-              ? purchaseOrders.reduce((sum, order) => 
-                  sum + parseFloat(order.total || 0), 0
-                ) / purchaseOrders.length
-              : 0
-          }
-        },
-        timestamp: new Date().toISOString()
-      });
-      
-    } catch (error) {
-      console.error('❌ Error fetching purchase orders:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message || 'Failed to fetch purchase orders'
-      });
-    }
-  }
-);
-
-/**
- * Get agent performance (Brand Managers only) - NEW endpoint
- */
-router.get('/agents/performance', 
-  validateDateRange, 
-  getUserContext, 
-  requireRole(['brandManager', 'admin']), 
-  async (req, res) => {
-    try {
-      const { dateRange = '30_days' } = req.query;
-      
-      const agentPerformance = await zohoReportsService.getAgentPerformance(dateRange);
+      const agentPerformance = await zohoReportsService.getAgentPerformance(dateRange, customDateRange);
       
       res.json({
         success: true,
         data: agentPerformance,
+        dataSource: 'Zoho CRM + Inventory APIs',
         timestamp: new Date().toISOString()
       });
       
@@ -429,7 +608,33 @@ router.get('/agents/performance',
 );
 
 /**
- * Enhanced metadata endpoint with all date ranges - UPDATED
+ * NEW: Clear reports cache endpoint
+ */
+router.post('/cache/clear', 
+  getUserContext, 
+  requireRole(['brandManager', 'admin']), 
+  async (req, res) => {
+    try {
+      zohoReportsService.clearCache();
+      
+      res.json({
+        success: true,
+        message: 'Reports cache cleared successfully',
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error clearing cache:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to clear cache'
+      });
+    }
+  }
+);
+
+/**
+ * Enhanced metadata endpoint
  */
 router.get('/metadata', (req, res) => {
   res.json({
@@ -451,44 +656,21 @@ router.get('/metadata', (req, res) => {
         { value: 'salesAgent', label: 'Sales Agent' },
         { value: 'admin', label: 'Administrator' }
       ],
-      brandManagerMetrics: [
-        'Total Revenue (Gross & Net)',
-        'Average Sales Order Value',
-        'Average Purchase Order Value',
-        'Latest Sales Orders',
-        'Latest Paid Invoices',
-        'Outstanding Invoices',
-        'Top Performing Salespersons',
-        'Top Performing Customers',
-        'Top Selling Items',
-        'Brand Performance',
-        'Regional Performance',
-        'Agent Performance Analysis'
-      ],
-      salesAgentMetrics: [
-        'Total Orders (Number and Value)',
-        'Latest Orders',
-        'Customer Performance',
-        'Top Selling Items',
-        'Outstanding Invoices (Own Customers Only)',
-        'Personal Sales Trends'
-      ],
-      security: {
-        note: 'All endpoints require userId parameter. Sales agents can only access their own data.',
-        agentIdTypes: {
-          inventory: 'Used for Inventory API calls (sales orders, purchase orders)',
-          crm: 'Used for Firebase customer filtering and CRM data'
-        }
-      },
+      dataSource: 'Zoho APIs (CRM + Inventory)',
+      caching: 'Enabled (5 minute cache)',
       endpoints: {
         dashboard: '/api/reports/dashboard',
+        revenueDetailed: '/api/reports/revenue/detailed (Brand Managers only)',
+        agentIndividual: '/api/reports/agents/individual/:agentId',
+        customerSegmentation: '/api/reports/customers/segmentation',
+        productPerformance: '/api/reports/products/performance',
+        brandComparison: '/api/reports/brands/comparison (Brand Managers only)',
         revenue: '/api/reports/revenue/analysis (Brand Managers only)',
         brands: '/api/reports/brands/performance (Brand Managers only)',
-        regions: '/api/reports/regions/performance (Brand Managers only)',
         invoices: '/api/reports/invoices',
-        salesOrders: '/api/reports/sales-orders (NEW)',
-        purchaseOrders: '/api/reports/purchase-orders (Brand Managers only)',
-        agentPerformance: '/api/reports/agents/performance (Brand Managers only)'
+        salesOrders: '/api/reports/sales-orders',
+        agentPerformance: '/api/reports/agents/performance (Brand Managers only)',
+        clearCache: '/api/reports/cache/clear (Brand Managers only)'
       }
     },
     timestamp: new Date().toISOString()
