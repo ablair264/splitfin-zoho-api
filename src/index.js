@@ -21,6 +21,8 @@ import firebaseOrderListener from './firebaseOrderListener.js';
 import firestoreSyncService from './firestoreSyncService.js';
 import reportsRoutes from './routes/reports.js';
 import cronRoutes from './routes/cron.js';
+// ADD THIS: Import the AI insights routes
+import aiInsightsRoutes from './routes/ai-insights.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -31,6 +33,8 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const ENABLE_AUTO_SYNC = process.env.ENABLE_AUTO_SYNC !== 'false';
 const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL_MINUTES || '30') * 60 * 1000;
 
+// NEW: CRON optimization mode
+const CRON_MODE = process.env.CRON_MODE === 'true' || IS_PRODUCTION;
 
 const app = express();
 const {
@@ -62,50 +66,60 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use('/api/cron', cronRoutes);
 
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
 
+// ── Routes setup (order matters) ────────────────────────────────────
+app.use('/api/cron', cronRoutes);  // CRON routes first for priority
+app.use('/api', webhookRoutes);
+app.use('/api/sync', syncRoutes);
+app.use('/api/reports', reportsRoutes);
+// ADD THIS: Mount the AI insights routes
+app.use('/api/ai-insights', aiInsightsRoutes);
+
+// ── Root endpoint ───────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     message: 'Splitfin Zoho Integration API',
     status: 'running',
-    version: '2.3.0',
+    version: '2.5.0',  // Updated version for AI insights support
     environment: IS_PRODUCTION ? 'production' : 'development',
+    mode: CRON_MODE ? 'cron-optimized' : 'real-time',
     features: [
       'OAuth', 
       'CRM-first Product Sync',
       'Sales Orders', 
       'Webhooks', 
-      'Firebase Order Listener',
-      'Real-time Firestore Sync',
-      'Client Sync API',
+      'CRON Data Sync',
+      'Cached Dashboard',
       'Reports & Analytics',
-      'Incremental Sync'
+      'Incremental Sync',
+      'AI-Powered Insights'  // NEW: Added AI insights feature
     ],
-    dataStrategy: 'CRM-first with Inventory fallback',
+    dataStrategy: 'CRON-cached with live fallback',
     config: {
+      cronMode: CRON_MODE,
       autoSync: ENABLE_AUTO_SYNC,
-      syncInterval: `${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`
+      syncInterval: `${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`,
+      aiInsights: 'enabled'  // NEW: Indicate AI insights are available
     },
     endpoints: {
       health: '/health',
       webhooks: '/api/*',
       sync: '/api/sync/*',
       reports: '/api/reports/*',
+      cron: '/api/cron/*',
+      aiInsights: '/api/ai-insights/*',  // NEW: AI insights endpoint
       oauth: '/oauth/url',
       initialSync: '/api/initial-sync'
     }
   });
 });
 
-app.use('/api', webhookRoutes);
-app.use('/api/sync', syncRoutes);
-app.use('/api/reports', reportsRoutes);
-
+// ── Legacy sync endpoints (kept for compatibility) ──────────────────
 app.post('/api/sync', async (req, res) => {
   try {
     console.log('🔄 Triggering syncInventory from POST /api/sync');
@@ -130,24 +144,46 @@ app.post('/api/sync-customers', async (req, res) => {
 
 // ── Enhanced Health check endpoint ──────────────────────────────────
 app.get('/health', async (req, res) => {
-  const orderListenerStatus = firebaseOrderListener.getStatus();
-  const syncServiceStatus = firestoreSyncService.getStatus();
-  const syncStatus = await getSyncStatus();
-  
-  res.status(200).json({ 
+  // Only check services that are actually running
+  const healthData = { 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     service: 'Splitfin Zoho Integration API',
-    version: '2.3.0', // Updated version
+    version: '2.5.0',  // Updated version
     environment: IS_PRODUCTION ? 'production' : 'development',
-    features: ['OAuth', 'CRM-first Product Sync', 'Sales Orders', 'Webhooks', 'Firebase Listeners', 'Sync Services'], // Updated
-    dataStrategy: 'CRM-first with Inventory fallback', // NEW
-    services: {
+    mode: CRON_MODE ? 'cron-optimized' : 'real-time',
+    features: [
+      'OAuth', 
+      'CRM-first Product Sync', 
+      'Sales Orders', 
+      'Webhooks', 
+      'CRON Jobs',
+      'AI-Powered Insights'  // NEW: Added AI insights to health check
+    ],
+    dataStrategy: 'CRON-cached with live fallback',
+  };
+
+  // Only include Firebase service status if not in CRON mode
+  if (!CRON_MODE) {
+    const orderListenerStatus = firebaseOrderListener.getStatus();
+    const syncServiceStatus = firestoreSyncService.getStatus();
+    const syncStatus = await getSyncStatus();
+    
+    healthData.services = {
       firebaseOrderListener: orderListenerStatus,
       firestoreSyncService: syncServiceStatus,
-      syncMetadata: syncStatus
-    }
-  });
+      syncMetadata: syncStatus,
+      aiInsights: 'enabled'  // NEW: AI insights service status
+    };
+  } else {
+    healthData.services = {
+      cronJobs: 'external',
+      aiInsights: 'enabled',  // NEW: AI insights work in both modes
+      message: 'Firebase listeners disabled in CRON mode for performance'
+    };
+  }
+  
+  res.status(200).json(healthData);
 });
 
 // ── Initial Sync Endpoint (Production) ──────────────────────────────
@@ -163,15 +199,15 @@ app.post('/api/initial-sync', async (req, res) => {
       });
     }
     
-    console.log('🚀 Starting initial CRM-first sync...'); // Updated message
+    console.log('🚀 Starting initial CRM-first sync...');
     
     const result = await performInitialSync();
     
     res.json({
       success: true,
       result,
-      message: 'Initial CRM-first sync completed. You can now enable auto-sync.', // Updated message
-      dataStrategy: 'Products synced from CRM, customers from CRM with Inventory mapping', // NEW
+      message: 'Initial CRM-first sync completed. CRON jobs will handle ongoing sync.',
+      dataStrategy: 'Products synced from CRM, CRON jobs scheduled for updates',
       timestamp: new Date().toISOString()
     });
     
@@ -181,11 +217,24 @@ app.post('/api/initial-sync', async (req, res) => {
       success: false,
       error: error.message
     });
-  }
 });
 
-// ── Firebase Services Management ────────────────────────────────────
+// ── Firebase Services Management (conditional) ──────────────────────
 app.get('/api/listener/status', (req, res) => {
+  if (CRON_MODE) {
+    return res.json({
+      success: true,
+      mode: 'cron-optimized',
+      message: 'Firebase listeners disabled in CRON mode',
+      cronJobs: 'handling data sync',
+      autoSyncEnabled: false,
+      environment: IS_PRODUCTION ? 'production' : 'development',
+      dataStrategy: 'CRON-cached with live fallback',
+      aiInsights: 'enabled',  // NEW: AI insights available in both modes
+      timestamp: new Date().toISOString()
+    });
+  }
+
   const orderStatus = firebaseOrderListener.getStatus();
   const syncStatus = firestoreSyncService.getStatus();
   
@@ -193,16 +242,25 @@ app.get('/api/listener/status', (req, res) => {
     success: true,
     services: {
       orderListener: orderStatus,
-      syncService: syncStatus
+      syncService: syncStatus,
+      aiInsights: 'enabled'  // NEW: AI insights status
     },
     autoSyncEnabled: ENABLE_AUTO_SYNC,
     environment: IS_PRODUCTION ? 'production' : 'development',
-    dataStrategy: 'CRM-first with Inventory fallback', // NEW
+    dataStrategy: 'Real-time with Firebase listeners',
     timestamp: new Date().toISOString()
   });
 });
 
 app.post('/api/listener/start', async (req, res) => {
+  if (CRON_MODE) {
+    return res.status(400).json({
+      success: false,
+      error: 'Firebase listeners are disabled in CRON mode. Use CRON jobs for data sync.',
+      mode: 'cron-optimized'
+    });
+  }
+
   try {
     // Check if initial sync has been done in production
     if (IS_PRODUCTION) {
@@ -210,7 +268,7 @@ app.post('/api/listener/start', async (req, res) => {
       if (!syncStatus?.inventory?.initialSyncCompleted || !syncStatus?.customers?.initialSyncCompleted) {
         return res.status(400).json({
           success: false,
-          error: 'Initial CRM-first sync must be completed before starting listeners. Run POST /api/initial-sync first.' // Updated message
+          error: 'Initial CRM-first sync must be completed before starting listeners. Run POST /api/initial-sync first.'
         });
       }
     }
@@ -255,8 +313,16 @@ app.post('/api/listener/stop', (req, res) => {
   }
 });
 
-// Manual order processing endpoint
+// Manual order processing endpoint (conditional)
 app.post('/api/process-order/:orderId', async (req, res) => {
+  if (CRON_MODE) {
+    return res.status(400).json({
+      success: false,
+      error: 'Manual order processing disabled in CRON mode',
+      suggestion: 'Orders are processed via CRON jobs'
+    });
+  }
+
   try {
     const { orderId } = req.params;
     const result = await firebaseOrderListener.processOrderById(orderId);
@@ -375,13 +441,14 @@ app.get('/api/items', async (req, res) => {
     
     let response = { 
       items: products,
-      dataStrategy: 'CRM-first with Inventory fallback' // NEW
+      dataStrategy: CRON_MODE ? 'CRON-cached with live fallback' : 'CRM-first with Inventory fallback'  // UPDATED
     };
     
     if (includeMetadata) {
       const syncStatus = await getSyncStatus();
       response.syncMetadata = syncStatus;
-      response.syncMetadata.dataSource = 'CRM'; // NEW
+      response.syncMetadata.dataSource = 'CRM';
+      response.syncMetadata.mode = CRON_MODE ? 'cron-optimized' : 'real-time';  // NEW
     }
     
     res.json(response);
@@ -391,8 +458,17 @@ app.get('/api/items', async (req, res) => {
   }
 });
 
-// Batch sync endpoint for mobile apps
+// Batch sync endpoint for mobile apps (conditional)
 app.post('/api/sync-batch', async (req, res) => {
+  if (CRON_MODE) {
+    return res.status(400).json({
+      success: false,
+      error: 'Batch sync disabled in CRON mode',
+      message: 'Data is synced via scheduled CRON jobs',
+      suggestion: 'Use the cached dashboard API instead'
+    });
+  }
+
   try {
     const { lastSyncTime, collections } = req.body;
     
@@ -418,7 +494,7 @@ app.post('/api/sync-batch', async (req, res) => {
       success: true,
       changes: filteredChanges,
       syncTriggered: shouldSync,
-      dataStrategy: 'CRM-first with Inventory fallback', // NEW
+      dataStrategy: 'Real-time with Firebase',
       timestamp: Date.now()
     });
     
@@ -447,13 +523,15 @@ app.post('/api/maintenance/cleanup-sync', async (req, res) => {
   }
 });
 
-// Schedule periodic cleanup (every 24 hours)
-setInterval(() => {
-  console.log('🧹 Running periodic sync cleanup...');
-  firestoreSyncService.cleanupOldSyncChanges().catch(error => {
-    console.error('❌ Periodic cleanup failed:', error);
-  });
-}, 24 * 60 * 60 * 1000);
+// Schedule periodic cleanup (every 24 hours) - only if not in CRON mode
+if (!CRON_MODE) {
+  setInterval(() => {
+    console.log('🧹 Running periodic sync cleanup...');
+    firestoreSyncService.cleanupOldSyncChanges().catch(error => {
+      console.error('❌ Periodic cleanup failed:', error);
+    });
+  }, 24 * 60 * 60 * 1000);
+}
 
 // ── Global error handler ────────────────────────────────────────────
 app.use((err, req, res, next) => {
@@ -468,33 +546,47 @@ app.use((err, req, res, next) => {
 
 // ── Start server ────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
-  console.log(`🚀 Splitfin Zoho Integration API v2.3.0 running on port ${PORT}`); // Updated version
+  console.log(`🚀 Splitfin Zoho Integration API v2.5.0 running on port ${PORT}`);
   console.log(`📍 Root endpoint: http://localhost:${PORT}/`);
   console.log(`📍 Webhook endpoint: http://localhost:${PORT}/api/create-order`);
   console.log(`🔍 Health check: http://localhost:${PORT}/health`);
   console.log(`🔄 Sync API: http://localhost:${PORT}/api/sync/*`);
+  console.log(`📊 Reports API: http://localhost:${PORT}/api/reports/*`);
+  console.log(`⏰ CRON API: http://localhost:${PORT}/api/cron/*`);
+  console.log(`🤖 AI Insights API: http://localhost:${PORT}/api/ai-insights/*`);  // NEW: AI insights endpoint logging
   console.log(`🧪 Test webhook: http://localhost:${PORT}/api/test`);
   console.log(`🔐 OAuth URL: http://localhost:${PORT}/oauth/url`);
   console.log(`📦 Items endpoint: http://localhost:${PORT}/api/items`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🎯 Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
-  console.log(`📊 Data Strategy: CRM-first with Inventory fallback`); // NEW
+  console.log(`🎛️ Mode: ${CRON_MODE ? 'CRON-optimized' : 'Real-time'}`);
+  console.log(`📊 Data Strategy: ${CRON_MODE ? 'CRON-cached with live fallback' : 'CRM-first with Inventory fallback'}`);
+  console.log(`🤖 AI Insights: Enabled with rate limiting`);  // NEW: AI insights status logging
   
-  // Start both Firebase services
-  console.log('🎧 Initializing Firebase services...');
-  firebaseOrderListener.startListening();
-  firestoreSyncService.startAllListeners();
+  // Conditional Firebase services startup
+  if (CRON_MODE) {
+    console.log('⚡ CRON mode enabled - Firebase listeners disabled for performance');
+    console.log('📅 Data sync handled by external CRON jobs');
+    console.log('🚀 Fast dashboard loading enabled');
+  } else {
+    console.log('🎧 Initializing Firebase services...');
+    firebaseOrderListener.startListening();
+    firestoreSyncService.startAllListeners();
+    console.log('✅ Real-time Firebase services started');
+  }
   
-  console.log('✅ All services started successfully');
+  console.log('✅ Server startup completed');
 });
 
 // ── Graceful shutdown ───────────────────────────────────────────────
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM received, shutting down gracefully...');
   
-  // Stop all Firebase listeners
-  firebaseOrderListener.stopListening();
-  firestoreSyncService.stopAllListeners();
+  // Only stop Firebase listeners if they're running
+  if (!CRON_MODE) {
+    firebaseOrderListener.stopListening();
+    firestoreSyncService.stopAllListeners();
+  }
   
   server.close(() => {
     console.log('✅ Process terminated');
@@ -504,9 +596,11 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('🛑 SIGINT received, shutting down gracefully...');
   
-  // Stop all Firebase listeners
-  firebaseOrderListener.stopListening();
-  firestoreSyncService.stopAllListeners();
+  // Only stop Firebase listeners if they're running
+  if (!CRON_MODE) {
+    firebaseOrderListener.stopListening();
+    firestoreSyncService.stopAllListeners();
+  }
   
   server.close(() => {
     console.log('✅ Process terminated');
