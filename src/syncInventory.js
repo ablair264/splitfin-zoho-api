@@ -3,17 +3,20 @@ import admin from 'firebase-admin';
 import crypto from 'crypto';
 import { fetchItems, fetchProductsFromCRM, fetchCustomersFromCRM } from './api/zoho.js';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // Load environment variables
 dotenv.config();
 
-// Initialize Firebase Admin if not already initialized
-if (!admin.apps.length) {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-}
+// Needed because you're using ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const serviceAccountPath = path.join(__dirname, '../serviceAccountKey.json'); // adjust if needed
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccountPath),
+});
 
 const db = admin.firestore();
 
