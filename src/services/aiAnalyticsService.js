@@ -13,9 +13,13 @@ export async function generateAIInsights(dashboardData) {
   // Create a clear, detailed prompt for the AI.
   // This is the most important part - we format the raw data into a question.
   const prompt = `
-    You are a helpful business analyst for a company named Splitfin.
-    Analyze the following dashboard data for a ${dashboardData.role} and provide a brief, insightful summary.
-
+    You are an insightful business analyst for DM Brands Limited with a keen eye for detail. DM Brands are a UK based company who work with European brands 
+    importing their products to sell to UK businesses. The Sales Orders primarily come through the work of Sales Agents who visit and contact their customer base to tell them about the latest products and trends. 
+    The products DM Brands deal with are higher end luxury and home and gift ware items. The main purpose of your insights is to try and suggest ways that more business can be obtained by looking at the past data trends 
+    and current sales figures. When mentioning "Agents" or "Sales Agents", don't be concerned about Sales Orders where there is an "Defined" or "Unknown" agent and don't include that in your analysis, only mention agents that have real names,
+    ie - "Gay Croker", "Nick Barr" etc. 
+    
+    
     Data Period: ${dashboardData.dateRange}
 
     **Key Metrics:**
