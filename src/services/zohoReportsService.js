@@ -236,76 +236,141 @@ class ZohoReportsService {
   /**
    * Get brand performance data from Zoho
    */
-  async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
+ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
+  try {
+    console.log(`🏷️ Fetching brand performance for ${dateRange}`);
+    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+    
+    // FIXED: Add proper error handling and validation for the CRM API call
+    let products = [];
     try {
-      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-      
-      // Get products from CRM with sales data
-      const products = await this.fetchPaginatedData(
+      // Get products from CRM with proper field validation
+      products = await this.fetchPaginatedData(
         `${ZOHO_CONFIG.baseUrls.crm}/Products`,
         {
-          fields: 'Product_Name,Product_Code,Manufacturer,Product_Category,Unit_Price,Qty_in_Stock'
-        }
+          fields: 'Product_Name,Product_Code,Manufacturer,Product_Category,Unit_Price,Qty_in_Stock,id',
+          // FIXED: Add basic validation to avoid API errors
+          criteria: 'Product_Active:equals:true'
+        },
+        'data', // Ensure we're using the correct data key
+        false   // Don't cache this call to avoid stale data
       );
+    } catch (crmError) {
+      console.warn('⚠️ CRM Products API failed, falling back to minimal brand data:', crmError.message);
+      // Fallback to empty array if CRM call fails
+      products = [];
+    }
 
-      // Get sales orders to calculate actual sales
-      const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
-      
-      // Calculate brand performance from sales orders
-      const brandStats = new Map();
-      
-      salesOrders.forEach(order => {
-        if (order.line_items) {
-          order.line_items.forEach(item => {
-            // Find product details
-            const product = products.find(p => p.id === item.item_id);
-            const brand = product?.Manufacturer || 'Unknown';
-            
-            if (!brandStats.has(brand)) {
-              brandStats.set(brand, {
-                brand,
-                revenue: 0,
-                quantity: 0,
-                productCount: new Set(),
-                orders: new Set()
-              });
-            }
-            
-            const stats = brandStats.get(brand);
-            stats.revenue += parseFloat(item.total || 0);
-            stats.quantity += parseInt(item.quantity || 0);
-            stats.productCount.add(item.item_id);
-            stats.orders.add(order.salesorder_id);
-          });
-        }
-      });
-
-      // Convert to array
-      const brands = Array.from(brandStats.values()).map(stats => ({
-        brand: stats.brand,
-        revenue: stats.revenue,
-        quantity: stats.quantity,
-        productCount: stats.productCount.size,
-        orderCount: stats.orders.size,
-        averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0
-      })).sort((a, b) => b.revenue - a.revenue);
-
+    // Get sales orders to calculate actual sales - this is the primary data source
+    const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
+    
+    if (!salesOrders || salesOrders.length === 0) {
+      console.log('📊 No sales orders found for brand performance calculation');
       return {
-        brands,
+        brands: [],
         summary: {
-          totalBrands: brands.length,
-          totalRevenue: brands.reduce((sum, brand) => sum + brand.revenue, 0),
-          topBrand: brands[0] || null
+          totalBrands: 0,
+          totalRevenue: 0,
+          topBrand: null
         },
         period: dateRange
       };
-
-    } catch (error) {
-      console.error('❌ Error fetching brand performance:', error);
-      throw error;
     }
-  }
 
+    // Calculate brand performance from sales orders
+    const brandStats = new Map();
+    
+    salesOrders.forEach(order => {
+      if (order.line_items && Array.isArray(order.line_items)) {
+        order.line_items.forEach(item => {
+          // FIXED: Better brand extraction logic
+          let brand = 'Unknown';
+          
+          // Try to find product details from CRM first
+          if (products.length > 0) {
+            const product = products.find(p => 
+              p.id === item.item_id || 
+              p.Product_Code === item.sku ||
+              p.Product_Name === item.name
+            );
+            brand = product?.Manufacturer || 'Unknown';
+          }
+          
+          // Fallback: Extract brand from item name or use item name
+          if (brand === 'Unknown') {
+            // Try to extract brand from item name (common patterns)
+            const itemName = item.name || item.description || '';
+            const brandMatches = itemName.match(/^([A-Za-z]+)\s/); // First word as brand
+            brand = brandMatches ? brandMatches[1] : (itemName.substring(0, 20) || 'Unknown');
+          }
+          
+          if (!brandStats.has(brand)) {
+            brandStats.set(brand, {
+              brand,
+              revenue: 0,
+              quantity: 0,
+              productCount: new Set(),
+              orders: new Set()
+            });
+          }
+          
+          const stats = brandStats.get(brand);
+          stats.revenue += parseFloat(item.total || item.amount || 0);
+          stats.quantity += parseInt(item.quantity || 0);
+          stats.productCount.add(item.item_id || item.name);
+          stats.orders.add(order.salesorder_id);
+        });
+      }
+    });
+
+    // Convert to array and calculate additional metrics
+    const brands = Array.from(brandStats.values()).map(stats => ({
+      brand: stats.brand,
+      revenue: stats.revenue,
+      quantity: stats.quantity,
+      productCount: stats.productCount.size,
+      orderCount: stats.orders.size,
+      averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0,
+      // Add market share calculation
+      marketShare: 0 // Will be calculated below
+    })).sort((a, b) => b.revenue - a.revenue);
+
+    // Calculate market share
+    const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
+    brands.forEach(brand => {
+      brand.marketShare = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
+    });
+
+    console.log(`✅ Brand performance calculated: ${brands.length} brands, total revenue: £${totalRevenue.toFixed(2)}`);
+
+    return {
+      brands,
+      summary: {
+        totalBrands: brands.length,
+        totalRevenue,
+        topBrand: brands[0] || null,
+        averageRevenuePerBrand: brands.length > 0 ? totalRevenue / brands.length : 0
+      },
+      period: dateRange
+    };
+
+  } catch (error) {
+    console.error('❌ Error fetching brand performance:', error);
+    
+    // Return empty but valid structure instead of throwing
+    return {
+      brands: [],
+      summary: {
+        totalBrands: 0,
+        totalRevenue: 0,
+        topBrand: null,
+        averageRevenuePerBrand: 0
+      },
+      period: dateRange,
+      error: error.message
+    };
+  }
+}
   /**
    * Get customer analytics from Zoho
    */
