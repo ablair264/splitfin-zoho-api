@@ -1,0 +1,535 @@
+// ================================================================
+// FILE: src/services/cronDataSyncService.js
+// ================================================================
+
+import admin from 'firebase-admin';
+import zohoReportsService from './zohoReportsService.js';
+
+class CronDataSyncService {
+  constructor() {
+    this.isRunning = new Map(); // Track running jobs by type
+    this.lastSync = {};
+  }
+
+  /**
+   * HIGH FREQUENCY SYNC - Every 15 minutes during business hours
+   * Lightweight, fast data that users need to be current
+   */
+  async highFrequencySync() {
+    const jobType = 'high-frequency';
+    
+    if (this.isRunning.get(jobType)) {
+      console.log('⚠️ High frequency sync already running, skipping...');
+      return { success: false, message: 'Job already running' };
+    }
+
+    this.isRunning.set(jobType, true);
+    const startTime = Date.now();
+
+    try {
+      console.log('🔄 Starting high frequency sync...');
+      
+      // Get recent sales orders (last 24 hours only)
+      const recentOrders = await zohoReportsService.getSalesOrders('today');
+      await this.cacheData('recent_orders', recentOrders, '15min');
+      
+      // Quick invoice status check (last 7 days)
+      const recentInvoices = await zohoReportsService.getInvoices('7_days');
+      await this.cacheData('recent_invoices', recentInvoices, '15min');
+      
+      // Calculate quick metrics from cached data
+      const quickMetrics = await this.calculateQuickMetrics(recentOrders, recentInvoices);
+      await this.cacheData('quick_metrics', quickMetrics, '15min');
+      
+      const duration = Date.now() - startTime;
+      this.lastSync.high = new Date();
+      
+      console.log(`✅ High frequency sync completed in ${duration}ms`);
+      return { 
+        success: true, 
+        duration, 
+        recordsProcessed: recentOrders.length + recentInvoices.all.length,
+        cacheKeys: ['recent_orders', 'recent_invoices', 'quick_metrics']
+      };
+      
+    } catch (error) {
+      console.error('❌ High frequency sync failed:', error);
+      return { success: false, error: error.message };
+    } finally {
+      this.isRunning.set(jobType, false);
+    }
+  }
+
+  /**
+   * MEDIUM FREQUENCY SYNC - Every 2 hours
+   * More comprehensive data that doesn't need to be real-time
+   */
+  async mediumFrequencySync() {
+    const jobType = 'medium-frequency';
+    
+    if (this.isRunning.get(jobType)) {
+      console.log('⚠️ Medium frequency sync already running, skipping...');
+      return { success: false, message: 'Job already running' };
+    }
+
+    this.isRunning.set(jobType, true);
+    const startTime = Date.now();
+
+    try {
+      console.log('🔄 Starting medium frequency sync...');
+      
+      // Brand performance with limited pagination to avoid 400 errors
+      const brands = await this.getBrandPerformanceSafe();
+      await this.cacheData('brand_performance', brands, '2hr');
+      
+      // Customer analytics (30 days)
+      const customers = await zohoReportsService.getCustomerAnalytics('30_days');
+      await this.cacheData('customer_analytics', customers, '2hr');
+      
+      // Revenue analysis
+      const revenue = await zohoReportsService.getRevenueAnalysis('30_days');
+      await this.cacheData('revenue_analysis', revenue, '2hr');
+      
+      // Agent performance (if not sales agent view)
+      const agentPerformance = await zohoReportsService.getAgentPerformance('30_days');
+      await this.cacheData('agent_performance', agentPerformance, '2hr');
+      
+      const duration = Date.now() - startTime;
+      this.lastSync.medium = new Date();
+      
+      console.log(`✅ Medium frequency sync completed in ${duration}ms`);
+      return { 
+        success: true, 
+        duration,
+        cacheKeys: ['brand_performance', 'customer_analytics', 'revenue_analysis', 'agent_performance']
+      };
+      
+    } catch (error) {
+      console.error('❌ Medium frequency sync failed:', error);
+      return { success: false, error: error.message };
+    } finally {
+      this.isRunning.set(jobType, false);
+    }
+  }
+
+  /**
+   * LOW FREQUENCY SYNC - Daily at 2 AM
+   * Heavy data processing and full refreshes
+   */
+  async lowFrequencySync() {
+    const jobType = 'low-frequency';
+    
+    if (this.isRunning.get(jobType)) {
+      console.log('⚠️ Low frequency sync already running, skipping...');
+      return { success: false, message: 'Job already running' };
+    }
+
+    this.isRunning.set(jobType, true);
+    const startTime = Date.now();
+
+    try {
+      console.log('🔄 Starting low frequency sync (full data refresh)...');
+      
+      // Full sales orders sync (last 90 days)
+      const allOrders = await zohoReportsService.getSalesOrders('90_days');
+      await this.cacheData('all_sales_orders', allOrders, '24hr');
+      
+      // Historical trends calculation
+      const trends = await this.calculateHistoricalTrends(allOrders);
+      await this.cacheData('historical_trends', trends, '24hr');
+      
+      // Full invoices sync
+      const allInvoices = await zohoReportsService.getInvoices('90_days');
+      await this.cacheData('all_invoices', allInvoices, '24hr');
+      
+      // Clean up old cache entries
+      await this.cleanupOldCache();
+      
+      const duration = Date.now() - startTime;
+      this.lastSync.low = new Date();
+      
+      console.log(`✅ Low frequency sync completed in ${duration}ms`);
+      return { 
+        success: true, 
+        duration,
+        recordsProcessed: allOrders.length + allInvoices.all.length,
+        cacheKeys: ['all_sales_orders', 'historical_trends', 'all_invoices']
+      };
+      
+    } catch (error) {
+      console.error('❌ Low frequency sync failed:', error);
+      return { success: false, error: error.message };
+    } finally {
+      this.isRunning.set(jobType, false);
+    }
+  }
+
+  /**
+   * SAFE BRAND PERFORMANCE - Avoids the pagination issue
+   */
+  async getBrandPerformanceSafe() {
+    try {
+      // Skip the problematic CRM Products call and use sales order data only
+      const salesOrders = await zohoReportsService.getSalesOrders('30_days');
+      
+      const brandStats = new Map();
+      
+      salesOrders.forEach(order => {
+        if (order.line_items && Array.isArray(order.line_items)) {
+          order.line_items.forEach(item => {
+            // Extract brand from item name
+            let brand = 'Unknown';
+            if (item.name) {
+              const brandMatch = item.name.match(/^([A-Za-z0-9]+)[\s\-\_]/);
+              brand = brandMatch ? brandMatch[1] : item.name.substring(0, 15);
+            }
+            
+            if (!brandStats.has(brand)) {
+              brandStats.set(brand, {
+                brand,
+                revenue: 0,
+                quantity: 0,
+                productCount: new Set(),
+                orders: new Set()
+              });
+            }
+            
+            const stats = brandStats.get(brand);
+            stats.revenue += parseFloat(item.total || 0);
+            stats.quantity += parseInt(item.quantity || 0);
+            stats.productCount.add(item.item_id || item.name);
+            stats.orders.add(order.salesorder_id);
+          });
+        }
+      });
+
+      const brands = Array.from(brandStats.values()).map(stats => ({
+        brand: stats.brand,
+        revenue: stats.revenue,
+        quantity: stats.quantity,
+        productCount: stats.productCount.size,
+        orderCount: stats.orders.size,
+        averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0
+      })).sort((a, b) => b.revenue - a.revenue);
+
+      const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
+      
+      return {
+        brands,
+        summary: {
+          totalBrands: brands.length,
+          totalRevenue,
+          topBrand: brands[0] || null
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Safe brand performance calculation failed:', error);
+      return { brands: [], summary: { totalBrands: 0, totalRevenue: 0, topBrand: null } };
+    }
+  }
+
+  /**
+   * CACHE DATA with expiry and metadata
+   */
+  async cacheData(key, data, ttl = '1hr') {
+    try {
+      const expiryMap = {
+        '15min': 15 * 60 * 1000,
+        '1hr': 60 * 60 * 1000,
+        '2hr': 2 * 60 * 60 * 1000,
+        '24hr': 24 * 60 * 60 * 1000
+      };
+
+      const cacheEntry = {
+        data,
+        timestamp: new Date().toISOString(),
+        expires: new Date(Date.now() + expiryMap[ttl]).toISOString(),
+        ttl,
+        size: JSON.stringify(data).length
+      };
+      
+      const db = admin.firestore();
+      await db.collection('dashboard_cache').doc(key).set(cacheEntry);
+      
+      console.log(`📄 Cached ${key} (${cacheEntry.size} bytes, TTL: ${ttl})`);
+      
+    } catch (error) {
+      console.error(`❌ Error caching ${key}:`, error);
+    }
+  }
+
+  /**
+   * GET CACHED DATA with freshness check
+   */
+  async getCachedData(key, maxAge = null) {
+    try {
+      const db = admin.firestore();
+      const doc = await db.collection('dashboard_cache').doc(key).get();
+      
+      if (!doc.exists) {
+        console.log(`❌ No cached data found for ${key}`);
+        return null;
+      }
+      
+      const cached = doc.data();
+      const age = Date.now() - new Date(cached.timestamp).getTime();
+      const isExpired = maxAge ? age > maxAge : Date.now() > new Date(cached.expires).getTime();
+      
+      if (isExpired) {
+        console.log(`⏰ Cached data for ${key} is stale (${Math.round(age/1000)}s old)`);
+        return null;
+      }
+      
+      console.log(`✅ Using cached data for ${key} (${Math.round(age/1000)}s old)`);
+      return cached.data;
+      
+    } catch (error) {
+      console.error(`❌ Error getting cached data for ${key}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * CALCULATE QUICK METRICS from cached data
+   */
+  async calculateQuickMetrics(orders, invoices) {
+    const totalRevenue = orders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
+    const outstandingAmount = invoices.outstanding.reduce((sum, inv) => sum + parseFloat(inv.balance || 0), 0);
+    
+    return {
+      todayOrders: orders.length,
+      todayRevenue: totalRevenue,
+      averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
+      outstandingInvoices: invoices.outstanding.length,
+      outstandingAmount,
+      lastCalculated: new Date().toISOString()
+    };
+  }
+
+  /**
+   * CALCULATE HISTORICAL TRENDS
+   */
+  async calculateHistoricalTrends(salesOrders) {
+    const trends = new Map();
+    
+    salesOrders.forEach(order => {
+      const date = new Date(order.date);
+      const period = date.toISOString().split('T')[0];
+      
+      if (!trends.has(period)) {
+        trends.set(period, { period, orders: 0, revenue: 0, date: period });
+      }
+      
+      const trend = trends.get(period);
+      trend.orders++;
+      trend.revenue += parseFloat(order.total || 0);
+    });
+    
+    return Array.from(trends.values()).sort((a, b) => new Date(a.date) - new Date(b.date));
+  }
+
+  /**
+   * CLEANUP OLD CACHE ENTRIES
+   */
+  async cleanupOldCache() {
+    try {
+      const db = admin.firestore();
+      const oldEntries = await db.collection('dashboard_cache')
+        .where('expires', '<', new Date().toISOString())
+        .get();
+      
+      const batch = db.batch();
+      oldEntries.docs.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
+      
+      console.log(`🧹 Cleaned up ${oldEntries.size} expired cache entries`);
+      
+    } catch (error) {
+      console.error('❌ Error cleaning up cache:', error);
+    }
+  }
+
+  /**
+   * GET SYNC STATUS for monitoring
+   */
+  getSyncStatus() {
+    return {
+      lastSync: this.lastSync,
+      currentlyRunning: Array.from(this.isRunning.entries()).filter(([key, value]) => value),
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+export default new CronDataSyncService();
+
+// ================================================================
+// FILE: src/routes/cron.js
+// ================================================================
+
+import express from 'express';
+import cronDataSyncService from '../services/cronDataSyncService.js';
+
+const router = express.Router();
+
+// Middleware to validate cron job requests (optional security)
+const validateCronRequest = (req, res, next) => {
+  const cronSecret = process.env.CRON_SECRET || 'your-secret-key';
+  const providedSecret = req.headers['x-cron-secret'] || req.query.secret;
+  
+  if (cronSecret && providedSecret !== cronSecret) {
+    return res.status(401).json({ 
+      success: false, 
+      error: 'Unauthorized cron request' 
+    });
+  }
+  
+  next();
+};
+
+/**
+ * HIGH FREQUENCY SYNC - Every 15 minutes during business hours
+ */
+router.post('/high-frequency', validateCronRequest, async (req, res) => {
+  try {
+    console.log('📅 CRON: High frequency sync triggered');
+    const result = await cronDataSyncService.highFrequencySync();
+    
+    res.json({
+      success: true,
+      type: 'high-frequency',
+      result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ CRON high frequency failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      type: 'high-frequency'
+    });
+  }
+});
+
+/**
+ * MEDIUM FREQUENCY SYNC - Every 2 hours
+ */
+router.post('/medium-frequency', validateCronRequest, async (req, res) => {
+  try {
+    console.log('📅 CRON: Medium frequency sync triggered');
+    const result = await cronDataSyncService.mediumFrequencySync();
+    
+    res.json({
+      success: true,
+      type: 'medium-frequency',
+      result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ CRON medium frequency failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      type: 'medium-frequency'
+    });
+  }
+});
+
+/**
+ * LOW FREQUENCY SYNC - Daily at 2 AM
+ */
+router.post('/low-frequency', validateCronRequest, async (req, res) => {
+  try {
+    console.log('📅 CRON: Low frequency sync triggered');
+    const result = await cronDataSyncService.lowFrequencySync();
+    
+    res.json({
+      success: true,
+      type: 'low-frequency',
+      result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ CRON low frequency failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      type: 'low-frequency'
+    });
+  }
+});
+
+/**
+ * MANUAL SYNC TRIGGER - For testing
+ */
+router.post('/manual/:type', validateCronRequest, async (req, res) => {
+  try {
+    const { type } = req.params;
+    let result;
+    
+    switch (type) {
+      case 'high':
+        result = await cronDataSyncService.highFrequencySync();
+        break;
+      case 'medium':
+        result = await cronDataSyncService.mediumFrequencySync();
+        break;
+      case 'low':
+        result = await cronDataSyncService.lowFrequencySync();
+        break;
+      default:
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid sync type. Use: high, medium, or low' 
+        });
+    }
+    
+    res.json({
+      success: true,
+      type: `manual-${type}`,
+      result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error(`❌ Manual ${type} sync failed:`, error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      type: `manual-${type}`
+    });
+  }
+});
+
+/**
+ * SYNC STATUS - For monitoring
+ */
+router.get('/status', (req, res) => {
+  const status = cronDataSyncService.getSyncStatus();
+  res.json({
+    success: true,
+    status,
+    timestamp: new Date().toISOString()
+  });
+});
+
+export default router;
+
+// ================================================================
+// FILE: src/index.js (ADD THESE LINES)
+// ================================================================
+
+// Import the cron routes
+import cronRoutes from './routes/cron.js';
+
+// Add the cron routes to your app
+app.use('/api/cron', cronRoutes);
+
+// ================================================================
+// FILE: render.yaml (CREATE THIS FILE IN YOUR REPO ROOT)
+// ================================================================

@@ -19,5 +19,12 @@
     "express": "^5.1.0",
     "firebase-admin": "^13.4.0",
     "node-cron": "^4.0.7"
+  },
+  "scripts": {
+    "cron:test": "curl -X POST http://localhost:3000/api/cron/manual/high",
+    "cron:high": "curl -X POST  https://splitfin-zoho-api.onrender.com/api/cron/high-frequency",
+    "cron:medium": "curl -X POST https://splitfin-zoho-api.onrender.com/api/cron/medium-frequency",
+    "cron:low": "curl -X POST  https://splitfin-zoho-api.onrender.com/api/cron/low-frequency",
+    "cron:status": "curl  https://splitfin-zoho-api.onrender.com/api/cron/status"
   }
 }
