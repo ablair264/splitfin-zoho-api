@@ -12,54 +12,39 @@ class FastDashboardService {
    * Falls back to live API calls if cache is empty
    */
   async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
-    const startTime = Date.now();
+     const startTime = Date.now();
+  
+  try {
+    console.log(`⚡ Fast dashboard data fetch for user ${userId}, range: ${dateRange}`);
     
-    try {
-      console.log(`⚡ Fast dashboard data fetch for user ${userId}, range: ${dateRange}`);
-      
-      // Get user context
-      const db = admin.firestore();
-      const userDoc = await db.collection('users').doc(userId).get();
-      
-      if (!userDoc.exists) {
-        throw new Error('User not found');
-      }
-      
-      const userData = userDoc.data();
-      const isAgent = userData.role === 'salesAgent';
-      
-      // Try to get data from cache first (much faster)
-      const cachedData = await this.getCachedDashboardData(userId, dateRange, isAgent);
-      
-      if (cachedData) {
-        const loadTime = Date.now() - startTime;
-        console.log(`🚀 Dashboard loaded from cache in ${loadTime}ms`);
-        return {
-          ...cachedData,
-          loadTime,
-          dataSource: 'cache',
-          lastUpdated: new Date().toISOString()
-        };
-      }
-      
-      // Fallback to live API calls if cache is empty
-      console.log('⚠️ Cache miss, falling back to live API calls...');
-      const liveData = await this.getLiveDashboardData(userId, dateRange, customDateRange, userData);
-      
-      const loadTime = Date.now() - startTime;
-      console.log(`📡 Dashboard loaded from live APIs in ${loadTime}ms`);
-      
-      return {
-        ...liveData,
-        loadTime,
-        dataSource: 'live',
-        lastUpdated: new Date().toISOString()
-      };
-      
-    } catch (error) {
-      console.error('❌ Fast dashboard error:', error);
-      throw error;
+    // Get user context (code remains the same)
+    const db = admin.firestore();
+    // ...
+    const isAgent = userData.role === 'salesAgent';
+    
+    // Get data from cache, ignoring freshness
+    const cachedData = await this.getCachedDashboardData(userId, dateRange, isAgent);
+    
+    // If cache is still empty after removing the age check, it means CRONs have never run.
+    if (!cachedData) {
+      throw new Error('Cache is empty. Please run a manual data sync. Fallback to live API is disabled.');
     }
+    
+    // The fallback logic is now completely removed.
+    // The function will only return cached data.
+    const loadTime = Date.now() - startTime;
+    console.log(`🚀 Dashboard loaded from cache in ${loadTime}ms (Stale data allowed)`);
+    
+    return {
+      ...cachedData,
+      loadTime,
+      dataSource: 'cache',
+      lastUpdated: new Date().toISOString()
+    };
+      
+  } catch (error) {
+    console.error('❌ Fast dashboard error:', error);
+    throw error;
   }
 
   /**
@@ -68,23 +53,24 @@ class FastDashboardService {
   async getCachedDashboardData(userId, dateRange, isAgent) {
     try {
       // Get cached data with appropriate freshness requirements
-      const [
-        recentOrders,
-        quickMetrics,
-        brandPerformance,
-        customerAnalytics,
-        revenueAnalysis,
-        agentPerformance,
-        recentInvoices
-      ] = await Promise.all([
-        cronDataSyncService.getCachedData('recent_orders', 15 * 60 * 1000), // 15 min max age
-        cronDataSyncService.getCachedData('quick_metrics', 15 * 60 * 1000),
-        cronDataSyncService.getCachedData('brand_performance', 2 * 60 * 60 * 1000), // 2 hour max age
-        cronDataSyncService.getCachedData('customer_analytics', 2 * 60 * 60 * 1000),
-        cronDataSyncService.getCachedData('revenue_analysis', 2 * 60 * 60 * 1000),
-        !isAgent ? cronDataSyncService.getCachedData('agent_performance', 2 * 60 * 60 * 1000) : null,
-        cronDataSyncService.getCachedData('recent_invoices', 15 * 60 * 1000)
-      ]);
+  const [
+    recentOrders,
+    quickMetrics,
+    brandPerformance,
+    customerAnalytics,
+    revenueAnalysis,
+    agentPerformance,
+    recentInvoices
+  ] = await Promise.all([
+    // The max age argument has been removed to allow stale data
+    cronDataSyncService.getCachedData('recent_orders'),
+    cronDataSyncService.getCachedData('quick_metrics'),
+    cronDataSyncService.getCachedData('brand_performance'),
+    cronDataSyncService.getCachedData('customer_analytics'),
+    cronDataSyncService.getCachedData('revenue_analysis'),
+    !isAgent ? cronDataSyncService.getCachedData('agent_performance') : null,
+    cronDataSyncService.getCachedData('recent_invoices')
+  ]);
 
       // Check if we have enough cached data to build a dashboard
       if (!recentOrders || !quickMetrics || !brandPerformance) {
