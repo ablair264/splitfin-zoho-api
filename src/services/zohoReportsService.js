@@ -645,6 +645,44 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
       throw error;
     }
   }
+  
+  async getItems() {
+  try {
+    const items = await this.fetchPaginatedData(
+      `${ZOHO_CONFIG.baseUrls.inventory}/items`, 
+      { organization_id: ZOHO_CONFIG.orgId },
+      'items'
+    );
+    return items;
+  } catch (error) {
+    console.error('❌ Error fetching items:', error);
+    throw error;
+  }
+}
+
+async getPurchaseOrders(dateRange = '30_days', customDateRange = null) {
+  try {
+    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+    
+    const params = {
+      organization_id: ZOHO_CONFIG.orgId,
+      date_start: startDate.toISOString().split('T')[0],
+      date_end: endDate.toISOString().split('T')[0]
+    };
+
+    const purchaseOrders = await this.fetchPaginatedData(
+      `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders`, 
+      params,
+      'purchaseorders'
+    );
+
+    return purchaseOrders;
+
+  } catch (error) {
+    console.error('❌ Error fetching purchase orders:', error);
+    throw error;
+  }
+};
 
   /**
    * Get comprehensive dashboard data
@@ -666,23 +704,27 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
       const agentId = userData.zohospID; // Inventory salesperson ID
       
       // Fetch data based on role
-      const [
-        revenue,
-        salesOrders,
-        invoices,
-        agentPerformance,
-        brandPerformance,
-        customerAnalytics
-      ] = await Promise.all([
-        this.getRevenueAnalysis(dateRange, customDateRange),
-        this.getSalesOrders(dateRange, customDateRange, isAgent ? agentId : null),
-        isAgent ? 
-          this.getAgentInvoices(agentId, dateRange, customDateRange) : 
-          this.getInvoices(dateRange, customDateRange),
-        !isAgent ? this.getAgentPerformance(dateRange, customDateRange) : null,
-        this.getBrandPerformance(dateRange, customDateRange),
-        this.getCustomerAnalytics(dateRange, customDateRange)
-      ]);
+    const [
+      revenue,
+      salesOrders,
+      invoices,
+      agentPerformance,
+      brandPerformance,
+      customerAnalytics,
+      items,
+      purchaseOrders
+    ] = await Promise.all([
+      this.getRevenueAnalysis(dateRange, customDateRange),
+      this.getSalesOrders(dateRange, customDateRange, isAgent ? agentId : null),
+      isAgent ? 
+        this.getAgentInvoices(agentId, dateRange, customDateRange) : 
+        this.getInvoices(dateRange, customDateRange),
+      !isAgent ? this.getAgentPerformance(dateRange, customDateRange) : null,
+      this.getBrandPerformance(dateRange, customDateRange),
+      this.getCustomerAnalytics(dateRange, customDateRange),
+      this.getItems(),
+      this.getPurchaseOrders(dateRange, customDateRange)
+    ]);
 
       // Calculate overview metrics
       const overview = {
@@ -708,29 +750,33 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
       };
 
       // Build response based on role
-      const dashboardData = {
-        role: userData.role,
-        dateRange,
-        overview,
-        revenue,
-        orders: {
-          salesOrders: {
-            total: salesOrders.length,
-            totalValue: salesOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0),
-            averageValue: overview.sales.averageOrderValue,
-            latest: salesOrders.slice(0, 10)
-          }
-        },
-        invoices,
-        performance: {
-          brands: brandPerformance.brands,
-          customers: customerAnalytics.customers.slice(0, 10),
-          topItems: overview.topItems,
-          trends: this.calculateTrends(salesOrders)
-        },
-        lastUpdated: new Date().toISOString()
-      };
-
+         const dashboardData = {
+      role: userData.role,
+      dateRange,
+      overview,
+      revenue,
+      orders: {
+        salesOrders: {
+          total: salesOrders.length,
+          totalValue: salesOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0),
+          averageValue: overview.sales.averageOrderValue,
+          latest: salesOrders.slice(0, 10)
+        }
+      },
+      invoices,
+      performance: {
+        brands: brandPerformance.brands,
+        customers: customerAnalytics.customers.slice(0, 10),
+        topItems: overview.topItems,
+        trends: this.calculateTrends(salesOrders)
+      },
+      inventory: {
+        items,
+        purchaseOrders
+      },
+      lastUpdated: new Date().toISOString()
+    };
+    
       // Add agent performance for brand managers
       if (!isAgent && agentPerformance) {
         dashboardData.agentPerformance = agentPerformance;
