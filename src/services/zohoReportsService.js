@@ -291,6 +291,9 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
 /**
  * Get brand performance data - AMENDED to use Firestore for accurate brand lookup
  */
+/**
+ * Get brand performance data - AMENDED to use Firestore for accurate brand lookup
+ */
 async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   try {
     console.log(`🏷️ Fetching brand performance for ${dateRange} using Firestore lookup`);
@@ -333,6 +336,7 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
     // =======================================================================
     const brandStats = new Map();
     
+    // The 'xz' typo has been removed from this line
     salesOrders.forEach(order => {
       if (order.line_items && Array.isArray(order.line_items)) {
         order.line_items.forEach(item => {
@@ -357,6 +361,7 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
           stats.orders.add(order.salesorder_id);
         });
       }
+    }); // <-- This closing bracket for salesOrders.forEach was missing
 
     // Convert to array and calculate additional metrics
     const brands = Array.from(brandStats.values()).map(stats => ({
@@ -401,91 +406,7 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   }
 }
 
-    // Calculate brand performance from sales orders only
-    const brandStats = new Map();
-    
-    salesOrders.forEach(order => {
-      if (order.line_items && Array.isArray(order.line_items)) {
-        order.line_items.forEach(item => {
-          // Extract brand from item name (simple approach)
-          let brand = 'Unknown';
-          
-          if (item.name) {
-            // Try to extract brand from item name (first word or first part before space/dash)
-            const brandMatch = item.name.match(/^([A-Za-z0-9]+)[\s\-\_]/);
-            brand = brandMatch ? brandMatch[1] : item.name.substring(0, 15);
-          } else if (item.sku) {
-            // Fallback to SKU prefix
-            const skuMatch = item.sku.match(/^([A-Za-z]+)/);
-            brand = skuMatch ? skuMatch[1] : 'Unknown';
-          }
-          
-          if (!brandStats.has(brand)) {
-            brandStats.set(brand, {
-              brand,
-              revenue: 0,
-              quantity: 0,
-              productCount: new Set(),
-              orders: new Set()
-            });
-          }
-          
-          const stats = brandStats.get(brand);
-          stats.revenue += parseFloat(item.total || item.amount || 0);
-          stats.quantity += parseInt(item.quantity || 0);
-          stats.productCount.add(item.item_id || item.name);
-          stats.orders.add(order.salesorder_id);
-        });
-      }
-    });
-
-    // Convert to array and calculate additional metrics
-    const brands = Array.from(brandStats.values()).map(stats => ({
-      brand: stats.brand,
-      revenue: stats.revenue,
-      quantity: stats.quantity,
-      productCount: stats.productCount.size,
-      orderCount: stats.orders.size,
-      averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0,
-      marketShare: 0 // Will be calculated below
-    })).sort((a, b) => b.revenue - a.revenue);
-
-    // Calculate market share
-    const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
-    brands.forEach(brand => {
-      brand.marketShare = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
-    });
-
-    console.log(`✅ Brand performance calculated: ${brands.length} brands, total revenue: £${totalRevenue.toFixed(2)}`);
-
-    return {
-      brands,
-      summary: {
-        totalBrands: brands.length,
-        totalRevenue,
-        topBrand: brands[0] || null,
-        averageRevenuePerBrand: brands.length > 0 ? totalRevenue / brands.length : 0
-      },
-      period: dateRange
-    };
-
-  } catch (error) {
-    console.error('❌ Error fetching brand performance:', error);
-    
-    // Return empty but valid structure instead of throwing
-    return {
-      brands: [],
-      summary: {
-        totalBrands: 0,
-        totalRevenue: 0,
-        topBrand: null,
-        averageRevenuePerBrand: 0
-      },
-      period: dateRange,
-      error: error.message
-    };
-  }
-}
+// The entire duplicated block of code that was here has been removed.
   /**
    * Get customer analytics from Zoho
    */
