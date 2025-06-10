@@ -4,13 +4,64 @@
 
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
-import { syncInventoryCustomerIds } from '../syncInventory.js';
+import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 
 class CronDataSyncService {
   constructor() {
     this.isRunning = new Map(); // Track running jobs by type
     this.lastSync = {};
   }
+  
+  async function syncSalesTransactions() {
+  console.log('🔄 Syncing Line Items to sales_transactions collection...');
+  try {
+    const db = admin.firestore();
+    // Fetch all the orders you want to process
+    const salesOrders = await zohoReportsService.getSalesOrders('2_years');
+
+    const transactions = [];
+    salesOrders.forEach(order => {
+      if (order.line_items && Array.isArray(order.line_items)) {
+        order.line_items.forEach(item => {
+          // Create a new, flat object for each line item
+          transactions.push({
+            // Line item data
+            transaction_id: item.line_item_id, // Use line_item_id as the document ID
+            item_id: item.item_id,
+            item_name: item.name,
+            sku: item.sku,
+            quantity: parseInt(item.quantity || 0),
+            price: parseFloat(item.rate || 0),
+            total: parseFloat(item.total || 0),
+
+            // Copied data from the parent order
+            order_id: order.salesorder_id,
+            order_number: order.salesorder_number,
+            order_date: order.date,
+            customer_id: order.customer_id,
+            customer_name: order.customer_name,
+            salesperson_id: order.salesperson_id,
+            salesperson_name: order.salesperson_name
+          });
+        });
+      }
+    });
+
+    if (transactions.length === 0) {
+      console.log('✅ No new transactions to sync.');
+      return { success: true, count: 0 };
+    }
+
+    // Use your existing batch write helper to safely write all transactions
+    await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
+    
+    return { success: true, count: transactions.length };
+    
+  } catch (error) {
+    console.error('❌ Sales transactions sync failed:', error);
+    return { success: false, error: error.message };
+  }
+}
   
   // Add this helper function inside the CronDataSyncService class
 
@@ -118,7 +169,7 @@ class CronDataSyncService {
       console.log('🔄 Starting medium frequency sync...');
       
       // Brand performance with limited pagination to avoid 400 errors
-      const brands = await this.getBrandPerformanceSafe();
+      const brands = await zohoReportsService.getBrandPerformance();
       await this.cacheData('brand_performance', brands, '2hr');
       
       // Customer analytics (30 days)
@@ -157,6 +208,8 @@ class CronDataSyncService {
    */
    // Replace your existing lowFrequencySync function with this one
 
+// Replace your existing lowFrequencySync function with this one
+
   async lowFrequencySync() {
     const jobType = 'low-frequency';
     
@@ -167,26 +220,34 @@ class CronDataSyncService {
 
     this.isRunning.set(jobType, true);
     const startTime = Date.now();
-    const db = admin.firestore(); // Ensure db is defined
+    const db = admin.firestore();
 
     try {
       console.log('🔄 Starting low frequency sync (full data refresh)...');
       
-      // --- 1. Sync Sales Orders to 'orders' collection ---
+      // ================================================================
+      // NEW: Sync all products and customers first
+      // ================================================================
+      console.log('📦 Syncing all products from CRM...');
+      const productSyncResult = await syncInventory(true); // true = force full sync
+      
+
+      // --- Sync Sales Orders to 'orders' collection ---
       const allOrders = await zohoReportsService.getSalesOrders('2_years');
       await this._batchWrite(db, 'orders', allOrders, 'salesorder_id');
 
-      // --- 2. Sync Invoices to 'invoices' collection ---
+      // --- Sync Invoices to 'invoices' collection ---
       const allInvoicesData = await zohoReportsService.getInvoices('2_years');
       await this._batchWrite(db, 'invoices', allInvoicesData.all, 'invoice_id');
 
-      // --- 3. Sync Purchase Orders to 'purchase_orders' collection ---
+      // --- Sync Purchase Orders to 'purchase_orders' collection ---
       const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('2_years');
       await this._batchWrite(db, 'purchase_orders', allPurchaseOrders, 'purchaseorder_id');
       
       console.log('🔗 Starting customer ID mapping as part of low-frequency sync...');
       const customerIdSyncResult = await syncInventoryCustomerIds();
       
+      await this.syncSalesTransactions();
       await this.cleanupOldCache(); 
       
       const duration = Date.now() - startTime;
@@ -197,10 +258,12 @@ class CronDataSyncService {
         success: true, 
         duration,
         recordsProcessed: {
+          products: productSyncResult.stats,
           orders: allOrders.length,
           invoices: allInvoicesData.all.length,
           purchaseOrders: allPurchaseOrders.length,
           customerIdsMapped: customerIdSyncResult.processed
+          transactions: transactionSyncResult.count 
         }
       };
       
