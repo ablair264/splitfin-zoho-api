@@ -4,84 +4,81 @@ import zohoReportsService from './zohoReportsService.js';
 
 class FastDashboardService {
   constructor() {
-    this.fallbackTimeout = 5000; // 5 second fallback timeout
+    this.fallbackTimeout = 5000; // Still unused since fallback is disabled
   }
 
   /**
-   * Fast dashboard data retrieval using cached data
-   * Falls back to live API calls if cache is empty
+   * Fast dashboard data retrieval using cached data only
+   * Throws error if cache is missing or incomplete
    */
   async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
-     const startTime = Date.now();
-  
-  try {
-    console.log(`⚡ Fast dashboard data fetch for user ${userId}, range: ${dateRange}`);
-    
-    // Get user context (code remains the same)
-    const db = admin.firestore();
-    // ...
-    const isAgent = userData.role === 'salesAgent';
-    
-    // Get data from cache, ignoring freshness
-    const cachedData = await this.getCachedDashboardData(userId, dateRange, isAgent);
-    
-    // If cache is still empty after removing the age check, it means CRONs have never run.
-    if (!cachedData) {
-      throw new Error('Cache is empty. Please run a manual data sync. Fallback to live API is disabled.');
+    const startTime = Date.now();
+
+    try {
+      console.log(`⚡ Fast dashboard data fetch for user ${userId}, range: ${dateRange}`);
+
+      const userDoc = await db.collection('users').doc(userId).get();
+      if (!userDoc.exists) {
+        throw new Error(`User ${userId} not found`);
+      }
+
+      const userData = userDoc.data();
+      const isAgent = userData.role === 'salesAgent';
+
+      // Fetch cached dashboard data (no freshness checks)
+      const cachedData = await this.getCachedDashboardData(userId, dateRange, isAgent);
+
+      if (!cachedData) {
+        throw new Error('❌ Cache is empty or incomplete. Please run a manual data sync.');
+      }
+
+      const loadTime = Date.now() - startTime;
+      console.log(`🚀 Dashboard loaded from cache in ${loadTime}ms (Stale data allowed)`);
+
+      return {
+        ...cachedData,
+        loadTime,
+        dataSource: 'cache',
+        lastUpdated: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('❌ Fast dashboard error:', error.message);
+      throw error;
     }
-    
-    // The fallback logic is now completely removed.
-    // The function will only return cached data.
-    const loadTime = Date.now() - startTime;
-    console.log(`🚀 Dashboard loaded from cache in ${loadTime}ms (Stale data allowed)`);
-    
-    return {
-      ...cachedData,
-      loadTime,
-      dataSource: 'cache',
-      lastUpdated: new Date().toISOString()
-    };
-      
-  } catch (error) {
-    console.error('❌ Fast dashboard error:', error);
-    throw error;
-  }
   }
 
   /**
-   * Get dashboard data from cache
+   * Retrieve cached dashboard data (may be stale)
    */
   async getCachedDashboardData(userId, dateRange, isAgent) {
     try {
-      // Get cached data with appropriate freshness requirements
-  const [
-    recentOrders,
-    quickMetrics,
-    brandPerformance,
-    customerAnalytics,
-    revenueAnalysis,
-    agentPerformance,
-    recentInvoices
-  ] = await Promise.all([
-    // The max age argument has been removed to allow stale data
-    cronDataSyncService.getCachedData('recent_orders'),
-    cronDataSyncService.getCachedData('quick_metrics'),
-    cronDataSyncService.getCachedData('brand_performance'),
-    cronDataSyncService.getCachedData('customer_analytics'),
-    cronDataSyncService.getCachedData('revenue_analysis'),
-    !isAgent ? cronDataSyncService.getCachedData('agent_performance') : null,
-    cronDataSyncService.getCachedData('recent_invoices')
-  ]);
+      const [
+        recentOrders,
+        quickMetrics,
+        brandPerformance,
+        customerAnalytics,
+        revenueAnalysis,
+        agentPerformance,
+        recentInvoices
+      ] = await Promise.all([
+        cronDataSyncService.getCachedData('recent_orders'),
+        cronDataSyncService.getCachedData('quick_metrics'),
+        cronDataSyncService.getCachedData('brand_performance'),
+        cronDataSyncService.getCachedData('customer_analytics'),
+        cronDataSyncService.getCachedData('revenue_analysis'),
+        !isAgent ? cronDataSyncService.getCachedData('agent_performance') : null,
+        cronDataSyncService.getCachedData('recent_invoices')
+      ]);
 
-      // Check if we have enough cached data to build a dashboard
+      // Validate essential blocks only (optional: check others too)
       if (!recentOrders || !quickMetrics || !brandPerformance) {
-        console.log('❌ Insufficient cached data for dashboard');
+        console.warn('⚠️ Missing critical cache data: orders, metrics, or brand performance');
         return null;
       }
 
-      // Build dashboard from cached data
       const overview = this.buildOverview(recentOrders, customerAnalytics, quickMetrics);
-      
+
       return {
         role: isAgent ? 'salesAgent' : 'brandManager',
         dateRange,
@@ -110,105 +107,15 @@ class FastDashboardService {
           revenue: this.getDataFreshness('revenue_analysis')
         }
       };
-      
+
     } catch (error) {
-      console.error('❌ Error getting cached dashboard data:', error);
+      console.error('❌ Error getting cached dashboard data:', error.message);
       return null;
     }
   }
+}
 
-  /**
-   * Fallback to live API calls (original method, but faster)
-   */
-  async getLiveDashboardData(userId, dateRange, customDateRange, userData) {
-    const isAgent = userData.role === 'salesAgent';
-    const agentId = userData.zohospID;
-    
-    try {
-      // Use Promise.allSettled to handle partial failures gracefully
-      const results = await Promise.allSettled([
-        zohoReportsService.getRevenueAnalysis(dateRange, customDateRange),
-        zohoReportsService.getSalesOrders(dateRange, customDateRange, isAgent ? agentId : null),
-        isAgent ? 
-          zohoReportsService.getAgentInvoices(agentId, dateRange, customDateRange) : 
-          zohoReportsService.getInvoices(dateRange, customDateRange),
-        // Skip the problematic brand performance for now
-        Promise.resolve({ brands: [], summary: { totalBrands: 0, totalRevenue: 0 } }),
-        zohoReportsService.getCustomerAnalytics(dateRange, customDateRange).catch(() => ({ 
-          customers: [], 
-          summary: { totalCustomers: 0, activeCustomers: 0 } 
-        }))
-      ]);
-
-      // Extract results, using defaults for failed promises
-      const [
-        revenueResult,
-        salesOrdersResult,
-        invoicesResult,
-        brandResult,
-        customerResult
-      ] = results;
-
-      const revenue = revenueResult.status === 'fulfilled' ? revenueResult.value : { grossRevenue: 0, netRevenue: 0 };
-      const salesOrders = salesOrdersResult.status === 'fulfilled' ? salesOrdersResult.value : [];
-      const invoices = invoicesResult.status === 'fulfilled' ? invoicesResult.value : { outstanding: [], paid: [], summary: {} };
-      const brandPerformance = brandResult.status === 'fulfilled' ? brandResult.value : { brands: [], summary: {} };
-      const customerAnalytics = customerResult.status === 'fulfilled' ? customerResult.value : { customers: [], summary: {} };
-
-      // Build overview from live data
-      const overview = {
-        sales: {
-          totalOrders: salesOrders.length,
-          totalRevenue: salesOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0),
-          averageOrderValue: salesOrders.length > 0 ? 
-            salesOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0) / salesOrders.length : 0,
-          completedOrders: salesOrders.filter(order => order.status === 'confirmed').length,
-          pendingOrders: salesOrders.filter(order => order.status === 'draft').length
-        },
-        topItems: this.calculateTopItems(salesOrders),
-        customers: {
-          totalCustomers: customerAnalytics.summary?.totalCustomers || 0,
-          activeCustomers: customerAnalytics.summary?.activeCustomers || 0,
-          topCustomers: customerAnalytics.customers?.slice(0, 5) || [],
-          averageOrdersPerCustomer: customerAnalytics.customers?.length > 0 ? 
-            customerAnalytics.customers.reduce((sum, c) => sum + (c.orderCount || 0), 0) / customerAnalytics.customers.length : 0
-        }
-      };
-
-      return {
-        role: userData.role,
-        dateRange,
-        overview,
-        revenue,
-        orders: {
-          salesOrders: {
-            total: salesOrders.length,
-            totalValue: overview.sales.totalRevenue,
-            averageValue: overview.sales.averageOrderValue,
-            latest: salesOrders.slice(0, 10)
-          }
-        },
-        invoices,
-        performance: {
-          brands: brandPerformance.brands || [],
-          customers: customerAnalytics.customers?.slice(0, 10) || [],
-          topItems: overview.topItems,
-          trends: this.calculateQuickTrends(salesOrders),
-          agents: [] // Skip agent performance in live mode for speed
-        },
-        dataFreshness: {
-          orders: 'Live',
-          metrics: 'Live',
-          brands: 'Disabled (API Error)',
-          revenue: 'Live'
-        }
-      };
-      
-    } catch (error) {
-      console.error('❌ Error in live dashboard data fetch:', error);
-      throw error;
-    }
-  }
+ 
 
   /**
    * Build overview section from available data
