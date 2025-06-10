@@ -11,11 +11,14 @@ class FastDashboardService {
    * Fast dashboard data retrieval using cached data only.
    * Throws error if cache is missing or incomplete.
    */
-  async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
+async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
     const startTime = Date.now();
 
     try {
       console.log(`⚡ Fast dashboard data fetch for user ${userId}, range: ${dateRange}`);
+
+      // Define the db variable here
+      const db = admin.firestore();
 
       const userDoc = await db.collection('users').doc(userId).get();
       if (!userDoc.exists) {
@@ -44,7 +47,6 @@ class FastDashboardService {
       throw error;
     }
   }
-
   /**
    * Retrieve cached dashboard data (may be stale).
    */
