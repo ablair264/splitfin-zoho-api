@@ -138,6 +138,12 @@ class CronDataSyncService {
       const trends = await this.calculateHistoricalTrends(allOrders);
       await this.cacheData('historical_trends', trends, '24hr');
       
+        const allItems = await zohoReportsService.getItems();
+  await this.cacheData('all_items', allItems, '24hr');
+      
+        const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('90_days');
+  await this.cacheData('all_purchase_orders', allPurchaseOrders, '24hr');
+      
       // Full invoices sync
       const allInvoices = await zohoReportsService.getInvoices('90_days');
       await this.cacheData('all_invoices', allInvoices, '24hr');
