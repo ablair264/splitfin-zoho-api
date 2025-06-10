@@ -21,7 +21,7 @@ import firebaseOrderListener from './firebaseOrderListener.js';
 import firestoreSyncService from './firestoreSyncService.js';
 import reportsRoutes from './routes/reports.js';
 import cronRoutes from './routes/cron.js';
-import aiInsightsRoutes from './routes/ai-insights.js';
+import aiInsightsRoutes from './routes/ai_insights.js';
 import productsRoutes from './routes/products.js'; // Add this import
 
 const __filename = fileURLToPath(import.meta.url);
