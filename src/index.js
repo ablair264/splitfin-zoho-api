@@ -251,7 +251,7 @@ app.post('/api/initial-sync', async (req, res) => {
       success: false,
       error: error.message
     });
-});
+
 
 // ── Firebase Services Management (conditional) ──────────────────────
 app.get('/api/listener/status', (req, res) => {
