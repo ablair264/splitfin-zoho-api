@@ -8,8 +8,8 @@ class FastDashboardService {
   }
 
   /**
-   * Fast dashboard data retrieval using cached data only
-   * Throws error if cache is missing or incomplete
+   * Fast dashboard data retrieval using cached data only.
+   * Throws error if cache is missing or incomplete.
    */
   async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
     const startTime = Date.now();
@@ -25,9 +25,7 @@ class FastDashboardService {
       const userData = userDoc.data();
       const isAgent = userData.role === 'salesAgent';
 
-      // Fetch cached dashboard data (no freshness checks)
       const cachedData = await this.getCachedDashboardData(userId, dateRange, isAgent);
-
       if (!cachedData) {
         throw new Error('❌ Cache is empty or incomplete. Please run a manual data sync.');
       }
@@ -41,7 +39,6 @@ class FastDashboardService {
         dataSource: 'cache',
         lastUpdated: new Date().toISOString()
       };
-
     } catch (error) {
       console.error('❌ Fast dashboard error:', error.message);
       throw error;
@@ -49,7 +46,7 @@ class FastDashboardService {
   }
 
   /**
-   * Retrieve cached dashboard data (may be stale)
+   * Retrieve cached dashboard data (may be stale).
    */
   async getCachedDashboardData(userId, dateRange, isAgent) {
     try {
@@ -71,7 +68,6 @@ class FastDashboardService {
         cronDataSyncService.getCachedData('recent_invoices')
       ]);
 
-      // Validate essential blocks only (optional: check others too)
       if (!recentOrders || !quickMetrics || !brandPerformance) {
         console.warn('⚠️ Missing critical cache data: orders, metrics, or brand performance');
         return null;
@@ -107,22 +103,18 @@ class FastDashboardService {
           revenue: this.getDataFreshness('revenue_analysis')
         }
       };
-
     } catch (error) {
       console.error('❌ Error getting cached dashboard data:', error.message);
       return null;
     }
   }
-}
-
- 
 
   /**
-   * Build overview section from available data
+   * Build overview section from available data.
    */
   buildOverview(orders = [], customers = null, metrics = null) {
     const totalRevenue = orders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
-    
+
     return {
       sales: {
         totalOrders: orders.length,
@@ -136,18 +128,19 @@ class FastDashboardService {
         totalCustomers: customers?.summary?.totalCustomers || 0,
         activeCustomers: customers?.summary?.activeCustomers || 0,
         topCustomers: customers?.customers?.slice(0, 5) || [],
-        averageOrdersPerCustomer: customers?.customers?.length > 0 ? 
-          customers.customers.reduce((sum, c) => sum + (c.orderCount || 0), 0) / customers.customers.length : 0
+        averageOrdersPerCustomer: customers?.customers?.length > 0
+          ? customers.customers.reduce((sum, c) => sum + (c.orderCount || 0), 0) / customers.customers.length
+          : 0
       }
     };
   }
 
   /**
-   * Calculate top selling items from sales orders
+   * Calculate top selling items from sales orders.
    */
   calculateTopItems(salesOrders) {
     const itemStats = new Map();
-    
+
     salesOrders.forEach(order => {
       if (order.line_items && Array.isArray(order.line_items)) {
         order.line_items.forEach(item => {
@@ -160,29 +153,29 @@ class FastDashboardService {
               revenue: 0
             });
           }
-          
+
           const stats = itemStats.get(item.item_id);
           stats.quantity += parseInt(item.quantity || 0);
           stats.revenue += parseFloat(item.total || 0);
         });
       }
     });
-    
+
     return Array.from(itemStats.values())
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 10);
   }
 
   /**
-   * Calculate quick trends from recent orders
+   * Calculate quick trends from recent orders.
    */
   calculateQuickTrends(salesOrders) {
     const trends = new Map();
-    
+
     salesOrders.forEach(order => {
       const date = new Date(order.date);
       const period = date.toISOString().split('T')[0]; // YYYY-MM-DD
-      
+
       if (!trends.has(period)) {
         trends.set(period, {
           period,
@@ -191,28 +184,27 @@ class FastDashboardService {
           date: period
         });
       }
-      
+
       const trend = trends.get(period);
       trend.orders++;
       trend.revenue += parseFloat(order.total || 0);
     });
-    
+
     return Array.from(trends.values())
       .sort((a, b) => new Date(a.date) - new Date(b.date))
       .slice(-30); // Last 30 days
   }
 
   /**
-   * Get data freshness information
+   * Get data freshness information.
    */
   getDataFreshness(cacheKey) {
-    // This would need to be implemented to check cache timestamps
-    // For now, return a simple status
+    // This would need to be implemented to check cache timestamps.
     return 'Cached (< 2hr)';
   }
 
   /**
-   * Health check for the fast dashboard service
+   * Health check for the fast dashboard service.
    */
   async healthCheck() {
     try {
@@ -229,15 +221,16 @@ class FastDashboardService {
       };
 
       const healthScore = Object.values(cacheHealth).filter(Boolean).length / Object.keys(cacheHealth).length;
-      
+
       return {
         status: healthScore > 0.5 ? 'healthy' : 'degraded',
         healthScore: Math.round(healthScore * 100),
         cache: cacheHealth,
-        recommendation: healthScore < 0.5 ? 'Run manual sync to populate cache' : 'All systems operational',
+        recommendation: healthScore < 0.5
+          ? 'Run manual sync to populate cache'
+          : 'All systems operational',
         timestamp: new Date().toISOString()
       };
-      
     } catch (error) {
       return {
         status: 'error',
