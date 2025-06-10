@@ -220,39 +220,6 @@ app.get('/health', async (req, res) => {
   res.status(200).json(healthData);
 });
 
-// ── Initial Sync Endpoint (Production) ──────────────────────────────
-app.post('/api/initial-sync', async (req, res) => {
-  try {
-    const { secret } = req.body;
-    
-    // Add a secret to prevent accidental triggers
-    if (IS_PRODUCTION && secret !== process.env.INITIAL_SYNC_SECRET) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid secret'
-      });
-    }
-    
-    console.log('🚀 Starting initial CRM-first sync...');
-    
-    const result = await performInitialSync();
-    
-    res.json({
-      success: true,
-      result,
-      message: 'Initial CRM-first sync completed. CRON jobs will handle ongoing sync.',
-      dataStrategy: 'Products synced from CRM, CRON jobs scheduled for updates',
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Initial sync failed:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-
-
 // ── Firebase Services Management (conditional) ──────────────────────
 app.get('/api/listener/status', (req, res) => {
   if (CRON_MODE) {
