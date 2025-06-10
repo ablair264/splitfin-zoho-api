@@ -434,29 +434,32 @@ async function getAccessToken() {
 
 // Items endpoint with sync status metadata (enhanced with CRM info)
 app.get('/api/items', async (req, res) => {
-  try {
-    const includeMetadata = req.query.metadata === 'true';
-    
-    const snap = await db.collection('products').get();
-    const products = snap.docs.map(d => d.data());
-    
-    let response = { 
-      items: products,
-      dataStrategy: CRON_MODE ? 'CRON-cached with live fallback' : 'CRM-first with Inventory fallback'  // UPDATED
-    };
-    
-    if (includeMetadata) {
-      const syncStatus = await getSyncStatus();
-      response.syncMetadata = syncStatus;
-      response.syncMetadata.dataSource = 'CRM';
-      response.syncMetadata.mode = CRON_MODE ? 'cron-optimized' : 'real-time';  // NEW
-    }
-    
-    res.json(response);
-  } catch (err) {
-    console.error('Firestore /api/items failed:', err);
-    res.status(500).send('Items fetch failed');
-  }
+  try {
+    // ADD THIS LINE TO FIX THE ERROR
+    const db = admin.firestore();
+
+    const includeMetadata = req.query.metadata === 'true';
+    
+    const snap = await db.collection('products').get();
+    const products = snap.docs.map(d => d.data());
+    
+    let response = { 
+      items: products,
+      dataStrategy: CRON_MODE ? 'CRON-cached with live fallback' : 'CRM-first with Inventory fallback'
+    };
+    
+    if (includeMetadata) {
+      const syncStatus = await getSyncStatus();
+      response.syncMetadata = syncStatus;
+      response.syncMetadata.dataSource = 'CRM';
+      response.syncMetadata.mode = CRON_MODE ? 'cron-optimized' : 'real-time';
+    }
+    
+    res.json(response);
+  } catch (err) {
+    console.error('Firestore /api/items failed:', err);
+    res.status(500).send('Items fetch failed');
+  }
 });
 
 // Batch sync endpoint for mobile apps (conditional)

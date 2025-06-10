@@ -265,36 +265,31 @@ class CronDataSyncService {
     }
   }
 
-  /**
-   * GET CACHED DATA with freshness check
-   */
-  async getCachedData(key, maxAge = null) {
-    try {
-      const db = admin.firestore();
-      const doc = await db.collection('dashboard_cache').doc(key).get();
-      
-      if (!doc.exists) {
-        console.log(`❌ No cached data found for ${key}`);
-        return null;
-      }
-      
-      const cached = doc.data();
-      const age = Date.now() - new Date(cached.timestamp).getTime();
-      const isExpired = maxAge ? age > maxAge : Date.now() > new Date(cached.expires).getTime();
-      
-      if (isExpired) {
-        console.log(`⏰ Cached data for ${key} is stale (${Math.round(age/1000)}s old)`);
-        return null;
-      }
-      
-      console.log(`✅ Using cached data for ${key} (${Math.round(age/1000)}s old)`);
-      return cached.data;
-      
-    } catch (error) {
-      console.error(`❌ Error getting cached data for ${key}:`, error);
-      return null;
-    }
-  }
+
+  async getCachedData(key) { // The 'maxAge' parameter is no longer needed
+    try {
+      const db = admin.firestore();
+      const doc = await db.collection('dashboard_cache').doc(key).get();
+      
+      if (!doc.exists) {
+        console.log(`❌ No cached data found for ${key}`);
+        return null;
+      }
+      
+      const cached = doc.data();
+      const age = Date.now() - new Date(cached.timestamp).getTime();
+
+      // The 'if (isExpired)' block has been completely removed.
+      // We will now log the age and return the data regardless.
+      
+      console.log(`✅ Using cached data for ${key} (${Math.round(age/1000)}s old) - Stale data is allowed.`);
+      return cached.data;
+      
+    } catch (error) {
+      console.error(`❌ Error getting cached data for ${key}:`, error);
+      return null;
+    }
+  }
 
   /**
    * CALCULATE QUICK METRICS from cached data
