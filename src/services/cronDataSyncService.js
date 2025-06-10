@@ -4,6 +4,7 @@
 
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
+import { syncInventoryCustomerIds } from '../syncInventory.js';
 
 class CronDataSyncService {
   constructor() {
@@ -162,10 +163,9 @@ class CronDataSyncService {
       await purchaseOrdersBatch.commit();
       console.log(`✅ Synced ${allPurchaseOrders.length} documents to 'purchase_orders' collection.`);
       
-      // Note: We are no longer caching historical_trends or all_items here,
-      // as they can be calculated from the main collections if needed.
+      console.log('🔗 Starting customer ID mapping as part of low-frequency sync...');
+      const customerIdSyncResult = await syncInventoryCustomerIds();
       
-      // You can keep this or remove it, as it's less relevant now.
       await this.cleanupOldCache(); 
       
       const duration = Date.now() - startTime;
@@ -178,7 +178,8 @@ class CronDataSyncService {
         recordsProcessed: {
           orders: allOrders.length,
           invoices: allInvoicesData.all.length,
-          purchaseOrders: allPurchaseOrders.length
+          purchaseOrders: allPurchaseOrders.length,
+          customerIdsMapped: customerIdSyncResult.processed
         }
       };
       
