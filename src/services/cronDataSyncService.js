@@ -132,7 +132,7 @@ class CronDataSyncService {
       console.log('🔄 Starting low frequency sync (full data refresh)...');
       
       // --- 1. Sync Sales Orders to 'orders' collection ---
-      const allOrders = await zohoReportsService.getSalesOrders('90_days');
+      const allOrders = await zohoReportsService.getSalesOrders('2_years');
       const ordersBatch = db.batch();
       allOrders.forEach(order => {
         const docRef = db.collection('orders').doc(order.salesorder_id);
@@ -142,7 +142,7 @@ class CronDataSyncService {
       console.log(`✅ Synced ${allOrders.length} documents to 'orders' collection.`);
 
       // --- 2. Sync Invoices to 'invoices' collection ---
-      const allInvoicesData = await zohoReportsService.getInvoices('90_days');
+      const allInvoicesData = await zohoReportsService.getInvoices('2_years');
       const invoicesBatch = db.batch();
       // Note: your getInvoices function returns an object with an 'all' property
       allInvoicesData.all.forEach(invoice => {
@@ -153,7 +153,7 @@ class CronDataSyncService {
       console.log(`✅ Synced ${allInvoicesData.all.length} documents to 'invoices' collection.`);
 
       // --- 3. Sync Purchase Orders to 'purchase_orders' collection ---
-      const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('90_days');
+      const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('2_years');
       const purchaseOrdersBatch = db.batch();
       allPurchaseOrders.forEach(po => {
         const docRef = db.collection('purchase_orders').doc(po.purchaseorder_id);
