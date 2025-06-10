@@ -11,6 +11,44 @@ class CronDataSyncService {
     this.isRunning = new Map(); // Track running jobs by type
     this.lastSync = {};
   }
+  
+  // Add this helper function inside the CronDataSyncService class
+
+  /**
+   * Writes an array of data to a Firestore collection in batches of 499.
+   * @param {FirebaseFirestore.Firestore} db The Firestore instance.
+   * @param {string} collectionName The name of the collection to write to.
+   * @param {Array<Object>} dataArray The array of data to write.
+   * @param {string} idKey The property name in each object to use as the document ID.
+   */
+  async _batchWrite(db, collectionName, dataArray, idKey) {
+    if (!dataArray || dataArray.length === 0) {
+      console.log(`No data to write for ${collectionName}, skipping.`);
+      return;
+    }
+
+    const collectionRef = db.collection(collectionName);
+    const promises = [];
+    
+    // Split the data into chunks of 499 (safely below the 500 limit)
+    for (let i = 0; i < dataArray.length; i += 499) {
+      const chunk = dataArray.slice(i, i + 499);
+      const batch = db.batch();
+      
+      chunk.forEach(item => {
+        const docId = item[idKey];
+        if (docId) { // Ensure there's an ID to use
+          const docRef = collectionRef.doc(docId.toString());
+          batch.set(docRef, item, { merge: true });
+        }
+      });
+      
+      promises.push(batch.commit());
+    }
+
+    await Promise.all(promises);
+    console.log(`✅ Synced ${dataArray.length} documents to '${collectionName}' collection in ${promises.length} batch(es).`);
+  }
 
   /**
    * HIGH FREQUENCY SYNC - Every 15 minutes during business hours
@@ -117,7 +155,9 @@ class CronDataSyncService {
    * LOW FREQUENCY SYNC - Daily at 2 AM
    * Heavy data processing and full refreshes
    */
-   async lowFrequencySync() {
+   // Replace your existing lowFrequencySync function with this one
+
+  async lowFrequencySync() {
     const jobType = 'low-frequency';
     
     if (this.isRunning.get(jobType)) {
@@ -134,34 +174,15 @@ class CronDataSyncService {
       
       // --- 1. Sync Sales Orders to 'orders' collection ---
       const allOrders = await zohoReportsService.getSalesOrders('2_years');
-      const ordersBatch = db.batch();
-      allOrders.forEach(order => {
-        const docRef = db.collection('orders').doc(order.salesorder_id);
-        ordersBatch.set(docRef, order, { merge: true });
-      });
-      await ordersBatch.commit();
-      console.log(`✅ Synced ${allOrders.length} documents to 'orders' collection.`);
+      await this._batchWrite(db, 'orders', allOrders, 'salesorder_id');
 
       // --- 2. Sync Invoices to 'invoices' collection ---
       const allInvoicesData = await zohoReportsService.getInvoices('2_years');
-      const invoicesBatch = db.batch();
-      // Note: your getInvoices function returns an object with an 'all' property
-      allInvoicesData.all.forEach(invoice => {
-        const docRef = db.collection('invoices').doc(invoice.invoice_id);
-        invoicesBatch.set(docRef, invoice, { merge: true });
-      });
-      await invoicesBatch.commit();
-      console.log(`✅ Synced ${allInvoicesData.all.length} documents to 'invoices' collection.`);
+      await this._batchWrite(db, 'invoices', allInvoicesData.all, 'invoice_id');
 
       // --- 3. Sync Purchase Orders to 'purchase_orders' collection ---
       const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('2_years');
-      const purchaseOrdersBatch = db.batch();
-      allPurchaseOrders.forEach(po => {
-        const docRef = db.collection('purchase_orders').doc(po.purchaseorder_id);
-        purchaseOrdersBatch.set(docRef, po, { merge: true });
-      });
-      await purchaseOrdersBatch.commit();
-      console.log(`✅ Synced ${allPurchaseOrders.length} documents to 'purchase_orders' collection.`);
+      await this._batchWrite(db, 'purchase_orders', allPurchaseOrders, 'purchaseorder_id');
       
       console.log('🔗 Starting customer ID mapping as part of low-frequency sync...');
       const customerIdSyncResult = await syncInventoryCustomerIds();
