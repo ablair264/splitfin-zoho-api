@@ -156,6 +156,10 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
       case 'this_year':
         startDate = new Date(now.getFullYear(), 0, 1);
         endDate = now;
+        break; 
+      case '2_years':
+        startDate = new Date(now.getFullYear() - 2, now.getMonth(), now.getDate());
+        endDate = now;
         break;
       case 'custom':
         if (customDateRange) {
