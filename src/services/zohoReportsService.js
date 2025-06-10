@@ -357,7 +357,6 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
           stats.orders.add(order.salesorder_id);
         });
       }
-    });
 
     // Convert to array and calculate additional metrics
     const brands = Array.from(brandStats.values()).map(stats => ({
