@@ -46,6 +46,7 @@ class FastDashboardService {
     console.error('❌ Fast dashboard error:', error);
     throw error;
   }
+  }
 
   /**
    * Get dashboard data from cache
