@@ -294,87 +294,90 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
 /**
  * Get brand performance data - AMENDED to use Firestore for accurate brand lookup
  */
+// Replace the existing getBrandPerformance function with this one
+
+/**
+ * Calculates brand performance by querying the analytics-optimized 
+ * 'sales_transactions' collection.
+ */
 async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   try {
-    console.log(`🏷️ Fetching brand performance for ${dateRange} using Firestore lookup`);
-    
+    console.log(`🏷️  Fetching brand performance for ${dateRange} using analytics collections...`);
+    const db = admin.firestore();
+
     // =======================================================================
     // STEP 1: Retrieve all products from Firebase to get brand information
+    // This part remains the same.
     // =======================================================================
-    const db = admin.firestore();
     const productsSnapshot = await db.collection('products').get();
-    
-    // Create an efficient lookup map where the key is the product ID 
-    // and the value is the brand name.
     const productBrandMap = new Map();
     productsSnapshot.forEach(doc => {
       const product = doc.data();
-      // Per your plan, we use the 'brand_normalized' field.
-      if (product.id && product.brand_normalized) {
-        productBrandMap.set(product.id.toString(), product.brand_normalized);
+      // Use zohoCRMId as the key, which should match the product's 'id' field
+      if (product.zohoCRMId && product.brand_normalized) {
+        productBrandMap.set(product.zohoCRMId.toString(), product.brand_normalized);
       }
     });
-    console.log(`🗺️ Created brand lookup map with ${productBrandMap.size} products.`);
+    console.log(`🗺️  Created brand lookup map with ${productBrandMap.size} products.`);
 
 
     // =======================================================================
-    // STEP 2: Get all sales orders for the period
+    // STEP 2: Query the 'sales_transactions' collection for the period
+    // This is much more efficient than fetching all sales orders.
     // =======================================================================
-    const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
+    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
     
-    if (!salesOrders || salesOrders.length === 0) {
-      console.log('📊 No sales orders found for brand performance calculation');
+    const transactionsSnapshot = await db.collection('sales_transactions')
+      .where('order_date', '>=', startDate.toISOString())
+      .where('order_date', '<=', endDate.toISOString())
+      .get();
+      
+    if (transactionsSnapshot.empty) {
+      console.log('📊 No transactions found for brand performance calculation in this period.');
       return {
         brands: [],
         summary: { totalBrands: 0, totalRevenue: 0, topBrand: null },
         period: dateRange
       };
     }
+    const transactions = transactionsSnapshot.docs.map(doc => doc.data());
+
 
     // =======================================================================
-    // STEP 3: Match line items to the products collection to find the brand
+    // STEP 3: Aggregate the transactions to calculate brand stats
     // =======================================================================
     const brandStats = new Map();
     
-    // The 'xz' typo has been removed from this line
-    salesOrders.forEach(order => {
-      if (order.line_items && Array.isArray(order.line_items)) {
-        order.line_items.forEach(item => {
-
-          // Use the product map to find the definitive brand for this item_id
-          const brand = productBrandMap.get(item.item_id?.toString()) || 'Unknown';
-          
-          if (!brandStats.has(brand)) {
-            brandStats.set(brand, {
-              brand,
-              revenue: 0,
-              quantity: 0,
-              productCount: new Set(),
-              orders: new Set()
-            });
-          }
-          
-          const stats = brandStats.get(brand);
-          stats.revenue += parseFloat(item.total || item.amount || 0);
-          stats.quantity += parseInt(item.quantity || 0);
-          stats.productCount.add(item.item_id);
-          stats.orders.add(order.salesorder_id);
+    transactions.forEach(transaction => {
+      // Use the product map to find the definitive brand for this item_id
+      const brand = productBrandMap.get(transaction.item_id?.toString()) || 'Unknown';
+      
+      if (!brandStats.has(brand)) {
+        brandStats.set(brand, {
+          brand,
+          revenue: 0,
+          quantity: 0,
+          orders: new Set() // Use a Set to count unique orders
         });
       }
-    }); // <-- This closing bracket for salesOrders.forEach was missing
+      
+      const stats = brandStats.get(brand);
+      stats.revenue += parseFloat(transaction.total || 0);
+      stats.quantity += parseInt(transaction.quantity || 0);
+      stats.orders.add(transaction.order_id); // Add the order_id to the set
+    });
 
     // Convert to array and calculate additional metrics
     const brands = Array.from(brandStats.values()).map(stats => ({
       brand: stats.brand,
       revenue: stats.revenue,
       quantity: stats.quantity,
-      productCount: stats.productCount.size,
-      orderCount: stats.orders.size,
+      orderCount: stats.orders.size, // Get the count of unique orders
       averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0,
       marketShare: 0 // Will be calculated below
     })).sort((a, b) => b.revenue - a.revenue);
 
-    // Calculate market share
+    // The rest of this logic for calculating the summary remains the same
     const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
     brands.forEach(brand => {
       brand.marketShare = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
@@ -395,8 +398,6 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
 
   } catch (error) {
     console.error('❌ Error fetching brand performance:', error);
-    
-    // Return empty but valid structure instead of throwing
     return {
       brands: [],
       summary: { totalBrands: 0, totalRevenue: 0, topBrand: null, averageRevenuePerBrand: 0 },
