@@ -21,8 +21,8 @@ import firebaseOrderListener from './firebaseOrderListener.js';
 import firestoreSyncService from './firestoreSyncService.js';
 import reportsRoutes from './routes/reports.js';
 import cronRoutes from './routes/cron.js';
-// ADD THIS: Import the AI insights routes
 import aiInsightsRoutes from './routes/ai-insights.js';
+import productsRoutes from './routes/products.js'; // Add this import
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -79,13 +79,14 @@ app.use('/api/sync', syncRoutes);
 app.use('/api/reports', reportsRoutes);
 // ADD THIS: Mount the AI insights routes
 app.use('/api/ai-insights', aiInsightsRoutes);
+app.use('/api/products', productsRoutes);       // Add products routes
 
 // ── Root endpoint ───────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     message: 'Splitfin Zoho Integration API',
     status: 'running',
-    version: '2.5.0',  // Updated version for AI insights support
+    version: '2.6.0',  // Updated version for products and AI fixes
     environment: IS_PRODUCTION ? 'production' : 'development',
     mode: CRON_MODE ? 'cron-optimized' : 'real-time',
     features: [
@@ -97,14 +98,16 @@ app.get('/', (req, res) => {
       'Cached Dashboard',
       'Reports & Analytics',
       'Incremental Sync',
-      'AI-Powered Insights'  // NEW: Added AI insights feature
+      'AI-Powered Insights',
+      'Product Management'  // NEW: Added products feature
     ],
     dataStrategy: 'CRON-cached with live fallback',
     config: {
       cronMode: CRON_MODE,
       autoSync: ENABLE_AUTO_SYNC,
       syncInterval: `${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`,
-      aiInsights: 'enabled'  // NEW: Indicate AI insights are available
+      aiInsights: 'enabled',
+      productManagement: 'enabled'  // NEW
     },
     endpoints: {
       health: '/health',
@@ -112,10 +115,41 @@ app.get('/', (req, res) => {
       sync: '/api/sync/*',
       reports: '/api/reports/*',
       cron: '/api/cron/*',
-      aiInsights: '/api/ai-insights/*',  // NEW: AI insights endpoint
+      aiInsights: '/api/ai-insights/*',
+      products: '/api/products/*',  // NEW: Products endpoint
       oauth: '/oauth/url',
       initialSync: '/api/initial-sync'
     }
+  });
+});
+
+// Add a specific debug endpoint for AI routes
+app.get('/api/ai-insights/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'AI Insights routes are working',
+    timestamp: new Date().toISOString(),
+    availableEndpoints: [
+      'POST /api/ai-insights/card-insights',
+      'POST /api/ai-insights/dashboard-insights',
+      'POST /api/ai-insights/drill-down-insights',
+      'GET /api/ai-insights/health'
+    ]
+  });
+});
+
+// Add a specific debug endpoint for products routes
+app.get('/api/products/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Products routes are working',
+    timestamp: new Date().toISOString(),
+    availableEndpoints: [
+      'GET /api/products/sync',
+      'GET /api/products/brand/:brandName',
+      'GET /api/products/search',
+      'GET /api/products/health'
+    ]
   });
 });
 
