@@ -1,7 +1,7 @@
 // server/src/routes/products.js
 import express from 'express';
 import { ProductSyncService } from '../services/productSync.js';
-import { admin } from '../config/firebase.js'; // Your Firebase admin config
+import admin from 'firebase-admin';
 
 const router = express.Router();
 const productSync = new ProductSyncService(admin.firestore());
