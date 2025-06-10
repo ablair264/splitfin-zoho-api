@@ -297,3 +297,38 @@ export function getTokenInfo() {
     timeUntilExpiry: cachedExpiry - Date.now()
   };
 }
+
+export async function getInventoryContactIdByEmail(email) {
+  if (!email) {
+    return null;
+  }
+
+  try {
+    const token = await getAccessToken();
+    const url = `${ZOHO_CONFIG.baseUrls.inventory}/contacts`;
+    
+    const response = await axios.get(url, {
+      params: {
+        organization_id: ZOHO_CONFIG.orgId,
+        email: email
+      },
+      headers: { Authorization: `Zoho-oauthtoken ${token}` }
+    });
+
+    // The data is typically in a 'contacts' array in the response
+    const contacts = response.data?.contacts;
+
+    if (contacts && contacts.length > 0) {
+      // Return the ID of the first matching contact
+      return contacts[0].contact_id;
+    }
+
+    // Return null if no contact was found
+    return null;
+
+  } catch (error) {
+    console.error(`❌ Failed to find Zoho Inventory contact by email ${email}:`, error.message);
+    // Return null on error to prevent the sync process from halting
+    return null;
+  }
+}
