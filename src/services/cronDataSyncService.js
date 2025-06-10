@@ -116,7 +116,7 @@ class CronDataSyncService {
    * LOW FREQUENCY SYNC - Daily at 2 AM
    * Heavy data processing and full refreshes
    */
-  async lowFrequencySync() {
+   async lowFrequencySync() {
     const jobType = 'low-frequency';
     
     if (this.isRunning.get(jobType)) {
@@ -126,30 +126,47 @@ class CronDataSyncService {
 
     this.isRunning.set(jobType, true);
     const startTime = Date.now();
+    const db = admin.firestore(); // Ensure db is defined
 
     try {
       console.log('🔄 Starting low frequency sync (full data refresh)...');
       
-      // Full sales orders sync (last 90 days)
+      // --- 1. Sync Sales Orders to 'orders' collection ---
       const allOrders = await zohoReportsService.getSalesOrders('90_days');
-      await this.cacheData('all_sales_orders', allOrders, '24hr');
+      const ordersBatch = db.batch();
+      allOrders.forEach(order => {
+        const docRef = db.collection('orders').doc(order.salesorder_id);
+        ordersBatch.set(docRef, order, { merge: true });
+      });
+      await ordersBatch.commit();
+      console.log(`✅ Synced ${allOrders.length} documents to 'orders' collection.`);
+
+      // --- 2. Sync Invoices to 'invoices' collection ---
+      const allInvoicesData = await zohoReportsService.getInvoices('90_days');
+      const invoicesBatch = db.batch();
+      // Note: your getInvoices function returns an object with an 'all' property
+      allInvoicesData.all.forEach(invoice => {
+        const docRef = db.collection('invoices').doc(invoice.invoice_id);
+        invoicesBatch.set(docRef, invoice, { merge: true });
+      });
+      await invoicesBatch.commit();
+      console.log(`✅ Synced ${allInvoicesData.all.length} documents to 'invoices' collection.`);
+
+      // --- 3. Sync Purchase Orders to 'purchase_orders' collection ---
+      const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('90_days');
+      const purchaseOrdersBatch = db.batch();
+      allPurchaseOrders.forEach(po => {
+        const docRef = db.collection('purchase_orders').doc(po.purchaseorder_id);
+        purchaseOrdersBatch.set(docRef, po, { merge: true });
+      });
+      await purchaseOrdersBatch.commit();
+      console.log(`✅ Synced ${allPurchaseOrders.length} documents to 'purchase_orders' collection.`);
       
-      // Historical trends calculation
-      const trends = await this.calculateHistoricalTrends(allOrders);
-      await this.cacheData('historical_trends', trends, '24hr');
+      // Note: We are no longer caching historical_trends or all_items here,
+      // as they can be calculated from the main collections if needed.
       
-        const allItems = await zohoReportsService.getItems();
-  await this.cacheData('all_items', allItems, '24hr');
-      
-        const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('90_days');
-  await this.cacheData('all_purchase_orders', allPurchaseOrders, '24hr');
-      
-      // Full invoices sync
-      const allInvoices = await zohoReportsService.getInvoices('90_days');
-      await this.cacheData('all_invoices', allInvoices, '24hr');
-      
-      // Clean up old cache entries
-      await this.cleanupOldCache();
+      // You can keep this or remove it, as it's less relevant now.
+      await this.cleanupOldCache(); 
       
       const duration = Date.now() - startTime;
       this.lastSync.low = new Date();
@@ -158,8 +175,11 @@ class CronDataSyncService {
       return { 
         success: true, 
         duration,
-        recordsProcessed: allOrders.length + allInvoices.all.length,
-        cacheKeys: ['all_sales_orders', 'historical_trends', 'all_invoices']
+        recordsProcessed: {
+          orders: allOrders.length,
+          invoices: allInvoicesData.all.length,
+          purchaseOrders: allPurchaseOrders.length
+        }
       };
       
     } catch (error) {
@@ -169,6 +189,8 @@ class CronDataSyncService {
       this.isRunning.set(jobType, false);
     }
   }
+  
+  
 
   /**
    * SAFE BRAND PERFORMANCE - Avoids the pagination issue

@@ -284,30 +284,119 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
 /**
  * Get brand performance data from Zoho - QUICK FIX VERSION
  */
+/**
+ * Get brand performance data - AMENDED to use Firestore for accurate brand lookup
+ */
 async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   try {
-    console.log(`🏷️ Fetching brand performance for ${dateRange}`);
-    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+    console.log(`🏷️ Fetching brand performance for ${dateRange} using Firestore lookup`);
     
-    // QUICK FIX: Skip the problematic CRM Products call that's causing 400 errors
-    // and rely on sales order data only
-    let products = [];
+    // =======================================================================
+    // STEP 1: Retrieve all products from Firebase to get brand information
+    // =======================================================================
+    const db = admin.firestore();
+    const productsSnapshot = await db.collection('products').get();
     
-    // Get sales orders to calculate actual sales - this is the primary data source
+    // Create an efficient lookup map where the key is the product ID 
+    // and the value is the brand name.
+    const productBrandMap = new Map();
+    productsSnapshot.forEach(doc => {
+      const product = doc.data();
+      // Per your plan, we use the 'brand_normalized' field.
+      if (product.id && product.brand_normalized) {
+        productBrandMap.set(product.id.toString(), product.brand_normalized);
+      }
+    });
+    console.log(`🗺️ Created brand lookup map with ${productBrandMap.size} products.`);
+
+
+    // =======================================================================
+    // STEP 2: Get all sales orders for the period
+    // =======================================================================
     const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
     
     if (!salesOrders || salesOrders.length === 0) {
       console.log('📊 No sales orders found for brand performance calculation');
       return {
         brands: [],
-        summary: {
-          totalBrands: 0,
-          totalRevenue: 0,
-          topBrand: null
-        },
+        summary: { totalBrands: 0, totalRevenue: 0, topBrand: null },
         period: dateRange
       };
     }
+
+    // =======================================================================
+    // STEP 3: Match line items to the products collection to find the brand
+    // =======================================================================
+    const brandStats = new Map();
+    
+    salesOrders.forEach(order => {
+      if (order.line_items && Array.isArray(order.line_items)) {
+        order.line_items.forEach(item => {
+
+          // Use the product map to find the definitive brand for this item_id
+          const brand = productBrandMap.get(item.item_id?.toString()) || 'Unknown';
+          
+          if (!brandStats.has(brand)) {
+            brandStats.set(brand, {
+              brand,
+              revenue: 0,
+              quantity: 0,
+              productCount: new Set(),
+              orders: new Set()
+            });
+          }
+          
+          const stats = brandStats.get(brand);
+          stats.revenue += parseFloat(item.total || item.amount || 0);
+          stats.quantity += parseInt(item.quantity || 0);
+          stats.productCount.add(item.item_id);
+          stats.orders.add(order.salesorder_id);
+        });
+      }
+    });
+
+    // Convert to array and calculate additional metrics
+    const brands = Array.from(brandStats.values()).map(stats => ({
+      brand: stats.brand,
+      revenue: stats.revenue,
+      quantity: stats.quantity,
+      productCount: stats.productCount.size,
+      orderCount: stats.orders.size,
+      averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0,
+      marketShare: 0 // Will be calculated below
+    })).sort((a, b) => b.revenue - a.revenue);
+
+    // Calculate market share
+    const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
+    brands.forEach(brand => {
+      brand.marketShare = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
+    });
+
+    console.log(`✅ Brand performance calculated: ${brands.length} brands, total revenue: £${totalRevenue.toFixed(2)}`);
+
+    return {
+      brands,
+      summary: {
+        totalBrands: brands.length,
+        totalRevenue,
+        topBrand: brands[0] || null,
+        averageRevenuePerBrand: brands.length > 0 ? totalRevenue / brands.length : 0
+      },
+      period: dateRange
+    };
+
+  } catch (error) {
+    console.error('❌ Error fetching brand performance:', error);
+    
+    // Return empty but valid structure instead of throwing
+    return {
+      brands: [],
+      summary: { totalBrands: 0, totalRevenue: 0, topBrand: null, averageRevenuePerBrand: 0 },
+      period: dateRange,
+      error: error.message
+    };
+  }
+}
 
     // Calculate brand performance from sales orders only
     const brandStats = new Map();
