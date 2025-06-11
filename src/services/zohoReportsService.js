@@ -511,12 +511,7 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   /**
    * Get sales orders from Zoho Inventory
    */
-// In server/src/services/zohoReportsService.js
-
-  /**
-   * Get sales orders from Zoho Inventory - ENHANCED with parallel batching
-   */
-  async getSalesOrders(dateRange = '30_days', customDateRange = null, agentId = null) {
+   async getSalesOrders(dateRange = '30_days', customDateRange = null, agentId = null) {
     try {
       const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
       
@@ -530,7 +525,7 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
         params.salesperson_id = agentId;
       }
 
-      // STEP 1: Fetch the list of order IDs first.
+      // STEP 1: Fetch the list of orders (without details) first.
       const salesOrderList = await this.fetchPaginatedData(
         `${ZOHO_CONFIG.baseUrls.inventory}/salesorders`,
         params,
@@ -538,38 +533,20 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
       );
       
       if (!salesOrderList || salesOrderList.length === 0) {
-        return [];
+        return []; // Return empty if no orders found
       }
 
-      console.log(`Found ${salesOrderList.length} orders. Fetching details in parallel batches...`);
+      console.log(`Found ${salesOrderList.length} orders. Fetching details to get line_items...`);
 
-      // STEP 2: Process the list in small, concurrent batches.
+      // STEP 2: Loop through the list and fetch the full details for each order.
       const detailedOrders = [];
-      const batchSize = 10; // Fetch 10 orders at a time
-      const delayBetweenBatches = 1000; // Wait 1 second between each batch
-
-      for (let i = 0; i < salesOrderList.length; i += batchSize) {
-        const chunk = salesOrderList.slice(i, i + batchSize);
-        
-        console.log(`  - Processing batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(salesOrderList.length / batchSize)}...`);
-        
-        // Use Promise.all to fetch the current batch of orders concurrently
-        const batchPromises = chunk.map(orderHeader => 
-          this.getSalesOrderDetail(orderHeader.salesorder_id)
-        );
-        const batchResults = await Promise.all(batchPromises);
-
-        // Add successfully fetched orders to our main array
-        batchResults.forEach(orderDetail => {
-          if (orderDetail) {
-            detailedOrders.push(orderDetail);
-          }
-        });
-
-        // Wait before processing the next batch to avoid rate limits
-        if (i + batchSize < salesOrderList.length) {
-          await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
+      for (const orderHeader of salesOrderList) {
+        const orderDetail = await this.getSalesOrderDetail(orderHeader.salesorder_id);
+        if (orderDetail) {
+          detailedOrders.push(orderDetail);
         }
+        // Optional: add a small delay to be polite to the API
+        await new Promise(resolve => setTimeout(resolve, 50)); 
       }
 
       console.log(`✅ Successfully fetched details for ${detailedOrders.length} orders.`);
