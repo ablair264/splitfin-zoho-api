@@ -511,36 +511,53 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   /**
    * Get sales orders from Zoho Inventory
    */
-  async getSalesOrders(dateRange = '30_days', customDateRange = null, agentId = null) {
+   async getSalesOrders(dateRange = '30_days', customDateRange = null, agentId = null) {
     try {
       const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
       
       const params = {
         organization_id: ZOHO_CONFIG.orgId,
-        include_line_items: true,
         date_start: startDate.toISOString().split('T')[0],
         date_end: endDate.toISOString().split('T')[0]
       };
 
-      // Filter by agent if specified
       if (agentId) {
         params.salesperson_id = agentId;
       }
 
-      const salesOrders = await this.fetchPaginatedData(
+      // STEP 1: Fetch the list of orders (without details) first.
+      const salesOrderList = await this.fetchPaginatedData(
         `${ZOHO_CONFIG.baseUrls.inventory}/salesorders`,
         params,
         'salesorders'
       );
+      
+      if (!salesOrderList || salesOrderList.length === 0) {
+        return []; // Return empty if no orders found
+      }
 
-      return salesOrders;
+      console.log(`Found ${salesOrderList.length} orders. Fetching details to get line_items...`);
+
+      // STEP 2: Loop through the list and fetch the full details for each order.
+      const detailedOrders = [];
+      for (const orderHeader of salesOrderList) {
+        const orderDetail = await this.getSalesOrderDetail(orderHeader.salesorder_id);
+        if (orderDetail) {
+          detailedOrders.push(orderDetail);
+        }
+        // Optional: add a small delay to be polite to the API
+        await new Promise(resolve => setTimeout(resolve, 50)); 
+      }
+
+      console.log(`✅ Successfully fetched details for ${detailedOrders.length} orders.`);
+      return detailedOrders;
 
     } catch (error) {
       console.error('❌ Error fetching sales orders:', error);
       throw error;
     }
   }
-
+  
   /**
    * Get invoices from Zoho Inventory
    */
@@ -824,32 +841,34 @@ async getPurchaseOrders(dateRange = '30_days', customDateRange = null) {
   /**
    * Calculate top selling items from sales orders
    */
-  calculateTopItems(salesOrders) {
+  calculateTopItems(transactions) {
+    if (!transactions || transactions.length === 0) {
+      return [];
+    }
+
     const itemStats = new Map();
     
-    salesOrders.forEach(order => {
-      if (order.line_items) {
-        order.line_items.forEach(item => {
-          if (!itemStats.has(item.item_id)) {
-            itemStats.set(item.item_id, {
-              itemId: item.item_id,
-              name: item.name,
-              sku: item.sku || '',
-              quantity: 0,
-              revenue: 0
-            });
-          }
-          
-          const stats = itemStats.get(item.item_id);
-          stats.quantity += parseInt(item.quantity || 0);
-          stats.revenue += parseFloat(item.total || 0);
+    // Loop through the flat list of transactions instead of nested line_items
+    transactions.forEach(transaction => {
+      const itemId = transaction.item_id;
+      if (!itemStats.has(itemId)) {
+        itemStats.set(itemId, {
+          itemId: itemId,
+          name: transaction.item_name,
+          sku: transaction.sku || '',
+          quantity: 0,
+          revenue: 0
         });
       }
+      
+      const stats = itemStats.get(itemId);
+      stats.quantity += parseInt(transaction.quantity || 0);
+      stats.revenue += parseFloat(transaction.total || 0);
     });
     
     return Array.from(itemStats.values())
       .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 10);
+      .slice(0, 10); // Return the top 10 items
   }
 
   /**
