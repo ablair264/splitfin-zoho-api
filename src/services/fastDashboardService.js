@@ -13,32 +13,35 @@ class FastDashboardService {
    * Fast dashboard data retrieval using cached data only.
    * Throws error if cache is missing or incomplete.
    */
-// In server/src/services/fastDashboardService.js
-
-  async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
+async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
     const startTime = Date.now();
 
     try {
-      console.log(`⚡️ Fetching LIVE dashboard data for user ${userId}, range: ${dateRange}`);
-      
-      // Use the zohoReportsService directly to get live, filtered data
-      const liveData = await zohoReportsService.getDashboardData(
-        userId, 
-        dateRange, 
-        customDateRange
-      );
+      console.log(`⚡ Fast dashboard data fetch for user ${userId}, range: ${dateRange}`);
 
-      if (!liveData) {
-        throw new Error('Failed to retrieve live dashboard data from Zoho service.');
+      // Define the db variable here
+      const db = admin.firestore();
+
+      const userDoc = await db.collection('users').doc(userId).get();
+      if (!userDoc.exists) {
+        throw new Error(`User ${userId} not found`);
+      }
+
+      const userData = userDoc.data();
+      const isAgent = userData.role === 'salesAgent';
+
+      const cachedData = await this.getCachedDashboardData(userId, dateRange, isAgent);
+      if (!cachedData) {
+        throw new Error('❌ Cache is empty or incomplete. Please run a manual data sync.');
       }
 
       const loadTime = Date.now() - startTime;
-      console.log(`✅ Live dashboard loaded in ${loadTime}ms`);
+      console.log(`🚀 Dashboard loaded from cache in ${loadTime}ms (Stale data allowed)`);
 
       return {
-        ...liveData,
+        ...cachedData,
         loadTime,
-        dataSource: 'live',
+        dataSource: 'cache',
         lastUpdated: new Date().toISOString()
       };
     } catch (error) {
