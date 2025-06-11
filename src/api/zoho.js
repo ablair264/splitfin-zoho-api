@@ -78,7 +78,7 @@ export async function getAccessToken() {
 /**
  * Generic function for paginated Zoho requests
  */
-sync fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
+async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
   const cacheKey = `${url}_${JSON.stringify(params)}`;
   
   if (useCache && this.cache.has(cacheKey)) {
