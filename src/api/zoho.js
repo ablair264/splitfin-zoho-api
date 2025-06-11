@@ -104,8 +104,6 @@ async function fetchPaginatedData(endpoint, params = {}, maxRecords = null) {
         break;
       }
       
-      const response = await makeZohoAPIRequest(endpoint, requestParams);
-      
       if (response.data && response.data.length > 0) {
         allData = allData.concat(response.data);
         
