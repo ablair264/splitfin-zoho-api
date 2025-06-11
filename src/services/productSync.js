@@ -1,5 +1,5 @@
 // server/src/services/productSync.js
-import { fetchProductsFromCRM } from '../api/zoho.js';
+import { fetchProductsFromInventory } from '../api/zoho.js';
 
 export class ProductSyncService {
   constructor(firestore) {
@@ -12,7 +12,7 @@ export class ProductSyncService {
   async syncAllProducts() {
     try {
       // Fetch products from Zoho CRM
-      const products = await fetchProductsFromCRM();
+      const products = await fetchProductsFromInventory();
       
       // Batch write to Firestore
       const batch = this.firestore.batch();
@@ -48,7 +48,7 @@ export class ProductSyncService {
   async syncSingleProduct(zohoId) {
     try {
       // Fetch specific product from Zoho CRM
-      const products = await fetchProductsFromCRM({ 
+      const products = await fetchProductsFromInventory({ 
         criteria: `id:equals:${zohoId}` 
       });
 
