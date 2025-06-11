@@ -78,33 +78,77 @@ export async function getAccessToken() {
 /**
  * Generic function for paginated Zoho requests
  */
-async function fetchPaginatedData(url, params = {}, dataKey = 'data') {
-  const allData = [];
+async function fetchPaginatedData(endpoint, params = {}, maxRecords = null) {
+  let allData = [];
   let page = 1;
-  const perPage = ZOHO_CONFIG.pagination.defaultPerPage;
-
-  while (true) {
-    const token = await getAccessToken();
-    const response = await axios.get(url, {
-      params: { ...params, page, per_page: perPage },
-      headers: { Authorization: `Zoho-oauthtoken ${token}` }
-    });
-
-    const data = response.data;
-    const items = Array.isArray(data[dataKey]) ? data[dataKey] : data.data || [];
-    
-    if (items.length === 0) break;
-    allData.push(...items);
-
-    // Check for more pages based on response structure
-    const hasMorePages = data.page_context?.has_more_page || 
-                        data.info?.more_records || 
-                        items.length === perPage;
-    
-    if (!hasMorePages) break;
-    page++;
+  let hasMore = true;
+  let pageToken = null;
+  const perPage = params.per_page || 200;
+  
+  while (hasMore) {
+    try {
+      // Build request parameters
+      const requestParams = { ...params, per_page: perPage };
+      
+      // Use page_token if we have one (for pages beyond 2000 records)
+      if (pageToken) {
+        requestParams.page_token = pageToken;
+        // Remove page parameter when using page_token
+        delete requestParams.page;
+      } else if (page <= 10) {
+        // Only use page parameter for first 2000 records (10 pages * 200)
+        requestParams.page = page;
+      } else {
+        // We've hit the limit and don't have a page_token, stop
+        console.log('⚠️ Reached 2000 record limit without page_token');
+        break;
+      }
+      
+      const response = await makeZohoAPIRequest(endpoint, requestParams);
+      
+      if (response.data && response.data.length > 0) {
+        allData = allData.concat(response.data);
+        
+        // Check if we have a next_page_token for pagination beyond 2000 records
+        if (response.info && response.info.next_page_token) {
+          pageToken = response.info.next_page_token;
+          page++; // Still increment page for logging purposes
+        } else if (response.info && response.info.more_records && !pageToken && page < 10) {
+          // Only increment page if we're under the 2000 record limit
+          page++;
+        } else {
+          hasMore = false;
+        }
+        
+        // Check if we've reached the max records limit
+        if (maxRecords && allData.length >= maxRecords) {
+          allData = allData.slice(0, maxRecords);
+          hasMore = false;
+        }
+        
+        console.log(`📦 Fetched page ${page} (${allData.length} records so far)`);
+      } else {
+        hasMore = false;
+      }
+      
+    } catch (error) {
+      // Handle specific pagination error
+      if (error.response && error.response.data && 
+          error.response.data.code === 'DISCRETE_PAGINATION_LIMIT_EXCEEDED') {
+        console.log('⚠️ Hit pagination limit. Need to use page_token for records beyond 2000.');
+        // Try to get the first 2000 records if we haven't already
+        if (page === 11 && !pageToken) {
+          console.log('📋 Returning first 2000 records only');
+          hasMore = false;
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
   }
-
+  
   return allData;
 }
 
@@ -141,66 +185,59 @@ export async function fetchCustomersFromCRM() {
 /**
  * Fetches products from CRM (synced from Inventory) - enhanced version
  */
-export async function fetchProductsFromCRM(options = {}) {
-  const fields = [
-    'Product_Name',
-    'Product_Code', 
-    'Unit_Price',
-    'List_Price',
-    'Product_Category',
-    'Product_Active',
-    'Qty_in_Stock',
-    'Qty_Available',
-    'Description',
-    'Manufacturer',
-    'Product_Image',
-    'Reorder_Level',
-    'Modified_Time', // Important for incremental sync
-    'id'
-  ];
-
-  const params = { 
-    fields: fields.join(','),
-    sort_by: 'Modified_Time',
-    sort_order: 'desc'
-  };
-
-  // Add date filter for incremental syncing
-  if (options.modifiedAfter) {
-    // Format date for Zoho CRM API (ISO format)
-    const isoDate = options.modifiedAfter.toISOString();
-    params.criteria = `Modified_Time:greater_than:${isoDate}`;
+export async function fetchProductsFromInventory(options = {}) {
+  console.log('🔄 Starting product sync from Inventory...');
+  
+  try {
+    // Build parameters for the Inventory API
+    const params = {
+      // Zoho Inventory uses different field names
+      sort_column: 'last_modified_time',
+      sort_order: 'D', // D for descending in Inventory API
+    };
+    
+    // Add modified time filter if provided
+    if (options.modifiedAfter) {
+      // Convert date to timestamp in milliseconds
+      const timestamp = new Date(options.modifiedAfter).getTime();
+      params.last_modified_time = timestamp;
+    }
+    
+    // Fetch items from Inventory API
+    const items = await fetchPaginatedData('/inventory/v1/items', params);
+    
+    // Transform Inventory items to match the expected product format
+    const products = items.map(item => ({
+      // Map Inventory fields to expected product fields
+      id: item.item_id,
+      Product_Name: item.name,
+      Product_Code: item.sku,
+      Unit_Price: item.rate,
+      List_Price: item.rate, // Inventory doesn't have separate list price
+      Product_Category: item.category_name || '',
+      Product_Active: item.status === 'active',
+      Qty_in_Stock: item.stock_on_hand || 0,
+      Qty_Available: item.available_stock || 0,
+      Description: item.description || '',
+      Manufacturer: item.brand || '',
+      Product_Image: item.image_url || '',
+      Reorder_Level: item.reorder_level || 0,
+      Modified_Time: item.last_modified_time,
+      
+      // Additional Inventory-specific fields
+      inventory_account_name: item.inventory_account_name,
+      purchase_rate: item.purchase_rate,
+      initial_stock: item.initial_stock,
+      warehouse_data: item.warehouses || []
+    }));
+    
+    console.log(`✅ Fetched ${products.length} products from Inventory`);
+    return products;
+    
+  } catch (error) {
+    console.error('❌ Failed to fetch products from Inventory:', error);
+    throw error;
   }
-
-  // Add other optional filters
-  if (options.category) {
-    const categoryFilter = `Product_Category:equals:${options.category}`;
-    params.criteria = params.criteria 
-      ? `(${params.criteria}) and (${categoryFilter})`
-      : categoryFilter;
-  }
-
-  if (options.active !== undefined) {
-    const activeFilter = `Product_Active:equals:${options.active}`;
-    params.criteria = params.criteria 
-      ? `(${params.criteria}) and (${activeFilter})`
-      : activeFilter;
-  }
-
-  if (options.manufacturer) {
-    const manufacturerFilter = `Manufacturer:equals:${options.manufacturer}`;
-    params.criteria = params.criteria 
-      ? `(${params.criteria}) and (${manufacturerFilter})`
-      : manufacturerFilter;
-  }
-
-  const products = await fetchPaginatedData(
-    `${ZOHO_CONFIG.baseUrls.crm}/Products`,
-    params
-  );
-
-  // Return in CRM format (no transformation)
-  return products;
 }
 
 /**
