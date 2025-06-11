@@ -78,17 +78,7 @@ export async function getAccessToken() {
 /**
  * Generic function for paginated Zoho requests
  */
-async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
-  const cacheKey = `${url}_${JSON.stringify(params)}`;
-  
-  if (useCache && this.cache.has(cacheKey)) {
-    const cached = this.cache.get(cacheKey);
-    if (Date.now() - cached.timestamp < this.cacheTimeout) {
-      console.log(`📄 Using cached data for ${url}`);
-      return cached.data;
-    }
-  }
-
+export async function fetchPaginatedData(url, params = {}, dataKey = 'data') {
   const allData = [];
   let page = 1;
   let pageToken = null; // Variable to hold the page token
@@ -113,20 +103,15 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
         requestParams.per_page = perPage;
       }
       
-      // ================================================================
-      // THIS IS THE CORRECTED API CALL LOGIC
-      // ================================================================
       const token = await getAccessToken();
       const response = await axios.get(url, {
         params: requestParams,
         headers: { Authorization: `Zoho-oauthtoken ${token}` },
         timeout: 30000
       });
-      // ================================================================
 
       const responseData = response.data;
-      // Use the 'dataKey' to get the correct array from the response (e.g., 'salesorders', 'invoices')
-      const items = Array.isArray(responseData[dataKey]) ? responseData[dataKey] : [];
+      const items = Array.isArray(responseData[dataKey]) ? responseData[dataKey] : (responseData.data || []);
       
       if (items.length === 0) {
         console.log(`✅ No more data found on page ${page}, stopping pagination.`);
@@ -135,17 +120,14 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
       
       allData.push(...items);
       
-      // Check for the page token in the response's 'info' object
       const nextPageToken = responseData.info?.next_page_token;
 
       if (nextPageToken) {
-        // If a token exists, store it for the next loop
         pageToken = nextPageToken;
         console.log(`   - Got page_token for next page.`);
       } else {
-        // If no token, check for 'more_records' flag (for page number pagination < 2000)
         const hasMoreRecords = responseData.info?.more_records;
-        if (hasMoreRecords) {
+        if (hasMoreRecords && page < 10) { // Limit page-based pagination
             page++;
         } else {
             console.log(`✅ No more pages or token indicated by API, stopping pagination.`);
@@ -153,24 +135,15 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
         }
       }
       
-      await new Promise(resolve => setTimeout(resolve, 100)); // Small delay
+      await new Promise(resolve => setTimeout(resolve, 100));
 
     } catch (error) {
       console.warn(`⚠️ Error on page ${page}:`, error.message);
-      // Stop pagination on error, but return what we have so far
       break;
     }
   }
 
   console.log(`✅ Completed pagination: ${allData.length} total items fetched`);
-
-  if (useCache && allData.length > 0) {
-    this.cache.set(cacheKey, {
-      data: allData,
-      timestamp: Date.now()
-    });
-  }
-
   return allData;
 }
 
