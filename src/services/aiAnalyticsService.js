@@ -257,19 +257,6 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
   }
 }
 
-// Keep your other insight-generating functions as they are
-export async function generateDrillDownInsights(viewType, detailData, summaryData) {
-  // ... (original function code)
-}
-
-export async function generateComparativeInsights(currentData, previousData, comparisonType = 'period') {
-  // ... (original function code)
-}
-
-export async function generateSeasonalInsights(historicalData, currentSeason) {
-  // ... (original function code)
-}
-
 /**
  * Generate insights for drill-down views
  */
