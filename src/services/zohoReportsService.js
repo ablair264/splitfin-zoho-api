@@ -696,6 +696,25 @@ async getPurchaseOrders(dateRange = '30_days', customDateRange = null) {
   }
 };
 
+ async getSalesOrderDetail(salesorder_id) {
+    try {
+      const url = `${ZOHO_CONFIG.baseUrls.inventory}/salesorders/${salesorder_id}`;
+      const token = await getAccessToken();
+      
+      const response = await axios.get(url, {
+        params: { organization_id: ZOHO_CONFIG.orgId },
+        headers: { Authorization: `Zoho-oauthtoken ${token}` }
+      });
+
+      // The data is nested in a 'salesorder' object for a single request
+      return response.data?.salesorder;
+
+    } catch (error) {
+      console.error(`❌ Error fetching details for sales order ${salesorder_id}:`, error.message);
+      return null; // Return null on error so the loop can continue
+    }
+  }
+
   /**
    * Get comprehensive dashboard data
    */
