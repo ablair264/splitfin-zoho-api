@@ -12,56 +12,67 @@ class CronDataSyncService {
     this.lastSync = {};
   }
   
-  async syncSalesTransactions() {
-  console.log('🔄 Syncing Line Items to sales_transactions collection...');
-  try {
-    const db = admin.firestore();
-    // Fetch all the orders you want to process
-    const salesOrders = await zohoReportsService.getSalesOrders('2_years');
+ async syncSalesTransactions() {
+    console.log('🔄 Syncing Line Items to sales_transactions collection...');
+    try {
+      const db = admin.firestore();
+      
+      // STEP 1: Fetch the list of sales orders for the period.
+      // This gives us the IDs, but likely without complete line_items.
+      const salesOrdersList = await zohoReportsService.getSalesOrders('2_years');
 
-    const transactions = [];
-    salesOrders.forEach(order => {
-      if (order.line_items && Array.isArray(order.line_items)) {
-        order.line_items.forEach(item => {
-          // Create a new, flat object for each line item
-          transactions.push({
-            // Line item data
-            transaction_id: item.line_item_id, // Use line_item_id as the document ID
-            item_id: item.item_id,
-            item_name: item.name,
-            sku: item.sku,
-            quantity: parseInt(item.quantity || 0),
-            price: parseFloat(item.rate || 0),
-            total: parseFloat(item.total || 0),
-
-            // Copied data from the parent order
-            order_id: order.salesorder_id,
-            order_number: order.salesorder_number,
-            order_date: order.date,
-            customer_id: order.customer_id,
-            customer_name: order.customer_name,
-            salesperson_id: order.salesperson_id,
-            salesperson_name: order.salesperson_name
-          });
-        });
+      if (!salesOrdersList || salesOrdersList.length === 0) {
+        console.log('✅ No sales orders found in the period.');
+        return { success: true, count: 0 };
       }
-    });
+      
+      console.log(`Found ${salesOrdersList.length} orders. Fetching full details for each...`);
 
-    if (transactions.length === 0) {
-      console.log('✅ No new transactions to sync.');
-      return { success: true, count: 0 };
+      const transactions = [];
+      
+      // STEP 2: Loop through the list and fetch full details for each order individually.
+      for (const orderHeader of salesOrdersList) {
+        const orderDetails = await zohoReportsService.getSalesOrderDetail(orderHeader.salesorder_id);
+
+        if (orderDetails && orderDetails.line_items && Array.isArray(orderDetails.line_items)) {
+          orderDetails.line_items.forEach(item => {
+            transactions.push({
+              transaction_id: item.line_item_id,
+              item_id: item.item_id,
+              item_name: item.name,
+              sku: item.sku,
+              quantity: parseInt(item.quantity || 0),
+              price: parseFloat(item.rate || 0),
+              total: parseFloat(item.total || 0),
+              order_id: orderDetails.salesorder_id,
+              order_number: orderDetails.salesorder_number,
+              order_date: orderDetails.date,
+              customer_id: orderDetails.customer_id,
+              customer_name: orderDetails.customer_name,
+              salesperson_id: orderDetails.salesperson_id,
+              salesperson_name: orderDetails.salesperson_name
+            });
+          });
+        }
+        // Add a small delay to be respectful to the API
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      if (transactions.length === 0) {
+        console.log('✅ No line items found in any of the fetched orders.');
+        return { success: true, count: 0 };
+      }
+
+      // Use your existing batch write helper to safely write all transactions
+      await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
+      
+      return { success: true, count: transactions.length };
+      
+    } catch (error) {
+      console.error('❌ Sales transactions sync failed:', error);
+      return { success: false, error: error.message };
     }
-
-    // Use your existing batch write helper to safely write all transactions
-    await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
-    
-    return { success: true, count: transactions.length };
-    
-  } catch (error) {
-    console.error('❌ Sales transactions sync failed:', error);
-    return { success: false, error: error.message };
   }
-}
   
   // Add this helper function inside the CronDataSyncService class
 
