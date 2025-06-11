@@ -180,8 +180,6 @@ export async function fetchCustomersFromCRM() {
 /**
  * Fetches products from CRM (synced from Inventory) - enhanced version
  */
-// In server/src/api/zoho.js
-
 /**
  * Fetches products from ZOHO INVENTORY - CORRECTED VERSION
  */
