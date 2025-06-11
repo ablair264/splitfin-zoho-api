@@ -12,7 +12,7 @@ class CronDataSyncService {
     this.lastSync = {};
   }
   
-  async function syncSalesTransactions() {
+  async syncSalesTransactions() {
   console.log('🔄 Syncing Line Items to sales_transactions collection...');
   try {
     const db = admin.firestore();
@@ -244,10 +244,12 @@ class CronDataSyncService {
       const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('2_years');
       await this._batchWrite(db, 'purchase_orders', allPurchaseOrders, 'purchaseorder_id');
       
+      // Call the new transactions sync and capture its result
+      const transactionSyncResult = await this.syncSalesTransactions();
+      
       console.log('🔗 Starting customer ID mapping as part of low-frequency sync...');
       const customerIdSyncResult = await syncInventoryCustomerIds();
       
-      await this.syncSalesTransactions();
       await this.cleanupOldCache(); 
       
       const duration = Date.now() - startTime;
