@@ -180,35 +180,40 @@ export async function fetchCustomersFromCRM() {
 /**
  * Fetches products from CRM (synced from Inventory) - enhanced version
  */
+// In server/src/api/zoho.js
+
+/**
+ * Fetches products from ZOHO INVENTORY - CORRECTED VERSION
+ */
 export async function fetchProductsFromInventory(options = {}) {
   console.log('🔄 Starting product sync from Inventory...');
   
   try {
-    // Build parameters for the Inventory API
     const params = {
-      // Zoho Inventory uses different field names
       sort_column: 'last_modified_time',
-      sort_order: 'D', // D for descending in Inventory API
+      sort_order: 'D',
     };
     
-    // Add modified time filter if provided
     if (options.modifiedAfter) {
-      // Convert date to timestamp in milliseconds
-      const timestamp = new Date(options.modifiedAfter).getTime();
-      params.last_modified_time = timestamp;
+      const isoDate = new Date(options.modifiedAfter).toISOString();
+      params.last_modified_since = isoDate;
     }
     
-    // Fetch items from Inventory API
-    const items = await fetchPaginatedData('/inventory/v1/items', params);
+    // --- THIS IS THE CORRECTED LINE ---
+    // We now construct the full URL and specify the 'items' dataKey.
+    const items = await fetchPaginatedData(
+      `${ZOHO_CONFIG.baseUrls.inventory}/items`, 
+      params,
+      'items' // The array of items is under the 'items' key in the response
+    );
     
-    // Transform Inventory items to match the expected product format
+    // The rest of your transformation logic remains the same
     const products = items.map(item => ({
-      // Map Inventory fields to expected product fields
       id: item.item_id,
       Product_Name: item.name,
       Product_Code: item.sku,
       Unit_Price: item.rate,
-      List_Price: item.rate, // Inventory doesn't have separate list price
+      List_Price: item.rate,
       Product_Category: item.category_name || '',
       Product_Active: item.status === 'active',
       Qty_in_Stock: item.stock_on_hand || 0,
@@ -218,8 +223,6 @@ export async function fetchProductsFromInventory(options = {}) {
       Product_Image: item.image_url || '',
       Reorder_Level: item.reorder_level || 0,
       Modified_Time: item.last_modified_time,
-      
-      // Additional Inventory-specific fields
       inventory_account_name: item.inventory_account_name,
       purchase_rate: item.purchase_rate,
       initial_stock: item.initial_stock,
