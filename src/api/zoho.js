@@ -78,75 +78,99 @@ export async function getAccessToken() {
 /**
  * Generic function for paginated Zoho requests
  */
-async function fetchPaginatedData(endpoint, params = {}, maxRecords = null) {
-  let allData = [];
-  let page = 1;
-  let hasMore = true;
-  let pageToken = null;
-  const perPage = params.per_page || 200;
+sync fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
+  const cacheKey = `${url}_${JSON.stringify(params)}`;
   
-  while (hasMore) {
+  if (useCache && this.cache.has(cacheKey)) {
+    const cached = this.cache.get(cacheKey);
+    if (Date.now() - cached.timestamp < this.cacheTimeout) {
+      console.log(`📄 Using cached data for ${url}`);
+      return cached.data;
+    }
+  }
+
+  const allData = [];
+  let page = 1;
+  let pageToken = null; // Variable to hold the page token
+  const perPage = ZOHO_CONFIG.pagination.defaultPerPage;
+  const maxLoops = 100; // Safety break to prevent infinite loops
+  let currentLoop = 0;
+
+  console.log(`🔄 Fetching paginated data from ${url}`);
+
+  while (currentLoop < maxLoops) {
+    currentLoop++;
     try {
-      // Build request parameters
-      const requestParams = { ...params, per_page: perPage };
-      
-      // Use page_token if we have one (for pages beyond 2000 records)
+      // Build the parameters for the current request
+      const requestParams = { ...params };
       if (pageToken) {
+        // If we have a token, use it instead of the page number
         requestParams.page_token = pageToken;
-        // Remove page parameter when using page_token
-        delete requestParams.page;
-      } else if (page <= 10) {
-        // Only use page parameter for first 2000 records (10 pages * 200)
-        requestParams.page = page;
+        delete requestParams.page; // Remove page number when using a token
       } else {
-        // We've hit the limit and don't have a page_token, stop
-        console.log('⚠️ Reached 2000 record limit without page_token');
+        // Otherwise, use the page number for the initial requests
+        requestParams.page = page;
+        requestParams.per_page = perPage;
+      }
+      
+      // ================================================================
+      // THIS IS THE CORRECTED API CALL LOGIC
+      // ================================================================
+      const token = await getAccessToken();
+      const response = await axios.get(url, {
+        params: requestParams,
+        headers: { Authorization: `Zoho-oauthtoken ${token}` },
+        timeout: 30000
+      });
+      // ================================================================
+
+      const responseData = response.data;
+      // Use the 'dataKey' to get the correct array from the response (e.g., 'salesorders', 'invoices')
+      const items = Array.isArray(responseData[dataKey]) ? responseData[dataKey] : [];
+      
+      if (items.length === 0) {
+        console.log(`✅ No more data found on page ${page}, stopping pagination.`);
         break;
       }
       
-      if (response.data && response.data.length > 0) {
-        allData = allData.concat(response.data);
-        
-        // Check if we have a next_page_token for pagination beyond 2000 records
-        if (response.info && response.info.next_page_token) {
-          pageToken = response.info.next_page_token;
-          page++; // Still increment page for logging purposes
-        } else if (response.info && response.info.more_records && !pageToken && page < 10) {
-          // Only increment page if we're under the 2000 record limit
-          page++;
-        } else {
-          hasMore = false;
-        }
-        
-        // Check if we've reached the max records limit
-        if (maxRecords && allData.length >= maxRecords) {
-          allData = allData.slice(0, maxRecords);
-          hasMore = false;
-        }
-        
-        console.log(`📦 Fetched page ${page} (${allData.length} records so far)`);
+      allData.push(...items);
+      
+      // Check for the page token in the response's 'info' object
+      const nextPageToken = responseData.info?.next_page_token;
+
+      if (nextPageToken) {
+        // If a token exists, store it for the next loop
+        pageToken = nextPageToken;
+        console.log(`   - Got page_token for next page.`);
       } else {
-        hasMore = false;
+        // If no token, check for 'more_records' flag (for page number pagination < 2000)
+        const hasMoreRecords = responseData.info?.more_records;
+        if (hasMoreRecords) {
+            page++;
+        } else {
+            console.log(`✅ No more pages or token indicated by API, stopping pagination.`);
+            break;
+        }
       }
       
+      await new Promise(resolve => setTimeout(resolve, 100)); // Small delay
+
     } catch (error) {
-      // Handle specific pagination error
-      if (error.response && error.response.data && 
-          error.response.data.code === 'DISCRETE_PAGINATION_LIMIT_EXCEEDED') {
-        console.log('⚠️ Hit pagination limit. Need to use page_token for records beyond 2000.');
-        // Try to get the first 2000 records if we haven't already
-        if (page === 11 && !pageToken) {
-          console.log('📋 Returning first 2000 records only');
-          hasMore = false;
-        } else {
-          throw error;
-        }
-      } else {
-        throw error;
-      }
+      console.warn(`⚠️ Error on page ${page}:`, error.message);
+      // Stop pagination on error, but return what we have so far
+      break;
     }
   }
-  
+
+  console.log(`✅ Completed pagination: ${allData.length} total items fetched`);
+
+  if (useCache && allData.length > 0) {
+    this.cache.set(cacheKey, {
+      data: allData,
+      timestamp: Date.now()
+    });
+  }
+
   return allData;
 }
 
