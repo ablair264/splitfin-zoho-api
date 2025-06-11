@@ -210,6 +210,8 @@ class CronDataSyncService {
 
 // Replace your existing lowFrequencySync function with this one
 
+  // Replace your existing lowFrequencySync function with this one
+
   async lowFrequencySync() {
     const jobType = 'low-frequency';
     
@@ -225,31 +227,47 @@ class CronDataSyncService {
     try {
       console.log('🔄 Starting low frequency sync (full data refresh)...');
       
-      // ================================================================
-      // NEW: Sync all products and customers first
-      // ================================================================
       console.log('📦 Syncing all products from CRM...');
-      const productSyncResult = await syncInventory(true); // true = force full sync
+      const productSyncResult = await syncInventory(true);
       
+      // --- Fetch data in smaller, quarterly chunks to avoid API errors ---
+      const allOrders = [];
+      const allInvoices = [];
+      const allPurchaseOrders = [];
+      const quartersToSync = 8; // 4 quarters per year * 2 years
 
-      // --- Sync Sales Orders to 'orders' collection ---
-      const allOrders = await zohoReportsService.getSalesOrders('2_years');
+      for (let q = 0; q < quartersToSync; q++) {
+        const now = new Date();
+        // Go back quarter by quarter
+        const endDate = new Date(now.getFullYear(), now.getMonth() - (q * 3), 1);
+        const startDate = new Date(now.getFullYear(), now.getMonth() - ((q + 1) * 3), 1);
+        
+        const customDateRange = {
+            start: startDate.toISOString().split('T')[0],
+            end: endDate.toISOString().split('T')[0]
+        };
+
+        console.log(`   - Fetching data for quarter: ${customDateRange.start} to ${customDateRange.end}`);
+
+        // Fetch each data type for the current quarter
+        const [ordersChunk, invoicesChunk, poChunk] = await Promise.all([
+            zohoReportsService.getSalesOrders('custom', customDateRange),
+            zohoReportsService.getInvoices('custom', customDateRange),
+            zohoReportsService.getPurchaseOrders('custom', customDateRange)
+        ]);
+
+        if (ordersChunk.length > 0) allOrders.push(...ordersChunk);
+        if (invoicesChunk.all.length > 0) allInvoices.push(...invoicesChunk.all);
+        if (poChunk.length > 0) allPurchaseOrders.push(...poChunk);
+      }
+
+      // --- Now, batch write the combined results ---
       await this._batchWrite(db, 'orders', allOrders, 'salesorder_id');
-
-      // --- Sync Invoices to 'invoices' collection ---
-      const allInvoicesData = await zohoReportsService.getInvoices('2_years');
-      await this._batchWrite(db, 'invoices', allInvoicesData.all, 'invoice_id');
-
-      // --- Sync Purchase Orders to 'purchase_orders' collection ---
-      const allPurchaseOrders = await zohoReportsService.getPurchaseOrders('2_years');
+      await this._batchWrite(db, 'invoices', allInvoices, 'invoice_id');
       await this._batchWrite(db, 'purchase_orders', allPurchaseOrders, 'purchaseorder_id');
       
-      // Call the new transactions sync and capture its result
       const transactionSyncResult = await this.syncSalesTransactions();
-      
-      console.log('🔗 Starting customer ID mapping as part of low-frequency sync...');
       const customerIdSyncResult = await syncInventoryCustomerIds();
-      
       await this.cleanupOldCache(); 
       
       const duration = Date.now() - startTime;
@@ -262,10 +280,10 @@ class CronDataSyncService {
         recordsProcessed: {
           products: productSyncResult.stats,
           orders: allOrders.length,
-          invoices: allInvoicesData.all.length,
+          invoices: allInvoices.length,
           purchaseOrders: allPurchaseOrders.length,
-          customerIdsMapped: customerIdSyncResult.processed,
-          transactions: transactionSyncResult.count 
+          transactions: transactionSyncResult.count,
+          customerIdsMapped: customerIdSyncResult.processed
         }
       };
       
