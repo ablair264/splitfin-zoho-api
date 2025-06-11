@@ -41,71 +41,69 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
 
   const allData = [];
   let page = 1;
+  let pageToken = null; // Variable to hold the page token
   const perPage = ZOHO_CONFIG.pagination.defaultPerPage;
-  const maxPages = 10; // FIXED: Add maximum page limit to prevent infinite loops
-  let consecutiveFailures = 0;
-  const maxConsecutiveFailures = 3;
+  const maxLoops = 100; // Safety break to prevent infinite loops
+  let currentLoop = 0;
 
-  console.log(`🔄 Fetching paginated data from ${url}, starting at page ${page}`);
+  console.log(`🔄 Fetching paginated data from ${url}`);
 
-  while (page <= maxPages) {
+  while (currentLoop < maxLoops) {
     try {
       const token = await getAccessToken();
+      
+      // Build the parameters for the current request
+      const requestParams = { ...params };
+      if (pageToken) {
+        // If we have a token, use it instead of the page number
+        requestParams.page_token = pageToken;
+      } else {
+        // Otherwise, use the page number for the initial requests
+        requestParams.page = page;
+        requestParams.per_page = perPage;
+      }
+
       const response = await axios.get(url, {
-        params: { ...params, page, per_page: perPage },
+        params: requestParams,
         headers: { Authorization: `Zoho-oauthtoken ${token}` },
-        timeout: 30000 // Add 30 second timeout
+        timeout: 30000
       });
 
       const data = response.data;
       const items = Array.isArray(data[dataKey]) ? data[dataKey] : data.data || [];
       
-      console.log(`📄 Page ${page}: ${items.length} items fetched`);
-      
       if (items.length === 0) {
-        console.log(`✅ No more data on page ${page}, stopping pagination`);
+        console.log(`✅ No more data found, stopping pagination.`);
         break;
       }
       
       allData.push(...items);
-      consecutiveFailures = 0; // Reset failure counter on success
-
-      // FIXED: Better pagination logic
-      const hasMorePages = data.page_context?.has_more_page || 
-                          data.info?.more_records || 
-                          (items.length === perPage && page < maxPages);
       
-      if (!hasMorePages) {
-        console.log(`✅ No more pages indicated by API, stopping at page ${page}`);
+      // Check for the page token in the response's 'info' object
+      const nextPageToken = data.info?.next_page_token;
+
+      if (nextPageToken) {
+        // If a token exists, store it for the next loop
+        pageToken = nextPageToken;
+      } else {
+        // If no token, we've reached the last page
+        console.log(`✅ No page_token found, assuming this is the last page.`);
         break;
       }
-      
-      page++;
-      
-      // Add small delay between requests to avoid rate limiting
-      if (page <= maxPages) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+
+      page++; // Still increment page for logging purposes
+      currentLoop++;
+      await new Promise(resolve => setTimeout(resolve, 100)); // Small delay
 
     } catch (error) {
-      consecutiveFailures++;
-      console.warn(`⚠️ Error on page ${page} (attempt ${consecutiveFailures}):`, error.message);
-      
-      // If we get a 400 error or hit max failures, stop pagination but return what we have
-      if (error.response?.status === 400 || consecutiveFailures >= maxConsecutiveFailures) {
-        console.warn(`🛑 Stopping pagination due to error on page ${page}. Returning ${allData.length} items.`);
-        break;
-      }
-      
-      // For other errors, wait a bit and try the next page
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      page++;
+      console.warn(`⚠️ Error on page ${page}:`, error.message);
+      // Stop pagination on error, but return what we have so far
+      break;
     }
   }
 
   console.log(`✅ Completed pagination: ${allData.length} total items fetched`);
 
-  // Cache the result even if we didn't get all pages
   if (useCache && allData.length > 0) {
     this.cache.set(cacheKey, {
       data: allData,
