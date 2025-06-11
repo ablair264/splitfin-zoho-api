@@ -264,7 +264,7 @@ class CronDataSyncService {
           orders: allOrders.length,
           invoices: allInvoicesData.all.length,
           purchaseOrders: allPurchaseOrders.length,
-          customerIdsMapped: customerIdSyncResult.processed
+          customerIdsMapped: customerIdSyncResult.processed,
           transactions: transactionSyncResult.count 
         }
       };
