@@ -50,19 +50,27 @@ When analyzing data, focus on actionable insights that can improve:
 `;
 
 /**
- * NEW: Base context for a Sales Agent's perspective
+ * UPDATED: Base context for a Sales Agent's perspective
  */
 const SALES_AGENT_CONTEXT = `
 You are an expert personal sales coach for a sales agent at DM Brands Limited, a UK-based premium import company.
 
 Your goal is to provide direct, actionable advice to the sales agent to help them improve their personal performance. Use "you" and "your" to address the agent directly.
 
-Focus your analysis on:
-1. Identifying the agent's top-performing customers and products.
-2. Spotting opportunities for the agent to re-engage customers or increase order values.
-3. Providing clear, simple, and actionable steps the agent can take today to improve their sales.
+**CRITICAL INSTRUCTION:** You are ONLY analyzing data for customers that belong to this specific sales agent. All customers, orders, and revenue data shown are exclusively from this agent's portfolio. Do NOT reference or suggest contacting customers that aren't shown in the data, as they belong to other agents.
 
-Do NOT discuss overall company performance, other agents' results, or high-level business strategy. The focus is 100% on this individual agent's data and performance.
+Focus your analysis on:
+1. Identifying the agent's own top-performing customers and products from their portfolio
+2. Spotting opportunities to re-engage their inactive customers or increase order values from their existing customer base
+3. Providing clear, simple, and actionable steps the agent can take with THEIR customers
+
+Do NOT discuss:
+- Overall company performance
+- Other agents' results or customers
+- High-level business strategy
+- Customers not shown in the provided data (they belong to other agents)
+
+The focus is 100% on this individual agent's data, customers, and performance.
 `;
 
 /**
@@ -73,34 +81,42 @@ export async function generateAIInsights(dashboardData) {
 
   // Check the user's role and build the appropriate prompt
   if (dashboardData.role === 'salesAgent') {
-    // --- PROMPT FOR SALES AGENT ---
+    // --- UPDATED PROMPT FOR SALES AGENT ---
     prompt = `
       ${SALES_AGENT_CONTEXT}
       
       **YOUR PERSONAL PERFORMANCE ANALYSIS**
       
       **Data Period:** ${dashboardData.dateRange}
+      **Your Agent ID:** ${dashboardData.agentId || 'Not specified'}
       
-      **YOUR REVENUE:**
+      **YOUR REVENUE (from YOUR customers only):**
       ${JSON.stringify(dashboardData.revenue, null, 2)}
       
-      **YOUR ORDERS:**
+      **YOUR ORDERS (from YOUR customers only):**
       ${JSON.stringify(dashboardData.orders, null, 2)}
       
-      **YOUR TOP CUSTOMERS:**
+      **YOUR CUSTOMERS (these are the ONLY customers you manage):**
       ${JSON.stringify(dashboardData.overview?.customers?.topCustomers, null, 2)}
       
-      **YOUR TOP SELLING ITEMS:**
+      **YOUR TOP SELLING ITEMS (from YOUR sales only):**
       ${JSON.stringify(dashboardData.overview?.topItems, null, 2)}
+      
+      **IMPORTANT REMINDER:** The customers shown above are YOUR customers. Do not suggest reaching out to customers not listed here, as they are managed by other agents.
       
       **ANALYSIS REQUIREMENTS:**
       
       Generate a personal sales analysis for the agent as a JSON object with these keys:
       
-      1. "performanceSummary": A 2-3 sentence summary of your personal performance for the period. Be encouraging but direct.
-      2. "customerOpportunities": A list of 2-3 bullet points identifying specific customers you should focus on (e.g., top performers to thank, or inactive ones to re-engage).
-      3. "productFocus": A list of 2-3 bullet points suggesting which products you should push, based on what is selling well for you.
-      4. "personalActionItems": A list of 3 clear, simple, and actionable steps you can take to improve your results.
+      1. "performanceSummary": A 2-3 sentence summary of your personal performance for the period. Be encouraging but direct. Reference only YOUR actual results.
+      
+      2. "customerOpportunities": A list of 2-3 bullet points identifying specific customers FROM YOUR LIST that you should focus on. Include their names and specific actions (e.g., "Contact [Customer Name] - they haven't ordered in X days" or "Thank [Customer Name] for their recent large order"). Only reference customers shown in YOUR data.
+      
+      3. "productFocus": A list of 2-3 bullet points suggesting which products you should push to YOUR customers, based on what is selling well in YOUR portfolio.
+      
+      4. "personalActionItems": A list of 3 clear, simple, and actionable steps you can take with YOUR EXISTING customers to improve your results. Each action should reference specific customers or patterns from YOUR data.
+      
+      CRITICAL: Only reference customers that appear in the provided data. These are YOUR assigned customers. Never suggest contacting customers not shown in the data.
       
       Respond with ONLY a clean JSON object - no markdown formatting.
     `;
@@ -196,19 +212,30 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
     // ... (Your other original prompts for managers)
   };
 
-  // NEW: Prompts for Sales Agents
+  // UPDATED: Prompts for Sales Agents
   const agentContextPrompts = {
     revenue: `
       **YOUR PERSONAL REVENUE ANALYSIS**
-      Your Revenue Data for the period: ${JSON.stringify(cardData, null, 2)}
-      **Analysis Focus:** Analyze YOUR personal sales revenue. What does this number tell YOU about your performance? Which of YOUR customers or products are driving this success?
+      Your Revenue Data for the period (from YOUR customers only): ${JSON.stringify(cardData, null, 2)}
+      **Analysis Focus:** Analyze YOUR personal sales revenue from YOUR assigned customers. What does this number tell YOU about your performance with YOUR customer base? Which of YOUR specific customers or products are driving this success?
+      **REMINDER:** This data represents revenue from YOUR customers only. Focus on how to maximize revenue from YOUR existing customer relationships.
     `,
     orders: `
       **YOUR SALES ORDERS ANALYSIS**
-      Your Orders Data for the period: ${JSON.stringify(cardData, null, 2)}
-      **Analysis Focus:** Evaluate YOUR personal order patterns. Is your average order value high? How can YOU encourage customers to place larger or more frequent orders?
+      Your Orders Data for the period (from YOUR customers only): ${JSON.stringify(cardData, null, 2)}
+      **Analysis Focus:** Evaluate YOUR personal order patterns from YOUR customer portfolio. Is your average order value from YOUR customers high? How can YOU encourage YOUR specific customers to place larger or more frequent orders?
+      **REMINDER:** These orders are exclusively from YOUR assigned customers. Focus on patterns within YOUR customer base.
     `,
-    // ... (Define other agent-specific card prompts as needed)
+    customers: `
+      **YOUR CUSTOMER PORTFOLIO ANALYSIS**
+      Your Customer Data: ${JSON.stringify(cardData, null, 2)}
+      **Analysis Focus:** These are YOUR assigned customers. Analyze their buying patterns, identify who needs attention, and who deserves recognition. Remember, you can only work with the customers shown here - they are YOUR responsibility.
+    `,
+    invoices: `
+      **YOUR OUTSTANDING INVOICES ANALYSIS**
+      Your Invoice Data (from YOUR customers only): ${JSON.stringify(cardData, null, 2)}
+      **Analysis Focus:** Review outstanding invoices from YOUR customers. Which of YOUR customers need a friendly payment reminder? How can you maintain good relationships while ensuring timely payments?
+    `
   };
 
   // Determine which set of prompts and context to use based on the user's role
@@ -225,14 +252,17 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
     ${specificPrompt}
     
     **Data Period:** ${fullDashboardData.dateRange}
+    ${role === 'salesAgent' ? `**Your Agent ID:** ${fullDashboardData.agentId || 'Not specified'}` : ''}
     
     **TASK:** Generate focused insights for this specific metric as a JSON object with:
     
-    1. "insight": 2-3 sentences of key insight specific to this metric.
+    1. "insight": 2-3 sentences of key insight specific to this metric. ${role === 'salesAgent' ? 'Focus ONLY on YOUR customers and YOUR performance.' : ''}
     2. "trend": Current trend direction and significance.
-    3. "action": 1-2 specific, actionable recommendations. 
+    3. "action": 1-2 specific, actionable recommendations. ${role === 'salesAgent' ? 'Must reference YOUR specific customers by name where relevant.' : ''}
     4. "priority": Risk level ("low", "medium", "high").
     5. "impact": Potential business impact of the current trend.
+    
+    ${role === 'salesAgent' ? 'CRITICAL: Only reference customers and data shown above. These are YOUR assigned customers.' : ''}
     
     Respond with ONLY clean JSON - no formatting.
   `;
@@ -256,15 +286,34 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
     };
   }
 }
-
 /**
  * Generate insights for drill-down views
  */
-export async function generateDrillDownInsights(viewType, detailData, summaryData) {
+/**
+ * Generate insights for drill-down views
+ */
+export async function generateDrillDownInsights(viewType, detailData, summaryData, userRole, agentId) {
+  // Determine which context to use based on role
+  const baseContext = userRole === 'salesAgent' ? SALES_AGENT_CONTEXT : DM_BRANDS_CONTEXT;
+  
+  // Role-specific prompt additions
+  const roleSpecificInstructions = userRole === 'salesAgent' 
+    ? `
+      **CRITICAL REMINDER:** You are analyzing data for a sales agent's personal performance.
+      - ALL customers shown are THEIR assigned customers
+      - ALL revenue and orders are from THEIR portfolio only
+      - Focus on actionable insights for THIS agent's customers
+      - Never suggest contacting customers not shown in the data
+      **Agent ID:** ${agentId || 'Not specified'}
+    `
+    : '';
+
   const prompt = `
-    ${DM_BRANDS_CONTEXT}
+    ${baseContext}
     
     **DETAILED VIEW ANALYSIS: ${viewType.toUpperCase()}**
+    
+    ${roleSpecificInstructions}
     
     **Detailed Data:**
     ${JSON.stringify(detailData, null, 2)}
@@ -274,14 +323,17 @@ export async function generateDrillDownInsights(viewType, detailData, summaryDat
     
     **TASK:** Generate detailed analytical insights for this drill-down view as JSON:
     
-    1. **"executiveSummary"**: 2-3 sentences of executive-level insight
-    2. **"keyFindings"**: 3-4 specific findings from the detailed data
-    3. **"strategicRecommendations"**: 3-4 strategic recommendations
-    4. **"tacticalActions"**: 2-3 immediate tactical actions
-    5. **"riskFactors"**: 1-2 risk factors to monitor
-    6. **"opportunities"**: 2-3 growth opportunities identified
+    1. **"executiveSummary"**: 2-3 sentences of ${userRole === 'salesAgent' ? 'personal performance' : 'executive-level'} insight
+    2. **"keyFindings"**: 3-4 specific findings from the detailed data ${userRole === 'salesAgent' ? '(about YOUR customers only)' : ''}
+    3. **"strategicRecommendations"**: 3-4 ${userRole === 'salesAgent' ? 'actions you can take with YOUR customers' : 'strategic recommendations'}
+    4. **"tacticalActions"**: 2-3 immediate tactical actions ${userRole === 'salesAgent' ? 'for YOUR customer relationships' : ''}
+    5. **"riskFactors"**: 1-2 risk factors to monitor ${userRole === 'salesAgent' ? 'in YOUR portfolio' : ''}
+    6. **"opportunities"**: 2-3 growth opportunities identified ${userRole === 'salesAgent' ? 'with YOUR existing customers' : ''}
     
-    Focus on insights specific to DM Brands' luxury import business model and ${viewType} performance.
+    ${userRole === 'salesAgent' 
+      ? 'Focus on insights specific to YOUR assigned customers and how YOU can improve performance with them.'
+      : `Focus on insights specific to DM Brands' luxury import business model and ${viewType} performance.`
+    }
     
     Respond with ONLY clean JSON - no formatting.
   `;
@@ -310,28 +362,48 @@ export async function generateDrillDownInsights(viewType, detailData, summaryDat
 /**
  * Generate comparative insights between periods
  */
-export async function generateComparativeInsights(currentData, previousData, comparisonType = 'period') {
+export async function generateComparativeInsights(currentData, previousData, comparisonType = 'period', userRole, agentId) {
+  // Determine which context to use based on role
+  const baseContext = userRole === 'salesAgent' ? SALES_AGENT_CONTEXT : DM_BRANDS_CONTEXT;
+  
+  // Role-specific prompt additions
+  const roleSpecificInstructions = userRole === 'salesAgent' 
+    ? `
+      **CRITICAL REMINDER:** You are comparing YOUR personal sales performance across periods.
+      - Both datasets represent YOUR customers only
+      - Changes reflect YOUR individual performance trajectory
+      - Recommendations must focus on YOUR existing customer relationships
+      - Do not suggest reaching out to customers not in YOUR portfolio
+      **Agent ID:** ${agentId || 'Not specified'}
+    `
+    : '';
+
   const prompt = `
-    ${DM_BRANDS_CONTEXT}
+    ${baseContext}
     
     **COMPARATIVE ANALYSIS: ${comparisonType.toUpperCase()}**
     
-    **Current Period Data:**
+    ${roleSpecificInstructions}
+    
+    **Current Period Data (${userRole === 'salesAgent' ? 'YOUR performance' : ''}):**
     ${JSON.stringify(currentData, null, 2)}
     
-    **Previous Period Data:**
+    **Previous Period Data (${userRole === 'salesAgent' ? 'YOUR performance' : ''}):**
     ${JSON.stringify(previousData, null, 2)}
     
-    **TASK:** Generate comparative business insights as JSON:
+    **TASK:** Generate comparative ${userRole === 'salesAgent' ? 'personal performance' : 'business'} insights as JSON:
     
-    1. **"overallChange"**: Summary of overall performance change
-    2. **"significantChanges"**: 3-4 most significant changes identified
-    3. **"positiveIndicators"**: 2-3 positive performance indicators
-    4. **"concerningTrends"**: 1-2 trends requiring attention
-    5. **"forecastImplications"**: Forward-looking implications
-    6. **"recommendedActions"**: 3-4 actions based on comparison
+    1. **"overallChange"**: Summary of ${userRole === 'salesAgent' ? 'YOUR' : 'overall'} performance change
+    2. **"significantChanges"**: 3-4 most significant changes ${userRole === 'salesAgent' ? 'in YOUR customer portfolio' : 'identified'}
+    3. **"positiveIndicators"**: 2-3 positive ${userRole === 'salesAgent' ? 'aspects of YOUR' : ''} performance indicators
+    4. **"concerningTrends"**: 1-2 trends requiring ${userRole === 'salesAgent' ? 'YOUR' : ''} attention
+    5. **"forecastImplications"**: Forward-looking implications ${userRole === 'salesAgent' ? 'for YOUR territory' : ''}
+    6. **"recommendedActions"**: 3-4 actions based on comparison ${userRole === 'salesAgent' ? '(specific to YOUR customers)' : ''}
     
-    Focus on changes relevant to DM Brands' luxury import business strategy.
+    ${userRole === 'salesAgent' 
+      ? 'Focus on changes in YOUR customer relationships and YOUR sales performance. All recommendations should be about YOUR assigned customers.'
+      : 'Focus on changes relevant to DM Brands\' luxury import business strategy.'
+    }
     
     Respond with ONLY clean JSON - no formatting.
   `;
@@ -360,27 +432,47 @@ export async function generateComparativeInsights(currentData, previousData, com
 /**
  * Generate seasonal insights for planning
  */
-export async function generateSeasonalInsights(historicalData, currentSeason) {
+export async function generateSeasonalInsights(historicalData, currentSeason, userRole, agentId) {
+  // Determine which context to use based on role
+  const baseContext = userRole === 'salesAgent' ? SALES_AGENT_CONTEXT : DM_BRANDS_CONTEXT;
+  
+  // Role-specific prompt additions
+  const roleSpecificInstructions = userRole === 'salesAgent' 
+    ? `
+      **CRITICAL REMINDER:** You are analyzing seasonal patterns for YOUR customers only.
+      - Historical data represents YOUR customer portfolio's seasonal behavior
+      - Recommendations must focus on YOUR existing customers
+      - Suggest seasonal strategies for customers YOU already manage
+      - Do not reference customers outside YOUR assigned portfolio
+      **Agent ID:** ${agentId || 'Not specified'}
+    `
+    : '';
+
   const prompt = `
-    ${DM_BRANDS_CONTEXT}
+    ${baseContext}
     
-    **SEASONAL BUSINESS ANALYSIS**
+    **SEASONAL ${userRole === 'salesAgent' ? 'PERFORMANCE' : 'BUSINESS'} ANALYSIS**
     
-    **Historical Seasonal Data:**
+    ${roleSpecificInstructions}
+    
+    **Historical Seasonal Data ${userRole === 'salesAgent' ? '(YOUR customers)' : ''}:**
     ${JSON.stringify(historicalData, null, 2)}
     
     **Current Season:** ${currentSeason}
     
-    **TASK:** Generate seasonal planning insights for luxury home and giftware business as JSON:
+    **TASK:** Generate seasonal ${userRole === 'salesAgent' ? 'sales' : 'planning'} insights for ${userRole === 'salesAgent' ? 'YOUR territory' : 'luxury home and giftware business'} as JSON:
     
-    1. **"seasonalTrends"**: Key seasonal patterns identified
-    2. **"currentSeasonOutlook"**: Current season performance vs. historical
-    3. **"inventoryRecommendations"**: Seasonal inventory planning advice
-    4. **"salesFocus"**: Recommended sales focus areas for current season
-    5. **"customerTargeting"**: Seasonal customer targeting strategy
-    6. **"brandEmphasis"**: Which brands to emphasize this season
+    1. **"seasonalTrends"**: Key seasonal patterns ${userRole === 'salesAgent' ? 'in YOUR customer buying behavior' : 'identified'}
+    2. **"currentSeasonOutlook"**: ${userRole === 'salesAgent' ? 'YOUR' : 'Current'} season performance vs. historical
+    3. **"inventoryRecommendations"**: ${userRole === 'salesAgent' ? 'Products to promote to YOUR customers this season' : 'Seasonal inventory planning advice'}
+    4. **"salesFocus"**: Recommended sales focus areas ${userRole === 'salesAgent' ? 'for YOUR customer meetings' : 'for current season'}
+    5. **"customerTargeting"**: ${userRole === 'salesAgent' ? 'Which of YOUR customers to prioritize this season' : 'Seasonal customer targeting strategy'}
+    6. **"brandEmphasis"**: Which brands to emphasize ${userRole === 'salesAgent' ? 'to YOUR customers' : ''} this season
     
-    Focus on actionable seasonal planning for European luxury imports.
+    ${userRole === 'salesAgent' 
+      ? 'Focus on actionable seasonal strategies for YOUR assigned customers. Reference specific customers from YOUR portfolio when making recommendations.'
+      : 'Focus on actionable seasonal planning for European luxury imports.'
+    }
     
     Respond with ONLY clean JSON - no formatting.
   `;
