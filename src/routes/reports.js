@@ -156,6 +156,40 @@ router.get('/dashboard/health', async (req, res) => {
   }
 });
 
+router.get('/purchase-orders', 
+  validateDateRange, 
+  getUserContext, 
+  async (req, res) => {
+    try {
+      const { status = 'open' } = req.query;
+      
+      const purchaseOrders = await zohoReportsService.getPurchaseOrders(status);
+      
+      res.json({
+        success: true,
+        data: {
+          purchaseorders: purchaseOrders,
+          summary: {
+            total: purchaseOrders.length,
+            totalValue: purchaseOrders.reduce((sum, po) => 
+              sum + parseFloat(po.total || 0), 0
+            )
+          }
+        },
+        dataSource: 'Zoho Inventory API',
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error fetching purchase orders:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to fetch purchase orders'
+      });
+    }
+  }
+);
+
 /**
  * NEW: Get detailed revenue analytics from Zoho
  */
