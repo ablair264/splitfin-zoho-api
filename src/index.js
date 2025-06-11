@@ -357,42 +357,56 @@ app.get('/oauth/url', (req, res) => {
 
 app.get('/oauth/callback', async (req, res) => {
   const { code } = req.query;
-  if (!code) return res.status(400).send('No code received');
+  if (!code) {
+    return res.status(400).send('No code received from Zoho.');
+  }
+
   try {
+    // This part remains the same: exchange the code for tokens.
     const { data } = await axios.post(
       'https://accounts.zoho.eu/oauth/v2/token',
       null,
-      { params: {
-          grant_type:    'authorization_code',
-          client_id:     ZOHO_CLIENT_ID,
+      {
+        params: {
+          grant_type: 'authorization_code',
+          client_id: ZOHO_CLIENT_ID,
           client_secret: ZOHO_CLIENT_SECRET,
-          redirect_uri:  ZOHO_REDIRECT_URI,
+          redirect_uri: ZOHO_REDIRECT_URI,
           code
         }
       }
     );
+
     if (data.error) {
-      return res
-        .status(400)
-        .send(`Zoho OAuth error: ${data.error_description||data.error}`);
+      throw new Error(data.error_description || data.error);
     }
-    
-    const envPath = path.resolve(__dirname, '../.env');
-    const envContent = fs.readFileSync(envPath, 'utf8');
-    const updatedEnv = envContent.replace(
-      /ZOHO_REFRESH_TOKEN=.*/,
-      `ZOHO_REFRESH_TOKEN=${data.refresh_token}`
-    );
-    fs.writeFileSync(envPath, updatedEnv, 'utf8');
-    
-    return res.send(`
-      <h1>Connected to Zoho!</h1>
-      <p>Token expires in ${data.expires_in}s</p>
-      <p>Refresh token has been saved.</p>
+
+    // --- THIS IS THE MODIFIED PART ---
+    // Instead of writing to a file, we will display the new refresh token.
+    const newRefreshToken = data.refresh_token;
+
+    // Send a success page with clear instructions and the new token.
+    return res.status(200).send(`
+      <div style="font-family: sans-serif; padding: 2em;">
+        <h1>✅ Success! New Refresh Token Generated</h1>
+        <p>Your new Refresh Token has been generated successfully. Please copy the token below and save it in your Render Environment Group.</p>
+        <hr>
+        <h3>Your New Refresh Token:</h3>
+        <pre style="background-color: #f4f4f4; padding: 1em; border-radius: 5px; word-wrap: break-word;"><code>${newRefreshToken}</code></pre>
+        <hr>
+        <h4>Next Steps:</h4>
+        <ol>
+          <li>Copy the token above.</li>
+          <li>Go to your Environment Group on Render.com.</li>
+          <li>Update the value for the <strong>ZOHO_REFRESH_TOKEN</strong> variable by pasting in this new token.</li>
+          <li>Save the changes and restart your services.</li>
+        </ol>
+      </div>
     `);
+
   } catch (err) {
-    console.error(err.response?.data||err);
-    return res.status(500).send('Token exchange failed');
+    console.error('❌ Token exchange failed:', err.response?.data || err.message);
+    return res.status(500).send('Token exchange failed. Check server logs for details.');
   }
 });
 
