@@ -145,25 +145,39 @@ class CollectionDashboardService {
 /**
  * Get dashboard data for sales agents using normalized collections
  */
-async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
-  console.log(`🔍 Building agent dashboard using normalized data for UID: ${userUid}`);
+/**
+ * Get dashboard data for brand managers using normalized collections
+ */
+async getManagerDashboardNormalized(startISO, endISO, dateRange) {
+  console.log(`🔍 Building manager dashboard using normalized data`);
 
-  // Fetch agent's normalized data
-  const [ordersSnapshot, customersSnapshot, invoicesSnapshot] = await Promise.all([
-    // Get agent's orders using salesperson_uid
+  // Fetch all data for the period
+  const [
+    ordersSnapshot,
+    customersSnapshot,
+    invoicesSnapshot,
+    agentsSnapshot
+  ] = await Promise.all([
+    // Get all orders
     this.db.collection('normalized_orders')
-      .where('salesperson_uid', '==', userUid)
       .where('created_time', '>=', startISO)
       .where('created_time', '<=', endISO)
       .orderBy('created_time', 'desc')
       .get(),
 
-    // Get all customers (we'll filter by orders later)
+    // Get all customers
     this.db.collection('normalized_customers').get(),
 
-    // Get all invoices (we'll filter by customer later)
-    // TODO: Change to normalized_invoices when available
-    this.db.collection('invoices').get()
+    // Get all invoices
+    this.db.collection('invoices')
+      .where('date', '>=', startISO)
+      .where('date', '<=', endISO)
+      .get(),
+
+    // Get all agents
+    this.db.collection('users')
+      .where('role', '==', 'salesAgent')
+      .get()
   ]);
 
   // Process orders - map to frontend expected structure
@@ -175,77 +189,74 @@ async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
       customer_id: data.customer_id,
       customer_name: data.customer_name,
       salesperson_id: data.salesperson_id,
+      salesperson_uid: data.salesperson_uid,
       salesperson_name: data.salesperson_name,
-      date: data.created_time, // Map created_time to date for frontend
-      total: data.total_amount, // Map total_amount to total for frontend
+      date: data.created_time, // Map created_time to date
+      total: data.total_amount, // Map total_amount to total
       status: data.order_status,
-      line_items: data.line_items || []
+      line_items: data.line_items || [],
+      is_marketplace_order: data.is_marketplace_order || false,
+      marketplace_source: data.marketplace_source || null
     };
   });
 
-  console.log(`📦 Found ${orders.length} orders for agent`);
-
-  // Get unique customer IDs from agent's orders
-  const agentCustomerIds = new Set(orders.map(order => order.customer_id).filter(id => id));
-  
-  // Filter customers - already have normalized structure
-  const allCustomers = customersSnapshot.docs.map(doc => ({
+  // Process customers - MOVE THIS UP BEFORE IT'S USED
+  const customers = customersSnapshot.docs.map(doc => ({
     id: doc.id,
     ...doc.data()
   }));
-  const agentCustomers = allCustomers.filter(customer => 
-    agentCustomerIds.has(customer.customer_id)
-  );
 
-  // Filter invoices
-  const allInvoices = invoicesSnapshot.docs.map(doc => doc.data());
-  const agentInvoices = allInvoices.filter(inv => 
-    agentCustomerIds.has(inv.customer_id) && 
-    inv.date >= startISO && 
-    inv.date <= endISO
-  );
+  const invoices = invoicesSnapshot.docs.map(doc => doc.data());
 
-  // Calculate metrics using normalized field names
+  const agents = agentsSnapshot.docs.map(doc => ({
+    id: doc.id,
+    ...doc.data()
+  }));
+
+  // Separate marketplace and regular orders for logging
+  const marketplaceOrders = orders.filter(o => o.is_marketplace_order);
+  const regularOrders = orders.filter(o => !o.is_marketplace_order);
+  
+  console.log(`📊 Found ${regularOrders.length} regular orders, ${marketplaceOrders.length} marketplace orders`);
+  console.log(`👥 Found ${customers.length} customers, ${agents.length} agents`);
+
+  // Calculate metrics using mapped field names
   const totalRevenue = orders.reduce((sum, order) => 
     sum + (order.total || 0), 0
   );
 
-  console.log(`💰 Total revenue: ${totalRevenue}`);
-
-  // Commission calculation
-  const commission = {
-    rate: 0.125, // 12.5%
-    total: totalRevenue * 0.125,
-    salesValue: totalRevenue
-  };
-
   // Process invoices
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const invoiceCategories = this.categorizeInvoices(agentInvoices, today);
+  const invoiceCategories = this.categorizeInvoices(invoices, today);
 
   // Build overview
-  const overview = this.buildAgentOverview(orders, agentCustomers);
+  const overview = this.buildManagerOverview(orders, customers);
 
-  // Get brand performance from orders
+  // Calculate agent performance using normalized data
+  const agentPerformance = this.calculateAgentPerformanceNormalized(orders, agents);
+
+  // Get brand performance
   const brandPerformance = this.calculateBrandPerformanceFromOrders(orders);
 
   // Calculate top items
   const topItems = this.calculateTopItemsFromOrders(orders);
 
-  // Build the dashboard structure
+  // Build metrics object
   const metrics = {
     revenue: totalRevenue,
     orders: orders.length,
-    customers: agentCustomers.length,
-    agents: 1, // Single agent view
+    customers: customers.length,
+    agents: agents.length,
     brands: brandPerformance.length,
     totalRevenue: totalRevenue,
     totalOrders: orders.length,
     averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
     outstandingInvoices: invoiceCategories.outstanding.reduce((sum, inv) => 
       sum + (parseFloat(inv.balance) || 0), 0
-    )
+    ),
+    marketplaceOrders: marketplaceOrders.length,
+    regularOrders: regularOrders.length
   };
 
   return {
@@ -253,17 +264,25 @@ async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
     overview,
     revenue: {
       grossRevenue: totalRevenue,
-      netRevenue: totalRevenue * 0.8, // Assuming 20% tax
+      netRevenue: totalRevenue * 0.8,
       taxAmount: totalRevenue * 0.2,
+      paidRevenue: invoiceCategories.paid.reduce((sum, inv) => 
+        sum + (parseFloat(inv.total) || 0), 0
+      ),
+      outstandingRevenue: invoiceCategories.outstanding.reduce((sum, inv) => 
+        sum + (parseFloat(inv.balance) || 0), 0
+      ),
+      profitMargin: 30, // TODO: Calculate actual margin
       period: dateRange
     },
-    commission,
     orders: {
       salesOrders: {
         total: orders.length,
         totalValue: totalRevenue,
         averageValue: orders.length > 0 ? totalRevenue / orders.length : 0,
-        latest: orders.slice(0, 10)
+        latest: orders.slice(0, 10),
+        marketplace: marketplaceOrders.length,
+        regular: regularOrders.length
       }
     },
     invoices: {
@@ -274,8 +293,8 @@ async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
       brands: brandPerformance,
       topItems: topItems,
       trends: this.calculateTrends(orders),
-      // Add top_customers array that the frontend expects
-      top_customers: agentCustomers
+      // Add top_customers array that frontend expects
+      top_customers: customers
         .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
         .slice(0, 10)
         .map(c => ({
@@ -284,7 +303,7 @@ async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
           total_spent: c.total_spent || 0,
           order_count: c.order_count || 0
         })),
-      // Add top_items array (different structure than topItems)
+      // Add top_items array for frontend compatibility
       top_items: topItems.slice(0, 10).map(item => ({
         id: item.itemId,
         name: item.name,
@@ -293,9 +312,11 @@ async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
         brand: item.brand
       }))
     },
-    // Include the raw arrays for compatibility
+    agentPerformance,
+    // Include raw arrays for compatibility
     orders: orders,
-    invoices: invoiceCategories
+    invoices: invoiceCategories,
+    commission: null // Managers don't have commission
   };
 }
 
