@@ -12,58 +12,59 @@ class CronDataSyncService {
     this.lastSync = {};
   }
   
- async syncSalesTransactions() {
+  /**
+   * Sync sales transactions (line items) to sales_transactions collection
+   */
+  async syncSalesTransactions(dateRange = '2_years') {
     console.log('🔄 Syncing Line Items to sales_transactions collection...');
     try {
       const db = admin.firestore();
       
-      // STEP 1: Fetch the list of sales orders for the period.
-      // This gives us the IDs, but likely without complete line_items.
-      const salesOrdersList = await zohoReportsService.getSalesOrders('2_years');
+      // Fetch sales orders for the period
+      const salesOrdersList = await zohoReportsService.getSalesOrders(dateRange);
 
       if (!salesOrdersList || salesOrdersList.length === 0) {
         console.log('✅ No sales orders found in the period.');
         return { success: true, count: 0 };
       }
       
-      console.log(`Found ${salesOrdersList.length} orders. Fetching full details for each...`);
+      console.log(`Found ${salesOrdersList.length} orders with line items...`);
 
       const transactions = [];
       
-      // STEP 2: Loop through the list and fetch full details for each order individually.
-      for (const orderHeader of salesOrdersList) {
-        const orderDetails = await zohoReportsService.getSalesOrderDetail(orderHeader.salesorder_id);
-
-        if (orderDetails && orderDetails.line_items && Array.isArray(orderDetails.line_items)) {
-          orderDetails.line_items.forEach(item => {
+      // Process each order's line items
+      salesOrdersList.forEach(order => {
+        if (order.line_items && Array.isArray(order.line_items)) {
+          order.line_items.forEach(item => {
             transactions.push({
-              transaction_id: item.line_item_id,
+              transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
               item_id: item.item_id,
               item_name: item.name,
               sku: item.sku,
+              brand: item.brand || 'Unknown',
               quantity: parseInt(item.quantity || 0),
               price: parseFloat(item.rate || 0),
-              total: parseFloat(item.total || 0),
-              order_id: orderDetails.salesorder_id,
-              order_number: orderDetails.salesorder_number,
-              order_date: orderDetails.date,
-              customer_id: orderDetails.customer_id,
-              customer_name: orderDetails.customer_name,
-              salesperson_id: orderDetails.salesperson_id,
-              salesperson_name: orderDetails.salesperson_name
+              total: parseFloat(item.item_total || item.total || 0),
+              order_id: order.salesorder_id,
+              order_number: order.salesorder_number,
+              order_date: order.date,
+              customer_id: order.customer_id,
+              customer_name: order.customer_name,
+              salesperson_id: order.salesperson_id,
+              salesperson_name: order.salesperson_name,
+              created_at: order.date,
+              last_modified: admin.firestore.FieldValue.serverTimestamp()
             });
           });
         }
-        // Add a small delay to be respectful to the API
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      });
 
       if (transactions.length === 0) {
-        console.log('✅ No line items found in any of the fetched orders.');
+        console.log('✅ No line items found in any of the orders.');
         return { success: true, count: 0 };
       }
 
-      // Use your existing batch write helper to safely write all transactions
+      // Write transactions in batches
       await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
       
       return { success: true, count: transactions.length };
@@ -74,14 +75,8 @@ class CronDataSyncService {
     }
   }
   
-  // Add this helper function inside the CronDataSyncService class
-
   /**
-   * Writes an array of data to a Firestore collection in batches of 499.
-   * @param {FirebaseFirestore.Firestore} db The Firestore instance.
-   * @param {string} collectionName The name of the collection to write to.
-   * @param {Array<Object>} dataArray The array of data to write.
-   * @param {string} idKey The property name in each object to use as the document ID.
+   * Helper function to write data in batches of 499
    */
   async _batchWrite(db, collectionName, dataArray, idKey) {
     if (!dataArray || dataArray.length === 0) {
@@ -99,9 +94,15 @@ class CronDataSyncService {
       
       chunk.forEach(item => {
         const docId = item[idKey];
-        if (docId) { // Ensure there's an ID to use
+        if (docId) {
           const docRef = collectionRef.doc(docId.toString());
-          batch.set(docRef, item, { merge: true });
+          // Add sync metadata
+          const itemWithMetadata = {
+            ...item,
+            _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+            _syncSource: 'zoho_api'
+          };
+          batch.set(docRef, itemWithMetadata, { merge: true });
         }
       });
       
@@ -113,8 +114,8 @@ class CronDataSyncService {
   }
 
   /**
-   * HIGH FREQUENCY SYNC - Every 15 minutes during business hours
-   * Lightweight, fast data that users need to be current
+   * HIGH FREQUENCY SYNC - Every 15 minutes
+   * Syncs recent data (today's orders, recent invoices)
    */
   async highFrequencySync() {
     const jobType = 'high-frequency';
@@ -126,21 +127,48 @@ class CronDataSyncService {
 
     this.isRunning.set(jobType, true);
     const startTime = Date.now();
+    const db = admin.firestore();
 
     try {
       console.log('🔄 Starting high frequency sync...');
       
-      // Get recent sales orders (last 24 hours only)
-      const recentOrders = await zohoReportsService.getSalesOrders('today');
-      await this.cacheData('recent_orders', recentOrders, '15min');
+      // Get today's sales orders
+      const todayOrders = await zohoReportsService.getSalesOrders('today');
       
-      // Quick invoice status check (last 7 days)
+      // Write orders to collection
+      if (todayOrders.length > 0) {
+        const ordersData = todayOrders.map(order => ({
+          ...order,
+          salesorder_id: order.salesorder_id,
+          date: order.date,
+          created_at: order.date,
+          last_modified: admin.firestore.FieldValue.serverTimestamp()
+        }));
+        
+        await this._batchWrite(db, 'orders', ordersData, 'salesorder_id');
+      }
+      
+      // Get recent invoices (last 7 days)
       const recentInvoices = await zohoReportsService.getInvoices('7_days');
-      await this.cacheData('recent_invoices', recentInvoices, '15min');
       
-      // Calculate quick metrics from cached data
-      const quickMetrics = await this.calculateQuickMetrics(recentOrders, recentInvoices);
-      await this.cacheData('quick_metrics', quickMetrics, '15min');
+      // Write all invoice categories
+      const allInvoices = [
+        ...recentInvoices.all,
+        ...recentInvoices.outstanding,
+        ...recentInvoices.overdue
+      ];
+      
+      // Deduplicate invoices by ID
+      const uniqueInvoices = Array.from(
+        new Map(allInvoices.map(inv => [inv.invoice_id, inv])).values()
+      );
+      
+      if (uniqueInvoices.length > 0) {
+        await this._batchWrite(db, 'invoices', uniqueInvoices, 'invoice_id');
+      }
+      
+      // Sync today's transactions
+      await this.syncSalesTransactions('today');
       
       const duration = Date.now() - startTime;
       this.lastSync.high = new Date();
@@ -149,8 +177,10 @@ class CronDataSyncService {
       return { 
         success: true, 
         duration, 
-        recordsProcessed: recentOrders.length + recentInvoices.all.length,
-        cacheKeys: ['recent_orders', 'recent_invoices', 'quick_metrics']
+        recordsProcessed: {
+          orders: todayOrders.length,
+          invoices: uniqueInvoices.length
+        }
       };
       
     } catch (error) {
@@ -163,7 +193,7 @@ class CronDataSyncService {
 
   /**
    * MEDIUM FREQUENCY SYNC - Every 2 hours
-   * More comprehensive data that doesn't need to be real-time
+   * Syncs last 30 days of data
    */
   async mediumFrequencySync() {
     const jobType = 'medium-frequency';
@@ -175,25 +205,58 @@ class CronDataSyncService {
 
     this.isRunning.set(jobType, true);
     const startTime = Date.now();
+    const db = admin.firestore();
 
     try {
       console.log('🔄 Starting medium frequency sync...');
       
-      // Brand performance with limited pagination to avoid 400 errors
-      const brands = await zohoReportsService.getBrandPerformance();
-      await this.cacheData('brand_performance', brands, '2hr');
+      // Get last 30 days of orders
+      const orders = await zohoReportsService.getSalesOrders('30_days');
       
-      // Customer analytics (30 days)
+      if (orders.length > 0) {
+        const ordersData = orders.map(order => ({
+          ...order,
+          salesorder_id: order.salesorder_id,
+          date: order.date,
+          created_at: order.date,
+          last_modified: admin.firestore.FieldValue.serverTimestamp()
+        }));
+        
+        await this._batchWrite(db, 'orders', ordersData, 'salesorder_id');
+      }
+      
+      // Get last 30 days of invoices
+      const invoices = await zohoReportsService.getInvoices('30_days');
+      const allInvoices = [...invoices.all, ...invoices.outstanding, ...invoices.overdue];
+      const uniqueInvoices = Array.from(
+        new Map(allInvoices.map(inv => [inv.invoice_id, inv])).values()
+      );
+      
+      if (uniqueInvoices.length > 0) {
+        await this._batchWrite(db, 'invoices', uniqueInvoices, 'invoice_id');
+      }
+      
+      // Sync customers (check for updates)
       const customers = await zohoReportsService.getCustomerAnalytics('30_days');
-      await this.cacheData('customer_analytics', customers, '2hr');
+      if (customers.customers && customers.customers.length > 0) {
+        const customerData = customers.customers.map(customer => ({
+          customer_id: customer.id,
+          name: customer.name,
+          email: customer.email,
+          totalSpent: customer.totalSpent,
+          orderCount: customer.orderCount,
+          lastOrderDate: customer.lastOrderDate,
+          firstOrderDate: customer.firstOrderDate,
+          segment: customer.segment,
+          agentId: customer.agentId,
+          last_modified: admin.firestore.FieldValue.serverTimestamp()
+        }));
+        
+        await this._batchWrite(db, 'customers', customerData, 'customer_id');
+      }
       
-      // Revenue analysis
-      const revenue = await zohoReportsService.getRevenueAnalysis('30_days');
-      await this.cacheData('revenue_analysis', revenue, '2hr');
-      
-      // Agent performance (if not sales agent view)
-      const agentPerformance = await zohoReportsService.getAgentPerformance('30_days');
-      await this.cacheData('agent_performance', agentPerformance, '2hr');
+      // Sync last 30 days of transactions
+      await this.syncSalesTransactions('30_days');
       
       const duration = Date.now() - startTime;
       this.lastSync.medium = new Date();
@@ -202,7 +265,11 @@ class CronDataSyncService {
       return { 
         success: true, 
         duration,
-        cacheKeys: ['brand_performance', 'customer_analytics', 'revenue_analysis', 'agent_performance']
+        recordsProcessed: {
+          orders: orders.length,
+          invoices: uniqueInvoices.length,
+          customers: customers.customers?.length || 0
+        }
       };
       
     } catch (error) {
@@ -215,14 +282,8 @@ class CronDataSyncService {
 
   /**
    * LOW FREQUENCY SYNC - Daily at 2 AM
-   * Heavy data processing and full refreshes
+   * Full historical sync
    */
-   // Replace your existing lowFrequencySync function with this one
-
-// Replace your existing lowFrequencySync function with this one
-
-  // Replace your existing lowFrequencySync function with this one
-
   async lowFrequencySync() {
     const jobType = 'low-frequency';
     
@@ -238,33 +299,32 @@ class CronDataSyncService {
     try {
       console.log('🔄 Starting low frequency sync (full data refresh)...');
       
-      console.log('📦 Syncing all products from CRM...');
+      // Sync all products
+      console.log('📦 Syncing all products from Inventory...');
       const productSyncResult = await syncInventory(true);
       
-      // --- Fetch data in smaller, quarterly chunks to avoid API errors ---
+      // Fetch data in quarterly chunks to avoid API errors
       const allOrders = [];
       const allInvoices = [];
       const allPurchaseOrders = [];
-      const quartersToSync = 8; // 4 quarters per year * 2 years
+      const quartersToSync = 8; // 2 years
 
       for (let q = 0; q < quartersToSync; q++) {
         const now = new Date();
-        // Go back quarter by quarter
         const endDate = new Date(now.getFullYear(), now.getMonth() - (q * 3), 1);
         const startDate = new Date(now.getFullYear(), now.getMonth() - ((q + 1) * 3), 1);
         
         const customDateRange = {
-            start: startDate.toISOString().split('T')[0],
-            end: endDate.toISOString().split('T')[0]
+          start: startDate.toISOString().split('T')[0],
+          end: endDate.toISOString().split('T')[0]
         };
 
         console.log(`   - Fetching data for quarter: ${customDateRange.start} to ${customDateRange.end}`);
 
-        // Fetch each data type for the current quarter
         const [ordersChunk, invoicesChunk, poChunk] = await Promise.all([
-            zohoReportsService.getSalesOrders('custom', customDateRange),
-            zohoReportsService.getInvoices('custom', customDateRange),
-            zohoReportsService.getPurchaseOrders('custom', customDateRange)
+          zohoReportsService.getSalesOrders('custom', customDateRange),
+          zohoReportsService.getInvoices('custom', customDateRange),
+          zohoReportsService.getPurchaseOrders('custom', customDateRange)
         ]);
 
         if (ordersChunk.length > 0) allOrders.push(...ordersChunk);
@@ -272,14 +332,26 @@ class CronDataSyncService {
         if (poChunk.length > 0) allPurchaseOrders.push(...poChunk);
       }
 
-      // --- Now, batch write the combined results ---
+      // Write all data to collections
       await this._batchWrite(db, 'orders', allOrders, 'salesorder_id');
       await this._batchWrite(db, 'invoices', allInvoices, 'invoice_id');
       await this._batchWrite(db, 'purchase_orders', allPurchaseOrders, 'purchaseorder_id');
       
-      const transactionSyncResult = await this.syncSalesTransactions();
+      // Sync all transactions (2 years)
+      const transactionSyncResult = await this.syncSalesTransactions('2_years');
+      
+      // Sync customer IDs
       const customerIdSyncResult = await syncInventoryCustomerIds();
-      await this.cleanupOldCache(); 
+      
+      // Update sync metadata
+      await db.collection('sync_metadata').doc('last_full_sync').set({
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        orders: allOrders.length,
+        invoices: allInvoices.length,
+        purchaseOrders: allPurchaseOrders.length,
+        transactions: transactionSyncResult.count,
+        duration: Date.now() - startTime
+      });
       
       const duration = Date.now() - startTime;
       this.lastSync.low = new Date();
@@ -305,192 +377,9 @@ class CronDataSyncService {
       this.isRunning.set(jobType, false);
     }
   }
-  
-  
 
   /**
-   * SAFE BRAND PERFORMANCE - Avoids the pagination issue
-   */
-  async getBrandPerformanceSafe() {
-    try {
-      // Skip the problematic CRM Products call and use sales order data only
-      const salesOrders = await zohoReportsService.getSalesOrders('30_days');
-      
-      const brandStats = new Map();
-      
-      salesOrders.forEach(order => {
-        if (order.line_items && Array.isArray(order.line_items)) {
-          order.line_items.forEach(item => {
-            // Extract brand from item name
-            let brand = 'Unknown';
-            if (item.name) {
-              const brandMatch = item.name.match(/^([A-Za-z0-9]+)[\s\-\_]/);
-              brand = brandMatch ? brandMatch[1] : item.name.substring(0, 15);
-            }
-            
-            if (!brandStats.has(brand)) {
-              brandStats.set(brand, {
-                brand,
-                revenue: 0,
-                quantity: 0,
-                productCount: new Set(),
-                orders: new Set()
-              });
-            }
-            
-            const stats = brandStats.get(brand);
-            stats.revenue += parseFloat(item.total || 0);
-            stats.quantity += parseInt(item.quantity || 0);
-            stats.productCount.add(item.item_id || item.name);
-            stats.orders.add(order.salesorder_id);
-          });
-        }
-      });
-
-      const brands = Array.from(brandStats.values()).map(stats => ({
-        brand: stats.brand,
-        revenue: stats.revenue,
-        quantity: stats.quantity,
-        productCount: stats.productCount.size,
-        orderCount: stats.orders.size,
-        averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0
-      })).sort((a, b) => b.revenue - a.revenue);
-
-      const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
-      
-      return {
-        brands,
-        summary: {
-          totalBrands: brands.length,
-          totalRevenue,
-          topBrand: brands[0] || null
-        }
-      };
-      
-    } catch (error) {
-      console.error('❌ Safe brand performance calculation failed:', error);
-      return { brands: [], summary: { totalBrands: 0, totalRevenue: 0, topBrand: null } };
-    }
-  }
-
-  /**
-   * CACHE DATA with expiry and metadata
-   */
-  async cacheData(key, data, ttl = '1hr') {
-    try {
-      const expiryMap = {
-        '15min': 15 * 60 * 1000,
-        '1hr': 60 * 60 * 1000,
-        '2hr': 2 * 60 * 60 * 1000,
-        '24hr': 24 * 60 * 60 * 1000
-      };
-
-      const cacheEntry = {
-        data,
-        timestamp: new Date().toISOString(),
-        expires: new Date(Date.now() + expiryMap[ttl]).toISOString(),
-        ttl,
-        size: JSON.stringify(data).length
-      };
-      
-      const db = admin.firestore();
-      await db.collection('dashboard_cache').doc(key).set(cacheEntry);
-      
-      console.log(`📄 Cached ${key} (${cacheEntry.size} bytes, TTL: ${ttl})`);
-      
-    } catch (error) {
-      console.error(`❌ Error caching ${key}:`, error);
-    }
-  }
-
-
-  async getCachedData(key) { // The 'maxAge' parameter is no longer needed
-    try {
-      const db = admin.firestore();
-      const doc = await db.collection('dashboard_cache').doc(key).get();
-      
-      if (!doc.exists) {
-        console.log(`❌ No cached data found for ${key}`);
-        return null;
-      }
-      
-      const cached = doc.data();
-      const age = Date.now() - new Date(cached.timestamp).getTime();
-
-      // The 'if (isExpired)' block has been completely removed.
-      // We will now log the age and return the data regardless.
-      
-      console.log(`✅ Using cached data for ${key} (${Math.round(age/1000)}s old) - Stale data is allowed.`);
-      return cached.data;
-      
-    } catch (error) {
-      console.error(`❌ Error getting cached data for ${key}:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * CALCULATE QUICK METRICS from cached data
-   */
-  async calculateQuickMetrics(orders, invoices) {
-    const totalRevenue = orders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
-    const outstandingAmount = invoices.outstanding.reduce((sum, inv) => sum + parseFloat(inv.balance || 0), 0);
-    
-    return {
-      todayOrders: orders.length,
-      todayRevenue: totalRevenue,
-      averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
-      outstandingInvoices: invoices.outstanding.length,
-      outstandingAmount,
-      lastCalculated: new Date().toISOString()
-    };
-  }
-
-  /**
-   * CALCULATE HISTORICAL TRENDS
-   */
-  async calculateHistoricalTrends(salesOrders) {
-    const trends = new Map();
-    
-    salesOrders.forEach(order => {
-      const date = new Date(order.date);
-      const period = date.toISOString().split('T')[0];
-      
-      if (!trends.has(period)) {
-        trends.set(period, { period, orders: 0, revenue: 0, date: period });
-      }
-      
-      const trend = trends.get(period);
-      trend.orders++;
-      trend.revenue += parseFloat(order.total || 0);
-    });
-    
-    return Array.from(trends.values()).sort((a, b) => new Date(a.date) - new Date(b.date));
-  }
-
-  /**
-   * CLEANUP OLD CACHE ENTRIES
-   */
-  async cleanupOldCache() {
-    try {
-      const db = admin.firestore();
-      const oldEntries = await db.collection('dashboard_cache')
-        .where('expires', '<', new Date().toISOString())
-        .get();
-      
-      const batch = db.batch();
-      oldEntries.docs.forEach(doc => batch.delete(doc.ref));
-      await batch.commit();
-      
-      console.log(`🧹 Cleaned up ${oldEntries.size} expired cache entries`);
-      
-    } catch (error) {
-      console.error('❌ Error cleaning up cache:', error);
-    }
-  }
-
-  /**
-   * GET SYNC STATUS for monitoring
+   * Get sync status for monitoring
    */
   getSyncStatus() {
     return {
