@@ -1,14 +1,14 @@
-// ================================================================
-// FILE: src/services/cronDataSyncService.js
-// ================================================================
+// src/services/cronDataSyncService.js
+// Updated to include data normalization after sync
 
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
+import dataNormalizationService from './dataNormalizationService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 
 class CronDataSyncService {
   constructor() {
-    this.isRunning = new Map(); // Track running jobs by type
+    this.isRunning = new Map();
     this.lastSync = {};
   }
   
@@ -20,7 +20,6 @@ class CronDataSyncService {
     try {
       const db = admin.firestore();
       
-      // Fetch sales orders for the period
       const salesOrdersList = await zohoReportsService.getSalesOrders(dateRange);
 
       if (!salesOrdersList || salesOrdersList.length === 0) {
@@ -32,7 +31,6 @@ class CronDataSyncService {
 
       const transactions = [];
       
-      // Process each order's line items
       salesOrdersList.forEach(order => {
         if (order.line_items && Array.isArray(order.line_items)) {
           order.line_items.forEach(item => {
@@ -64,7 +62,6 @@ class CronDataSyncService {
         return { success: true, count: 0 };
       }
 
-      // Write transactions in batches
       await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
       
       return { success: true, count: transactions.length };
@@ -87,7 +84,6 @@ class CronDataSyncService {
     const collectionRef = db.collection(collectionName);
     const promises = [];
     
-    // Split the data into chunks of 499 (safely below the 500 limit)
     for (let i = 0; i < dataArray.length; i += 499) {
       const chunk = dataArray.slice(i, i + 499);
       const batch = db.batch();
@@ -96,7 +92,6 @@ class CronDataSyncService {
         const docId = item[idKey];
         if (docId) {
           const docRef = collectionRef.doc(docId.toString());
-          // Add sync metadata
           const itemWithMetadata = {
             ...item,
             _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
@@ -114,8 +109,23 @@ class CronDataSyncService {
   }
 
   /**
+   * Run data normalization after sync
+   */
+  async runNormalization() {
+    console.log('🔄 Running data normalization...');
+    try {
+      const result = await dataNormalizationService.normalizeAllData();
+      console.log('✅ Data normalization completed');
+      return result;
+    } catch (error) {
+      console.error('❌ Data normalization failed:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * HIGH FREQUENCY SYNC - Every 15 minutes
-   * Syncs recent data (today's orders, recent invoices)
+   * Syncs recent data and normalizes it
    */
   async highFrequencySync() {
     const jobType = 'high-frequency';
@@ -135,7 +145,6 @@ class CronDataSyncService {
       // Get today's sales orders
       const todayOrders = await zohoReportsService.getSalesOrders('today');
       
-      // Write orders to collection
       if (todayOrders.length > 0) {
         const ordersData = todayOrders.map(order => ({
           ...order,
@@ -148,17 +157,15 @@ class CronDataSyncService {
         await this._batchWrite(db, 'orders', ordersData, 'salesorder_id');
       }
       
-      // Get recent invoices (last 7 days)
+      // Get recent invoices
       const recentInvoices = await zohoReportsService.getInvoices('7_days');
       
-      // Write all invoice categories
       const allInvoices = [
         ...recentInvoices.all,
         ...recentInvoices.outstanding,
         ...recentInvoices.overdue
       ];
       
-      // Deduplicate invoices by ID
       const uniqueInvoices = Array.from(
         new Map(allInvoices.map(inv => [inv.invoice_id, inv])).values()
       );
@@ -170,6 +177,9 @@ class CronDataSyncService {
       // Sync today's transactions
       await this.syncSalesTransactions('today');
       
+      // Run normalization for today's data
+      await this.runNormalization();
+      
       const duration = Date.now() - startTime;
       this.lastSync.high = new Date();
       
@@ -180,7 +190,8 @@ class CronDataSyncService {
         recordsProcessed: {
           orders: todayOrders.length,
           invoices: uniqueInvoices.length
-        }
+        },
+        normalized: true
       };
       
     } catch (error) {
@@ -193,7 +204,7 @@ class CronDataSyncService {
 
   /**
    * MEDIUM FREQUENCY SYNC - Every 2 hours
-   * Syncs last 30 days of data
+   * Syncs last 30 days of data and normalizes
    */
   async mediumFrequencySync() {
     const jobType = 'medium-frequency';
@@ -236,7 +247,7 @@ class CronDataSyncService {
         await this._batchWrite(db, 'invoices', uniqueInvoices, 'invoice_id');
       }
       
-      // Sync customers (check for updates)
+      // Sync customers
       const customers = await zohoReportsService.getCustomerAnalytics('30_days');
       if (customers.customers && customers.customers.length > 0) {
         const customerData = customers.customers.map(customer => ({
@@ -258,6 +269,9 @@ class CronDataSyncService {
       // Sync last 30 days of transactions
       await this.syncSalesTransactions('30_days');
       
+      // Run normalization
+      await this.runNormalization();
+      
       const duration = Date.now() - startTime;
       this.lastSync.medium = new Date();
       
@@ -269,7 +283,8 @@ class CronDataSyncService {
           orders: orders.length,
           invoices: uniqueInvoices.length,
           customers: customers.customers?.length || 0
-        }
+        },
+        normalized: true
       };
       
     } catch (error) {
@@ -282,7 +297,7 @@ class CronDataSyncService {
 
   /**
    * LOW FREQUENCY SYNC - Daily at 2 AM
-   * Full historical sync
+   * Full historical sync with normalization
    */
   async lowFrequencySync() {
     const jobType = 'low-frequency';
@@ -303,7 +318,7 @@ class CronDataSyncService {
       console.log('📦 Syncing all products from Inventory...');
       const productSyncResult = await syncInventory(true);
       
-      // Fetch data in quarterly chunks to avoid API errors
+      // Fetch data in quarterly chunks
       const allOrders = [];
       const allInvoices = [];
       const allPurchaseOrders = [];
@@ -343,6 +358,10 @@ class CronDataSyncService {
       // Sync customer IDs
       const customerIdSyncResult = await syncInventoryCustomerIds();
       
+      // Run full normalization
+      console.log('🔄 Running full data normalization...');
+      await this.runNormalization();
+      
       // Update sync metadata
       await db.collection('sync_metadata').doc('last_full_sync').set({
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
@@ -350,6 +369,7 @@ class CronDataSyncService {
         invoices: allInvoices.length,
         purchaseOrders: allPurchaseOrders.length,
         transactions: transactionSyncResult.count,
+        normalized: true,
         duration: Date.now() - startTime
       });
       
@@ -367,7 +387,8 @@ class CronDataSyncService {
           purchaseOrders: allPurchaseOrders.length,
           transactions: transactionSyncResult.count,
           customerIdsMapped: customerIdSyncResult.processed
-        }
+        },
+        normalized: true
       };
       
     } catch (error) {
@@ -388,6 +409,15 @@ class CronDataSyncService {
       uptime: process.uptime(),
       timestamp: new Date().toISOString()
     };
+  }
+
+  /**
+   * Get cached data (for backward compatibility)
+   * This is no longer used with normalized collections
+   */
+  async getCachedData(cacheKey) {
+    console.warn('⚠️ getCachedData is deprecated. Use normalized collections directly.');
+    return null;
   }
 }
 

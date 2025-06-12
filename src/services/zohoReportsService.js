@@ -181,37 +181,40 @@ class ZohoReportsService {
         .where('role', '==', 'salesAgent')
         .get();
       
-      const userMap = new Map();
-      usersSnapshot.forEach(doc => {
-        const userData = doc.data();
-        if (userData.zohospID) {
-          userMap.set(userData.zohospID, {
-            id: userData.zohospID,
-            name: userData.name || 'Unknown Agent',
-            email: userData.email
-          });
-        }
-      });
+const userMap = new Map();
+usersSnapshot.forEach(doc => {
+  const userData = doc.data();
+  const uid = doc.id; // Use the document ID which is the Firebase UID
+  if (userData.zohospID) {
+    userMap.set(userData.zohospID, {
+      id: uid, // Store Firebase UID
+      zohospID: userData.zohospID,
+      name: userData.name || 'Unknown Agent',
+      email: userData.email
+    });
+  }
+});
 
       // Process agent performance from sales orders
-      const agentStats = new Map();
-      
-      salesOrders.forEach(order => {
-        if (order.salesperson_id) {
-          const agentId = order.salesperson_id;
-          const agentInfo = userMap.get(agentId) || { name: order.salesperson_name || 'Unknown' };
-          
-          if (!agentStats.has(agentId)) {
-            agentStats.set(agentId, {
-              agentId,
-              agentName: agentInfo.name,
-              agentEmail: agentInfo.email || '',
-              totalRevenue: 0,
-              totalOrders: 0,
-              customers: new Set(),
-              items: new Map()
-            });
-          }
+const agentStats = new Map();
+
+salesOrders.forEach(order => {
+  if (order.salesperson_id) {
+    const agentId = order.salesperson_id;
+    const agentInfo = userMap.get(agentId) || { name: order.salesperson_name || 'Unknown' };
+    
+    if (!agentStats.has(agentId)) {
+      agentStats.set(agentId, {
+        agentId,
+        agentUid: agentInfo.id, // Add Firebase UID
+        agentName: agentInfo.name,
+        agentEmail: agentInfo.email || '',
+        totalRevenue: 0,
+        totalOrders: 0,
+        customers: new Set(),
+        items: new Map()
+      });
+    }
           
           const stats = agentStats.get(agentId);
           stats.totalRevenue += parseFloat(order.total || 0);
@@ -794,9 +797,10 @@ class ZohoReportsService {
         throw new Error('User not found');
       }
       
-      const userData = userDoc.data();
-      const isAgent = userData.role === 'salesAgent';
-      const agentId = userData.zohospID; // Inventory salesperson ID
+const userData = userDoc.data();
+const isAgent = userData.role === 'salesAgent';
+const agentId = userData.zohospID; // Keep for Zoho API filtering
+const userUid = userId; // This is the Firebase UID
       
       // Fetch data based on role
       const [

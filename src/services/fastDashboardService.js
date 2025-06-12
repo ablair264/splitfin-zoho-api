@@ -54,7 +54,7 @@ class FastDashboardService {
    * Retrieve cached dashboard data (may be stale).
    * Updated to handle agent-specific filtering
    */
-  async getCachedDashboardData(userId, dateRange, isAgent, agentId) {
+ async getCachedDashboardData(userId, dateRange, isAgent, agentId) {
   try {
     console.log(`📊 Building cached dashboard for ${isAgent ? 'Agent' : 'Brand Manager'}: ${userId}`);
     
@@ -75,13 +75,13 @@ class FastDashboardService {
       !isAgent ? cronDataSyncService.getCachedData('agent_performance') : null,
       cronDataSyncService.getCachedData('recent_invoices')
     ]);
-
+    
     // Validate critical data
     if (!recentOrders && !quickMetrics) {
       console.warn('⚠️ No cached data available');
       return null;
     }
-
+    
     // Ensure orders is an array
     let ordersArray = [];
     if (Array.isArray(recentOrders)) {
@@ -91,18 +91,20 @@ class FastDashboardService {
     } else if (recentOrders?.data) {
       ordersArray = recentOrders.data;
     }
-
+    
     // Filter data for agents
     let filteredOrders = ordersArray;
     let filteredCustomers = customerAnalytics || { customers: [] };
     let filteredInvoices = recentInvoices || { outstanding: [], paid: [] };
-
-    if (isAgent && agentId) {
-      console.log(`🔍 Filtering data for agent: ${agentId}`);
+    
+    if (isAgent) {
+      console.log(`🔍 Filtering data for agent UID: ${userId}, Zoho ID: ${agentId}`);
       
-      // Filter orders by agent
+      // Filter orders by agent - check both IDs for backward compatibility
+      // userId is the Firebase UID, agentId is the Zoho salesperson ID
       filteredOrders = ordersArray.filter(order => {
         return order.salesperson_id === agentId || 
+               order.salesperson_uid === userId || // Check Firebase UID
                order.agent_id === agentId ||
                order.cf_agent === agentId;
       });
