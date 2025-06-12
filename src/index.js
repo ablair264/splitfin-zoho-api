@@ -7,6 +7,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import collectionDashboardService from './services/collectionDashboardService.js';
 import { 
   syncInventory, 
   syncCustomersFromCRM, 
