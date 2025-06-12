@@ -319,108 +319,31 @@ async getManagerDashboardNormalized(startISO, endISO, dateRange) {
   };
 }
 
-async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
-  console.log(`🔍 Building agent dashboard for UID: ${userUid}`);
-
-  // 1. Fetch data specific to this agent
-  const [
-    ordersSnapshot,
-    invoicesSnapshot
-    // We don't need all customers/agents, just the ones related to this agent's orders
-  ] = await Promise.all([
-    // Get orders for this specific agent within the date range
-    this.db.collection('normalized_orders')
-      .where('salesperson_uid', '==', userUid)
-      .where('created_time', '>=', startISO)
-      .where('created_time', '<=', endISO)
-      .orderBy('created_time', 'desc')
-      .get(),
-
-    // Get invoices for this agent (assuming a salesperson_uid exists on invoices)
-    this.db.collection('invoices')
-      .where('salesperson_uid', '==', userUid)
-      .where('date', '>=', startISO)
-      .where('date', '<=', endISO)
-      .get()
-  ]);
-
-  // 2. Process the snapshot data
-  const orders = ordersSnapshot.docs.map(doc => {
-    const data = doc.data();
-    return {
-      id: doc.id,
-      order_number: data.order_number,
-      customer_id: data.customer_id,
-      customer_name: data.customer_name,
-      salesperson_uid: data.salesperson_uid,
-      salesperson_name: data.salesperson_name,
-      date: data.created_time,
-      total: data.total_amount,
-      status: data.order_status,
-      line_items: data.line_items || [],
-    };
-  });
-
-  const invoices = invoicesSnapshot.docs.map(doc => doc.data());
-
-  // Create a customer list from the orders
-  const customerMap = new Map();
-  orders.forEach(order => {
-      if (!customerMap.has(order.customer_id)) {
-          customerMap.set(order.customer_id, {
-              customer_id: order.customer_id,
-              customer_name: order.customer_name,
-              total_spent: 0,
-              order_count: 0,
-          });
-      }
-      const customer = customerMap.get(order.customer_id);
-      customer.total_spent += order.total || 0;
-      customer.order_count += 1;
-  });
-  const customers = Array.from(customerMap.values());
-
-
-  // 3. Perform calculations
-  const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const invoiceCategories = this.categorizeInvoices(invoices, today);
-
-  // 4. Build derived data using your helper functions
-  const overview = this.buildAgentOverview(orders, customers);
-  const brandPerformance = this.calculateBrandPerformanceFromOrders(orders);
-  const topItems = this.calculateTopItemsFromOrders(orders);
-
-  // 5. Build the final response object
-  return {
-    metrics: {
-      revenue: totalRevenue,
-      orders: orders.length,
-      customers: customers.length,
-      totalRevenue: totalRevenue,
-      totalOrders: orders.length,
-      averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
-      outstandingInvoices: invoiceCategories.outstanding.reduce((sum, inv) =>
-        sum + (parseFloat(inv.balance) || 0), 0
-      ),
-    },
+return {
+    metrics,
     overview,
     revenue: {
       grossRevenue: totalRevenue,
-      paidRevenue: invoiceCategories.paid.reduce((sum, inv) =>
+      netRevenue: totalRevenue * 0.8,
+      taxAmount: totalRevenue * 0.2,
+      paidRevenue: invoiceCategories.paid.reduce((sum, inv) => 
         sum + (parseFloat(inv.total) || 0), 0
       ),
-      outstandingRevenue: invoiceCategories.outstanding.reduce((sum, inv) =>
+      outstandingRevenue: invoiceCategories.outstanding.reduce((sum, inv) => 
         sum + (parseFloat(inv.balance) || 0), 0
       ),
-      period: dateRange,
+      profitMargin: 30,
+      period: dateRange
     },
-    orders: {
+    orders: orders, // This should be the array of orders
+    ordersSummary: { // Rename this to avoid conflict
       salesOrders: {
         total: orders.length,
         totalValue: totalRevenue,
+        averageValue: orders.length > 0 ? totalRevenue / orders.length : 0,
         latest: orders.slice(0, 10),
+        marketplace: marketplaceOrders.length,
+        regular: regularOrders.length
       }
     },
     invoices: {
@@ -434,10 +357,22 @@ async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
       top_customers: customers
         .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
         .slice(0, 10)
+        .map(c => ({
+          id: c.customer_id,
+          name: c.customer_name,
+          total_spent: c.total_spent || 0,
+          order_count: c.order_count || 0
+        })),
+      top_items: topItems.slice(0, 10).map(item => ({
+        id: item.itemId,
+        name: item.name,
+        quantity: item.quantity,
+        revenue: item.revenue,
+        brand: item.brand
+      }))
     },
-    // Agent-specific sections can be null or empty
-    agentPerformance: null, 
-    commission: null
+    agentPerformance,
+    commission: null // Remove the duplicate orders: orders line
   };
 }
 
