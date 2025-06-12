@@ -40,142 +40,144 @@ class DataNormalizerService {
   /**
    * Normalize orders collection with proper user UID mapping
    */
- async normalizeOrders() {
-  console.log('📦 Normalizing orders...');
-  
-  const ordersSnapshot = await this.db.collection('orders').get();
-  const salesTransSnapshot = await this.db.collection('sales_transactions').get();
-  const usersSnapshot = await this.db.collection('users').get();
-  
-  // Create user lookup maps
-  const usersByZohoId = new Map();
-  usersSnapshot.forEach(doc => {
-    const user = { id: doc.id, ...doc.data() };
-    if (user.zohospID) {
-      usersByZohoId.set(user.zohospID, user);
-    }
-  });
-  
-  // Create sales transaction lookup by order_id
-  const transactionsByOrderId = new Map();
-  salesTransSnapshot.forEach(doc => {
-    const trans = doc.data();
-    if (!transactionsByOrderId.has(trans.order_id)) {
-      transactionsByOrderId.set(trans.order_id, []);
-    }
-    transactionsByOrderId.get(trans.order_id).push(trans);
-  });
-  
-  const batch = this.db.batch();
-  let count = 0;
-  let marketplaceCount = 0;
-  
-  ordersSnapshot.forEach(doc => {
-    const order = doc.data();
-    const orderId = order.salesorder_id;
+  async normalizeOrders() {
+    console.log('📦 Normalizing orders...');
     
-    // Get line items from sales_transactions
-    const lineItems = transactionsByOrderId.get(orderId) || [];
+    const ordersSnapshot = await this.db.collection('orders').get();
+    const salesTransSnapshot = await this.db.collection('sales_transactions').get();
+    const usersSnapshot = await this.db.collection('users').get();
     
-    // Get salesperson_id from transactions if not in order
-    let salespersonId = order.salesperson_id;
-    let salespersonUid = null;
-    let isMarketplaceOrder = false;
+    // Create user lookup maps
+    const usersByZohoId = new Map();
+    usersSnapshot.forEach(doc => {
+      const user = { id: doc.id, ...doc.data() };
+      if (user.zohospID) {
+        usersByZohoId.set(user.zohospID, user);
+      }
+    });
     
-    if (!salespersonId && lineItems.length > 0) {
-      salespersonId = lineItems[0].salesperson_id;
-    }
+    // Create sales transaction lookup by order_id
+    const transactionsByOrderId = new Map();
+    salesTransSnapshot.forEach(doc => {
+      const trans = doc.data();
+      if (!transactionsByOrderId.has(trans.order_id)) {
+        transactionsByOrderId.set(trans.order_id, []);
+      }
+      transactionsByOrderId.get(trans.order_id).push(trans);
+    });
     
-    // Check if this is a marketplace order
-    // You can identify these by customer name, tags, or other fields
-    const customerNameLower = (order.customer_name || '').toLowerCase();
-    const isAmazonOrder = customerNameLower.includes('amazon') || 
-                          customerNameLower.includes('marketplace') ||
-                          order.reference_number?.includes('AMZ') ||
-                          order.tags?.some(tag => tag.toLowerCase().includes('amazon'));
+    let batch = this.db.batch();
+    let count = 0;
+    let marketplaceCount = 0;
     
-    if (!salespersonId) {
-      // This is likely a marketplace order
-      isMarketplaceOrder = true;
-      marketplaceCount++;
-      console.log(`🛒 Marketplace order detected: ${order.salesorder_number} - ${order.customer_name}`);
-    } else {
-      // Map salesperson_id to Firebase UID
-      if (usersByZohoId.has(salespersonId)) {
-        salespersonUid = usersByZohoId.get(salespersonId).id;
+    for (const doc of ordersSnapshot.docs) {
+      const order = doc.data();
+      const orderId = order.salesorder_id;
+      
+      // Get line items from sales_transactions
+      const lineItems = transactionsByOrderId.get(orderId) || [];
+      
+      // Get salesperson_id from transactions if not in order
+      let salespersonId = order.salesperson_id;
+      let salespersonUid = null;
+      let isMarketplaceOrder = false;
+      
+      if (!salespersonId && lineItems.length > 0) {
+        salespersonId = lineItems[0].salesperson_id;
+      }
+      
+      // Check if this is a marketplace order
+      const customerNameLower = (order.customer_name || '').toLowerCase();
+      const isAmazonOrder = customerNameLower.includes('amazon') || 
+                            customerNameLower.includes('marketplace') ||
+                            order.reference_number?.includes('AMZ') ||
+                            order.tags?.some(tag => tag.toLowerCase().includes('amazon'));
+      
+      if (!salespersonId) {
+        // This is likely a marketplace order
+        isMarketplaceOrder = true;
+        marketplaceCount++;
+        console.log(`🛒 Marketplace order detected: ${order.salesorder_number} - ${order.customer_name}`);
+      } else {
+        // Map salesperson_id to Firebase UID
+        if (usersByZohoId.has(salespersonId)) {
+          salespersonUid = usersByZohoId.get(salespersonId).id;
+        }
+      }
+      
+      // Calculate total if not present
+      let totalAmount = parseFloat(order.total) || 0;
+      if (totalAmount === 0 && lineItems.length > 0) {
+        totalAmount = lineItems.reduce((sum, item) => sum + parseFloat(item.total || 0), 0);
+      }
+      
+      // Create normalized order
+      const normalizedOrder = {
+        // Core fields
+        order_id: orderId,
+        order_number: order.salesorder_number,
+        company_name: order.company_name || order.customer_name,
+        customer_id: order.customer_id,
+        customer_name: order.customer_name,
+        
+        // Dates
+        created_time: order.date || order.created_time,
+        delivery_date: order.delivery_date,
+        
+        // Order details
+        order_status: order.status || order.order_status,
+        paid_status: order.payment_status || 'unpaid',
+        delivery_method: order.delivery_method || order.shipping_method,
+        
+        // Salesperson info with UID
+        salesperson_id: salespersonId || null,
+        salesperson_name: order.salesperson_name || (isMarketplaceOrder ? 'Marketplace' : null),
+        salesperson_uid: salespersonUid, // Will be null for marketplace orders
+        
+        // Marketplace flag
+        is_marketplace_order: isMarketplaceOrder,
+        marketplace_source: isAmazonOrder ? 'Amazon' : (isMarketplaceOrder ? 'Other' : null),
+        
+        // Financial
+        total_amount: totalAmount,
+        total_invoiced_amount: parseFloat(order.invoiced_amount) || 0,
+        balance: parseFloat(order.balance) || 0,
+        
+        // Line items with brand info
+        line_items: lineItems.map(item => ({
+          item_id: item.item_id,
+          item_name: item.item_name,
+          sku: item.sku,
+          brand: item.brand || 'Unknown',
+          quantity: parseInt(item.quantity) || 0,
+          price: parseFloat(item.price) || 0,
+          total: parseFloat(item.total) || 0
+        })),
+        
+        // Metadata
+        _source: 'zoho_inventory',
+        _normalized_at: admin.firestore.FieldValue.serverTimestamp(),
+        _original_id: orderId
+      };
+      
+      const docRef = this.db.collection('normalized_orders').doc(orderId);
+      batch.set(docRef, normalizedOrder, { merge: true });
+      count++;
+      
+      // Commit batch every 400 documents
+      if (count % 400 === 0) {
+        await batch.commit();
+        console.log(`  Committed ${count} orders...`);
+        batch = this.db.batch(); // Create new batch
       }
     }
     
-    // Calculate total if not present
-    let totalAmount = parseFloat(order.total) || 0;
-    if (totalAmount === 0 && lineItems.length > 0) {
-      totalAmount = lineItems.reduce((sum, item) => sum + parseFloat(item.total || 0), 0);
-    }
-    
-    // Create normalized order
-    const normalizedOrder = {
-      // Core fields
-      order_id: orderId,
-      order_number: order.salesorder_number,
-      company_name: order.company_name || order.customer_name,
-      customer_id: order.customer_id,
-      customer_name: order.customer_name,
-      
-      // Dates
-      created_time: order.date || order.created_time,
-      delivery_date: order.delivery_date,
-      
-      // Order details
-      order_status: order.status || order.order_status,
-      paid_status: order.payment_status || 'unpaid',
-      delivery_method: order.delivery_method || order.shipping_method,
-      
-      // Salesperson info with UID
-      salesperson_id: salespersonId || null,
-      salesperson_name: order.salesperson_name || (isMarketplaceOrder ? 'Marketplace' : null),
-      salesperson_uid: salespersonUid, // Will be null for marketplace orders
-      
-      // Marketplace flag
-      is_marketplace_order: isMarketplaceOrder,
-      marketplace_source: isAmazonOrder ? 'Amazon' : (isMarketplaceOrder ? 'Other' : null),
-      
-      // Financial
-      total_amount: totalAmount,
-      total_invoiced_amount: parseFloat(order.invoiced_amount) || 0,
-      balance: parseFloat(order.balance) || 0,
-      
-      // Line items with brand info
-      line_items: lineItems.map(item => ({
-        item_id: item.item_id,
-        item_name: item.item_name,
-        sku: item.sku,
-        brand: item.brand || 'Unknown',
-        quantity: parseInt(item.quantity) || 0,
-        price: parseFloat(item.price) || 0,
-        total: parseFloat(item.total) || 0
-      })),
-      
-      // Metadata
-      _source: 'zoho_inventory',
-      _normalized_at: admin.firestore.FieldValue.serverTimestamp(),
-      _original_id: orderId
-    };
-    
-    const docRef = this.db.collection('normalized_orders').doc(orderId);
-    batch.set(docRef, normalizedOrder, { merge: true });
-    count++;
-    
-    // Commit batch every 400 documents
-    if (count % 400 === 0) {
+    // Commit remaining
+    if (count % 400 !== 0) {
       await batch.commit();
-      console.log(`  Committed ${count} orders...`);
     }
-  });
-  
-  // Commit remaining
-  await batch.commit();
-  console.log(`✅ Normalized ${count} orders (including ${marketplaceCount} marketplace orders)`);
-}
+    console.log(`✅ Normalized ${count} orders (including ${marketplaceCount} marketplace orders)`);
+  }
 
   /**
    * Normalize customers collection
@@ -229,10 +231,10 @@ class DataNormalizerService {
       }
     });
     
-    const batch = this.db.batch();
+    let batch = this.db.batch();
     let count = 0;
     
-    customersSnapshot.forEach(doc => {
+    for (const doc of customersSnapshot.docs) {
       const customer = doc.data();
       const customerId = customer.customer_id || doc.id;
       const metrics = customerMetrics.get(customerId) || {
@@ -296,12 +298,16 @@ class DataNormalizerService {
       count++;
       
       if (count % 400 === 0) {
-        batch.commit();
+        await batch.commit();
         console.log(`  Committed ${count} customers...`);
+        batch = this.db.batch(); // Create new batch
       }
-    });
+    }
     
-    await batch.commit();
+    // Commit remaining
+    if (count % 400 !== 0) {
+      await batch.commit();
+    }
     console.log(`✅ Normalized ${count} customers`);
   }
 
@@ -334,10 +340,10 @@ class DataNormalizerService {
       metrics.order_count.add(trans.order_id);
     });
     
-    const batch = this.db.batch();
+    let batch = this.db.batch();
     let count = 0;
     
-    productsSnapshot.forEach(doc => {
+    for (const doc of productsSnapshot.docs) {
       const product = doc.data();
       const productId = product.item_id || doc.id;
       const metrics = productMetrics.get(productId) || {
@@ -384,12 +390,16 @@ class DataNormalizerService {
       count++;
       
       if (count % 400 === 0) {
-        batch.commit();
+        await batch.commit();
         console.log(`  Committed ${count} products...`);
+        batch = this.db.batch(); // Create new batch
       }
-    });
+    }
     
-    await batch.commit();
+    // Commit remaining
+    if (count % 400 !== 0) {
+      await batch.commit();
+    }
     console.log(`✅ Normalized ${count} products`);
   }
 
@@ -401,10 +411,10 @@ class DataNormalizerService {
     
     const poSnapshot = await this.db.collection('purchase_orders').get();
     
-    const batch = this.db.batch();
+    let batch = this.db.batch();
     let count = 0;
     
-    poSnapshot.forEach(doc => {
+    for (const doc of poSnapshot.docs) {
       const po = doc.data();
       const poId = po.purchaseorder_id || doc.id;
       
@@ -447,53 +457,60 @@ class DataNormalizerService {
       count++;
       
       if (count % 400 === 0) {
-        batch.commit();
+        await batch.commit();
         console.log(`  Committed ${count} purchase orders...`);
+        batch = this.db.batch(); // Create new batch
       }
-    });
+    }
     
-    await batch.commit();
+    // Commit remaining
+    if (count % 400 !== 0) {
+      await batch.commit();
+    }
     console.log(`✅ Normalized ${count} purchase orders`);
   }
   
+  /**
+   * Normalize dashboard data for consistent frontend consumption
+   */
   normalizeDashboardData(dashboardData, userId) {
-  // If data is already in the correct format, just return it
-  if (!dashboardData) return null;
-  
-  // Ensure all required fields exist
-  return {
-    ...dashboardData,
-    metrics: dashboardData.metrics || {
-      revenue: 0,
-      orders: 0,
-      customers: 0,
-      agents: 0,
-      brands: 0
-    },
-    orders: dashboardData.orders || [],
-    invoices: dashboardData.invoices || {
-      all: [],
-      outstanding: [],
-      overdue: [],
-      paid: [],
-      dueToday: [],
-      dueIn30Days: [],
-      summary: {}
-    },
-    performance: dashboardData.performance || {
-      brands: [],
-      topItems: [],
-      trends: []
-    },
-    commission: dashboardData.commission || null,
-    agentPerformance: dashboardData.agentPerformance || null,
-    role: dashboardData.role,
-    userId: userId,
-    dateRange: dashboardData.dateRange,
-    dataSource: dashboardData.dataSource || 'normalized-collections',
-    lastUpdated: dashboardData.lastUpdated || new Date().toISOString()
-  };
-}
+    // If data is already in the correct format, just return it
+    if (!dashboardData) return null;
+    
+    // Ensure all required fields exist
+    return {
+      ...dashboardData,
+      metrics: dashboardData.metrics || {
+        revenue: 0,
+        orders: 0,
+        customers: 0,
+        agents: 0,
+        brands: 0
+      },
+      orders: dashboardData.orders || [],
+      invoices: dashboardData.invoices || {
+        all: [],
+        outstanding: [],
+        overdue: [],
+        paid: [],
+        dueToday: [],
+        dueIn30Days: [],
+        summary: {}
+      },
+      performance: dashboardData.performance || {
+        brands: [],
+        topItems: [],
+        trends: []
+      },
+      commission: dashboardData.commission || null,
+      agentPerformance: dashboardData.agentPerformance || null,
+      role: dashboardData.role,
+      userId: userId,
+      dateRange: dashboardData.dateRange,
+      dataSource: dashboardData.dataSource || 'normalized-collections',
+      lastUpdated: dashboardData.lastUpdated || new Date().toISOString()
+    };
+  }
 
   /**
    * Get normalization status
