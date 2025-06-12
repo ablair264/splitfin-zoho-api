@@ -434,6 +434,45 @@ class DataNormalizerService {
     await batch.commit();
     console.log(`✅ Normalized ${count} purchase orders`);
   }
+  
+  normalizeDashboardData(dashboardData, userId) {
+  // If data is already in the correct format, just return it
+  if (!dashboardData) return null;
+  
+  // Ensure all required fields exist
+  return {
+    ...dashboardData,
+    metrics: dashboardData.metrics || {
+      revenue: 0,
+      orders: 0,
+      customers: 0,
+      agents: 0,
+      brands: 0
+    },
+    orders: dashboardData.orders || [],
+    invoices: dashboardData.invoices || {
+      all: [],
+      outstanding: [],
+      overdue: [],
+      paid: [],
+      dueToday: [],
+      dueIn30Days: [],
+      summary: {}
+    },
+    performance: dashboardData.performance || {
+      brands: [],
+      topItems: [],
+      trends: []
+    },
+    commission: dashboardData.commission || null,
+    agentPerformance: dashboardData.agentPerformance || null,
+    role: dashboardData.role,
+    userId: userId,
+    dateRange: dashboardData.dateRange,
+    dataSource: dashboardData.dataSource || 'normalized-collections',
+    lastUpdated: dashboardData.lastUpdated || new Date().toISOString()
+  };
+}
 
   /**
    * Get normalization status

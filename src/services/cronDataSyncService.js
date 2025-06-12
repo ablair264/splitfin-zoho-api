@@ -75,39 +75,59 @@ class CronDataSyncService {
   /**
    * Helper function to write data in batches of 499
    */
-  async _batchWrite(db, collectionName, dataArray, idKey) {
-    if (!dataArray || dataArray.length === 0) {
-      console.log(`No data to write for ${collectionName}, skipping.`);
-      return;
-    }
-
-    const collectionRef = db.collection(collectionName);
-    const promises = [];
-    
-    for (let i = 0; i < dataArray.length; i += 499) {
-      const chunk = dataArray.slice(i, i + 499);
-      const batch = db.batch();
-      
-      chunk.forEach(item => {
-        const docId = item[idKey];
-        if (docId) {
-          const docRef = collectionRef.doc(docId.toString());
-          const itemWithMetadata = {
-            ...item,
-            _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
-            _syncSource: 'zoho_api'
-          };
-          batch.set(docRef, itemWithMetadata, { merge: true });
-        }
-      });
-      
-      promises.push(batch.commit());
-    }
-
-    await Promise.all(promises);
-    console.log(`✅ Synced ${dataArray.length} documents to '${collectionName}' collection in ${promises.length} batch(es).`);
+async _batchWrite(db, collectionName, dataArray, idKey) {
+  if (!dataArray || dataArray.length === 0) {
+    console.log(`No data to write for ${collectionName}, skipping.`);
+    return;
   }
 
+  const collectionRef = db.collection(collectionName);
+  const BATCH_SIZE = 400; // Reduced from 499 to be safer
+  const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024; // 5MB limit
+  
+  let currentBatch = db.batch();
+  let currentBatchSize = 0;
+  let currentPayloadSize = 0;
+  let batchCount = 0;
+  
+  for (const item of dataArray) {
+    const docId = item[idKey];
+    if (!docId) continue;
+    
+    const docRef = collectionRef.doc(docId.toString());
+    const itemWithMetadata = {
+      ...item,
+      _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+      _syncSource: 'zoho_api'
+    };
+    
+    // Estimate document size
+    const itemSize = JSON.stringify(itemWithMetadata).length;
+    
+    // Check if we need to commit current batch
+    if (currentBatchSize >= BATCH_SIZE || currentPayloadSize + itemSize > MAX_PAYLOAD_SIZE) {
+      await currentBatch.commit();
+      batchCount++;
+      console.log(`  Committed batch ${batchCount} with ${currentBatchSize} documents`);
+      
+      currentBatch = db.batch();
+      currentBatchSize = 0;
+      currentPayloadSize = 0;
+    }
+    
+    currentBatch.set(docRef, itemWithMetadata, { merge: true });
+    currentBatchSize++;
+    currentPayloadSize += itemSize;
+  }
+  
+  // Commit remaining items
+  if (currentBatchSize > 0) {
+    await currentBatch.commit();
+    batchCount++;
+  }
+  
+  console.log(`✅ Synced ${dataArray.length} documents to '${collectionName}' in ${batchCount} batches`);
+}
   /**
    * Run data normalization after sync
    */
