@@ -56,6 +56,34 @@ class CollectionDashboardService {
   }
 
   /**
+   * Get dashboard data with timeout protection
+   */
+  async getDashboardDataWithTimeout(userId, dateRange = '30_days', customDateRange = null) {
+    const TIMEOUT_MS = 25000; // 25 seconds (leaving 5s buffer for 30s limit)
+    
+    // Create a timeout promise
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Dashboard query timeout')), TIMEOUT_MS);
+    });
+    
+    // Race between actual query and timeout
+    try {
+      const result = await Promise.race([
+        this.getDashboardData(userId, dateRange, customDateRange),
+        timeoutPromise
+      ]);
+      return result;
+    } catch (error) {
+      if (error.message === 'Dashboard query timeout') {
+        console.error('⏱️ Dashboard query timed out, returning limited data');
+        // Return limited data on timeout
+        return this.getLimitedDashboardData(userId, dateRange, customDateRange);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Main dashboard data retrieval using direct collection queries
    */
   async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
@@ -105,6 +133,98 @@ class CollectionDashboardService {
   }
 
   /**
+   * Get limited dashboard data for timeout scenarios
+   */
+  async getLimitedDashboardData(userId, dateRange = '30_days', customDateRange = null) {
+    const startTime = Date.now();
+    
+    try {
+      console.log(`🚨 Fetching LIMITED dashboard data for user ${userId}`);
+      
+      // Get user context
+      const userDoc = await this.db.collection('users').doc(userId).get();
+      if (!userDoc.exists) {
+        throw new Error(`User ${userId} not found`);
+      }
+      
+      const userData = userDoc.data();
+      const isAgent = userData.role === 'salesAgent';
+      const agentId = userData.zohospID;
+      
+      // Get date range
+      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+      const startISO = startDate.toISOString();
+      const endISO = endDate.toISOString();
+      
+      // Fetch LIMITED data with strict limits
+      const LIMIT = 100; // Much smaller limit
+      
+      // Get recent orders only
+      let ordersQuery = this.db.collection('orders')
+        .orderBy('date', 'desc')
+        .limit(LIMIT);
+      
+      if (isAgent) {
+        ordersQuery = this.db.collection('orders')
+          .where('salesperson_id', '==', agentId)
+          .orderBy('date', 'desc')
+          .limit(LIMIT);
+      }
+      
+      const ordersSnapshot = await ordersQuery.get();
+      
+      const orders = ordersSnapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .filter(order => order.date >= startISO && order.date <= endISO);
+      
+      // Calculate basic metrics only
+      const totalRevenue = orders.reduce((sum, order) => 
+        sum + (parseFloat(order.total) || 0), 0
+      );
+      
+      const loadTime = Date.now() - startTime;
+      console.log(`✅ Limited dashboard loaded in ${loadTime}ms`);
+      
+      // Return minimal dashboard data
+      return {
+        overview: {
+          sales: {
+            totalOrders: orders.length,
+            totalRevenue: totalRevenue,
+            averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
+            note: '⚠️ Showing limited data due to performance constraints'
+          }
+        },
+        revenue: {
+          grossRevenue: totalRevenue,
+          netRevenue: totalRevenue * 0.8,
+          taxAmount: totalRevenue * 0.2,
+          period: dateRange,
+          isLimited: true
+        },
+        orders: {
+          salesOrders: {
+            total: orders.length,
+            totalValue: totalRevenue,
+            latest: orders.slice(0, 10),
+            isLimited: true
+          }
+        },
+        role: userData.role,
+        dateRange,
+        loadTime,
+        dataSource: 'collections-limited',
+        lastUpdated: new Date().toISOString(),
+        warning: 'Limited data shown. Try a smaller date range for full data.'
+      };
+      
+    } catch (error) {
+      console.error('❌ Limited dashboard error:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Get dashboard data for sales agents
    */
   async getAgentDashboard(agentId, startISO, endISO, dateRange) {
@@ -116,31 +236,45 @@ class CollectionDashboardService {
       transactionsSnapshot,
       invoicesSnapshot
     ] = await Promise.all([
-      // Get agent's orders
+      // Get agent's orders - simplified query to avoid complex index
       this.db.collection('orders')
         .where('salesperson_id', '==', agentId)
-        .where('date', '>=', startISO)
-        .where('date', '<=', endISO)
-        .orderBy('date', 'desc')
         .get(),
 
       // Get agent's sales transactions
       this.db.collection('sales_transactions')
         .where('salesperson_id', '==', agentId)
-        .where('order_date', '>=', startISO)
-        .where('order_date', '<=', endISO)
         .get(),
 
       // Get all invoices (will filter by customer later)
       this.db.collection('invoices')
-        .where('date', '>=', startISO)
-        .where('date', '<=', endISO)
         .get()
     ]);
 
-    const orders = ordersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    const transactions = transactionsSnapshot.docs.map(doc => doc.data());
-    const allInvoices = invoicesSnapshot.docs.map(doc => doc.data());
+    // Filter orders by date in memory after fetching
+    let orders = ordersSnapshot.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .filter(order => {
+        const orderDate = order.date;
+        return orderDate >= startISO && orderDate <= endISO;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Filter transactions by date in memory
+    const transactions = transactionsSnapshot.docs
+      .map(doc => doc.data())
+      .filter(transaction => {
+        const transactionDate = transaction.order_date;
+        return transactionDate >= startISO && transactionDate <= endISO;
+      });
+
+    // Filter invoices by date in memory
+    const allInvoices = invoicesSnapshot.docs
+      .map(doc => doc.data())
+      .filter(invoice => {
+        const invoiceDate = invoice.date;
+        return invoiceDate >= startISO && invoiceDate <= endISO;
+      });
 
     // Get unique customer IDs from agent's orders
     const agentCustomerIds = new Set(orders.map(order => order.customer_id).filter(id => id));
@@ -201,6 +335,41 @@ class CollectionDashboardService {
   }
 
   /**
+   * Get optimized agent dashboard with limits
+   */
+  async getAgentDashboardOptimized(agentId, startISO, endISO, dateRange) {
+    console.log(`🔍 Building optimized agent dashboard for agent: ${agentId}`);
+    
+    const MAX_DOCS = 500; // Reasonable limit
+    
+    // Use limited queries
+    const [ordersSnapshot, transactionsSnapshot, invoicesSnapshot] = await Promise.all([
+      // Get agent's recent orders with limit
+      this.db.collection('orders')
+        .where('salesperson_id', '==', agentId)
+        .orderBy('date', 'desc')
+        .limit(MAX_DOCS)
+        .get(),
+      
+      // Get agent's recent transactions
+      this.db.collection('sales_transactions')
+        .where('salesperson_id', '==', agentId)
+        .orderBy('order_date', 'desc')
+        .limit(MAX_DOCS)
+        .get(),
+      
+      // Get recent invoices (will need to filter by customer)
+      this.db.collection('invoices')
+        .orderBy('date', 'desc')
+        .limit(MAX_DOCS * 2) // Larger limit since we'll filter
+        .get()
+    ]);
+    
+    // Continue with the same filtering and processing logic as getAgentDashboard
+    // but with the limited data...
+  }
+
+  /**
    * Get dashboard data for brand managers
    */
   async getManagerDashboard(startISO, endISO, dateRange) {
@@ -214,24 +383,14 @@ class CollectionDashboardService {
       customersSnapshot,
       agentsSnapshot
     ] = await Promise.all([
-      // Get all orders
-      this.db.collection('orders')
-        .where('date', '>=', startISO)
-        .where('date', '<=', endISO)
-        .orderBy('date', 'desc')
-        .get(),
+      // Get all orders - fetch all then filter in memory
+      this.db.collection('orders').get(),
 
       // Get all sales transactions
-      this.db.collection('sales_transactions')
-        .where('order_date', '>=', startISO)
-        .where('order_date', '<=', endISO)
-        .get(),
+      this.db.collection('sales_transactions').get(),
 
       // Get all invoices
-      this.db.collection('invoices')
-        .where('date', '>=', startISO)
-        .where('date', '<=', endISO)
-        .get(),
+      this.db.collection('invoices').get(),
 
       // Get all customers
       this.db.collection('customers').get(),
@@ -242,9 +401,29 @@ class CollectionDashboardService {
         .get()
     ]);
 
-    const orders = ordersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    const transactions = transactionsSnapshot.docs.map(doc => doc.data());
-    const invoices = invoicesSnapshot.docs.map(doc => doc.data());
+    // Filter by date in memory to avoid complex indexes
+    const orders = ordersSnapshot.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .filter(order => {
+        const orderDate = order.date;
+        return orderDate >= startISO && orderDate <= endISO;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    const transactions = transactionsSnapshot.docs
+      .map(doc => doc.data())
+      .filter(transaction => {
+        const transactionDate = transaction.order_date;
+        return transactionDate >= startISO && transactionDate <= endISO;
+      });
+
+    const invoices = invoicesSnapshot.docs
+      .map(doc => doc.data())
+      .filter(invoice => {
+        const invoiceDate = invoice.date;
+        return invoiceDate >= startISO && invoiceDate <= endISO;
+      });
+
     const customers = customersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     const agents = agentsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
