@@ -283,6 +283,47 @@ class DataNormalizationService {
     await batch.commit();
     console.log(`✅ Normalized ${count} customers`);
   }
+  
+  async normalizeInvoices() {
+  console.log('📄 Normalizing invoices...');
+  
+  const invoicesSnapshot = await this.db.collection('invoices').get();
+  const batch = this.db.batch();
+  let count = 0;
+  
+  invoicesSnapshot.forEach(doc => {
+    const invoice = doc.data();
+    const invoiceId = invoice.invoice_id || doc.id;
+    
+    const normalizedInvoice = {
+      invoice_id: invoiceId,
+      invoice_number: invoice.invoice_number,
+      customer_id: invoice.customer_id,
+      customer_name: invoice.customer_name,
+      date: invoice.date,
+      due_date: invoice.due_date,
+      total: parseFloat(invoice.total) || 0,
+      balance: parseFloat(invoice.balance) || 0,
+      paid: parseFloat(invoice.paid) || 0,
+      status: invoice.status,
+      days_overdue: invoice.daysOverdue || 0,
+      _source: 'zoho_inventory',
+      _normalized_at: admin.firestore.FieldValue.serverTimestamp(),
+      _original_id: invoiceId
+    };
+    
+    const docRef = this.db.collection('normalized_invoices').doc(invoiceId);
+    batch.set(docRef, normalizedInvoice, { merge: true });
+    count++;
+    
+    if (count % 400 === 0) {
+      batch.commit();
+    }
+  });
+  
+  await batch.commit();
+  console.log(`✅ Normalized ${count} invoices`);
+}
 
   /**
    * Normalize products collection

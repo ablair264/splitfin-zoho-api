@@ -2,7 +2,6 @@
 // Updated to use normalized collections for better performance and accuracy
 
 import admin from 'firebase-admin';
-import dataNormalizationService from './dataNormalizerService.js';
 
 class CollectionDashboardService {
   constructor() {
@@ -160,21 +159,33 @@ class CollectionDashboardService {
       this.db.collection('normalized_customers').get(),
 
       // Get all invoices (we'll filter by customer later)
+      // TODO: Change to normalized_invoices when available
       this.db.collection('invoices').get()
     ]);
 
-    // Process orders
-    const orders = ordersSnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+    // Process orders - map to frontend expected structure
+    const orders = ordersSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        order_number: data.order_number,
+        customer_id: data.customer_id,
+        customer_name: data.customer_name,
+        salesperson_id: data.salesperson_id,
+        salesperson_name: data.salesperson_name,
+        date: data.created_time, // Map created_time to date for frontend
+        total: data.total_amount, // Map total_amount to total for frontend
+        status: data.order_status,
+        line_items: data.line_items || []
+      };
+    });
 
     console.log(`📦 Found ${orders.length} orders for agent`);
 
     // Get unique customer IDs from agent's orders
     const agentCustomerIds = new Set(orders.map(order => order.customer_id).filter(id => id));
     
-    // Filter customers
+    // Filter customers - already have normalized structure
     const allCustomers = customersSnapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data()
@@ -191,9 +202,9 @@ class CollectionDashboardService {
       inv.date <= endISO
     );
 
-    // Calculate metrics
+    // Calculate metrics using normalized field names
     const totalRevenue = orders.reduce((sum, order) => 
-      sum + (order.total_amount || 0), 0
+      sum + (order.total || 0), 0
     );
 
     console.log(`💰 Total revenue: ${totalRevenue}`);
@@ -290,10 +301,23 @@ class CollectionDashboardService {
         .get()
     ]);
 
-    const orders = ordersSnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+    // Process orders - map to frontend expected structure
+    const orders = ordersSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        order_number: data.order_number,
+        customer_id: data.customer_id,
+        customer_name: data.customer_name,
+        salesperson_id: data.salesperson_id,
+        salesperson_uid: data.salesperson_uid,
+        salesperson_name: data.salesperson_name,
+        date: data.created_time, // Map created_time to date
+        total: data.total_amount, // Map total_amount to total
+        status: data.order_status,
+        line_items: data.line_items || []
+      };
+    });
 
     const customers = customersSnapshot.docs.map(doc => ({
       id: doc.id,
@@ -309,9 +333,9 @@ class CollectionDashboardService {
 
     console.log(`📊 Found ${orders.length} orders, ${customers.length} customers`);
 
-    // Calculate metrics
+    // Calculate metrics using mapped field names
     const totalRevenue = orders.reduce((sum, order) => 
-      sum + (order.total_amount || 0), 0
+      sum + (order.total || 0), 0
     );
 
     // Process invoices
@@ -378,7 +402,7 @@ class CollectionDashboardService {
    * Build overview for agents
    */
   buildAgentOverview(orders, customers) {
-    // Calculate top customers
+    // Calculate top customers using normalized fields
     const topCustomers = customers
       .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
       .slice(0, 5)
@@ -389,18 +413,18 @@ class CollectionDashboardService {
         orderCount: c.order_count || 0
       }));
 
+    const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
+
     return {
       sales: {
         totalOrders: orders.length,
-        totalRevenue: orders.reduce((sum, order) => sum + (order.total_amount || 0), 0),
-        averageOrderValue: orders.length > 0 
-          ? orders.reduce((sum, order) => sum + (order.total_amount || 0), 0) / orders.length 
-          : 0,
+        totalRevenue: totalRevenue,
+        averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
         completedOrders: orders.filter(o => 
-          o.order_status === 'confirmed' || o.order_status === 'completed'
+          o.status === 'confirmed' || o.status === 'completed'
         ).length,
         pendingOrders: orders.filter(o => 
-          o.order_status === 'draft' || o.order_status === 'pending'
+          o.status === 'draft' || o.status === 'pending'
         ).length
       },
       customers: {
@@ -439,18 +463,18 @@ class CollectionDashboardService {
         segment: c.segment || 'Low'
       }));
 
+    const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
+
     return {
       sales: {
         totalOrders: orders.length,
-        totalRevenue: orders.reduce((sum, order) => sum + (order.total_amount || 0), 0),
-        averageOrderValue: orders.length > 0 
-          ? orders.reduce((sum, order) => sum + (order.total_amount || 0), 0) / orders.length 
-          : 0,
+        totalRevenue: totalRevenue,
+        averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
         completedOrders: orders.filter(o => 
-          o.order_status === 'confirmed' || o.order_status === 'completed'
+          o.status === 'confirmed' || o.status === 'completed'
         ).length,
         pendingOrders: orders.filter(o => 
-          o.order_status === 'draft' || o.order_status === 'pending'
+          o.status === 'draft' || o.status === 'pending'
         ).length
       },
       customers: {
@@ -484,11 +508,11 @@ class CollectionDashboardService {
       });
     });
 
-    // Calculate metrics from orders using salesperson_uid
+    // Calculate metrics from orders using mapped fields
     orders.forEach(order => {
       if (order.salesperson_uid && agentMap.has(order.salesperson_uid)) {
         const agent = agentMap.get(order.salesperson_uid);
-        agent.totalRevenue += order.total_amount || 0;
+        agent.totalRevenue += order.total || 0; // Use mapped field
         agent.totalOrders += 1;
         if (order.customer_id) {
           agent.customers.add(order.customer_id);
@@ -545,7 +569,7 @@ class CollectionDashboardService {
           const brandData = brandMap.get(brand);
           brandData.revenue += item.total || 0;
           brandData.quantity += item.quantity || 0;
-          brandData.orderCount.add(order.order_id);
+          brandData.orderCount.add(order.id); // Use order.id not order.order_id
           brandData.productCount.add(item.item_id);
         });
       }
@@ -683,7 +707,7 @@ class CollectionDashboardService {
     const trendMap = new Map();
     
     orders.forEach(order => {
-      const date = new Date(order.created_time);
+      const date = new Date(order.date); // Use mapped date field
       const dateKey = date.toISOString().split('T')[0];
       
       if (!trendMap.has(dateKey)) {
@@ -697,7 +721,7 @@ class CollectionDashboardService {
       
       const trend = trendMap.get(dateKey);
       trend.orders += 1;
-      trend.revenue += order.total_amount || 0;
+      trend.revenue += order.total || 0; // Use mapped total field
     });
 
     return Array.from(trendMap.values())
@@ -742,12 +766,25 @@ class CollectionDashboardService {
       
       const ordersSnapshot = await ordersQuery.get();
       
+      // Map orders to frontend expected structure
       const orders = ordersSnapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .filter(order => order.created_time >= startISO && order.created_time <= endISO);
+        .map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            order_number: data.order_number,
+            customer_id: data.customer_id,
+            customer_name: data.customer_name,
+            date: data.created_time,
+            total: data.total_amount,
+            status: data.order_status,
+            line_items: data.line_items || []
+          };
+        })
+        .filter(order => order.date >= startISO && order.date <= endISO);
       
       const totalRevenue = orders.reduce((sum, order) => 
-        sum + (order.total_amount || 0), 0
+        sum + (order.total || 0), 0
       );
       
       const loadTime = Date.now() - startTime;
