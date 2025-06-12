@@ -9,6 +9,24 @@ class DataNormalizerService {
   }
 
   /**
+   * Helper to clean undefined values from objects
+   */
+  cleanObject(obj) {
+    const cleaned = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+          // Recursively clean nested objects
+          cleaned[key] = this.cleanObject(value);
+        } else {
+          cleaned[key] = value;
+        }
+      }
+    }
+    return cleaned;
+  }
+
+  /**
    * Main normalization process - to be called after CRON jobs fetch data
    */
   async normalizeAllData() {
@@ -125,9 +143,9 @@ class DataNormalizerService {
         delivery_date: order.delivery_date,
         
         // Order details
-        order_status: order.status || order.order_status,
+        order_status: order.status || order.order_status || 'pending',
         paid_status: order.payment_status || 'unpaid',
-        delivery_method: order.delivery_method || order.shipping_method,
+        delivery_method: order.delivery_method || order.shipping_method || null,
         
         // Salesperson info with UID
         salesperson_id: salespersonId || null,
@@ -294,7 +312,7 @@ class DataNormalizerService {
       };
       
       const docRef = this.db.collection('normalized_customers').doc(customerId);
-      batch.set(docRef, normalizedCustomer, { merge: true });
+      batch.set(docRef, this.cleanObject(normalizedCustomer), { merge: true });
       count++;
       
       if (count % 400 === 0) {
@@ -386,7 +404,7 @@ class DataNormalizerService {
       };
       
       const docRef = this.db.collection('normalized_products').doc(productId);
-      batch.set(docRef, normalizedProduct, { merge: true });
+      batch.set(docRef, this.cleanObject(normalizedProduct), { merge: true });
       count++;
       
       if (count % 400 === 0) {
@@ -453,7 +471,7 @@ class DataNormalizerService {
       };
       
       const docRef = this.db.collection('normalized_purchase_orders').doc(poId);
-      batch.set(docRef, normalizedPO, { merge: true });
+      batch.set(docRef, this.cleanObject(normalizedPO), { merge: true });
       count++;
       
       if (count % 400 === 0) {
