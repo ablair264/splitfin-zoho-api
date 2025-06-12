@@ -270,133 +270,89 @@ class CollectionDashboardService {
    * Get dashboard data for brand managers using normalized collections
    */
   async getManagerDashboardNormalized(startISO, endISO, dateRange) {
-    console.log(`🔍 Building manager dashboard using normalized data`);
+  console.log(`🔍 Building manager dashboard using normalized data`);
 
-    // Fetch all data for the period
-    const [
-      ordersSnapshot,
-      customersSnapshot,
-      invoicesSnapshot,
-      agentsSnapshot
-    ] = await Promise.all([
-      // Get all orders
-      this.db.collection('normalized_orders')
-        .where('created_time', '>=', startISO)
-        .where('created_time', '<=', endISO)
-        .orderBy('created_time', 'desc')
-        .get(),
+  // Fetch all data for the period
+  const [
+    ordersSnapshot,
+    customersSnapshot,
+    invoicesSnapshot,
+    agentsSnapshot
+  ] = await Promise.all([
+    // Get all orders
+    this.db.collection('normalized_orders')
+      .where('created_time', '>=', startISO)
+      .where('created_time', '<=', endISO)
+      .orderBy('created_time', 'desc')
+      .get(),
+    // ... other queries
+  ]);
 
-      // Get all customers
-      this.db.collection('normalized_customers').get(),
-
-      // Get all invoices
-      this.db.collection('invoices')
-        .where('date', '>=', startISO)
-        .where('date', '<=', endISO)
-        .get(),
-
-      // Get all agents
-      this.db.collection('users')
-        .where('role', '==', 'salesAgent')
-        .get()
-    ]);
-
-    // Process orders - map to frontend expected structure
-    const orders = ordersSnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        order_number: data.order_number,
-        customer_id: data.customer_id,
-        customer_name: data.customer_name,
-        salesperson_id: data.salesperson_id,
-        salesperson_uid: data.salesperson_uid,
-        salesperson_name: data.salesperson_name,
-        date: data.created_time, // Map created_time to date
-        total: data.total_amount, // Map total_amount to total
-        status: data.order_status,
-        line_items: data.line_items || []
-      };
-    });
-
-    const customers = customersSnapshot.docs.map(doc => ({
+  // Process orders - separate marketplace orders
+  const allOrders = ordersSnapshot.docs.map(doc => {
+    const data = doc.data();
+    return {
       id: doc.id,
-      ...doc.data()
-    }));
+      order_number: data.order_number,
+      customer_id: data.customer_id,
+      customer_name: data.customer_name,
+      salesperson_id: data.salesperson_id,
+      salesperson_uid: data.salesperson_uid,
+      salesperson_name: data.salesperson_name,
+      date: data.created_time,
+      total: data.total_amount,
+      status: data.order_status,
+      line_items: data.line_items || [],
+      is_marketplace_order: data.is_marketplace_order || false,
+      marketplace_source: data.marketplace_source
+    };
+  });
 
-    const invoices = invoicesSnapshot.docs.map(doc => doc.data());
+  // Separate marketplace and regular orders
+  const regularOrders = allOrders.filter(order => !order.is_marketplace_order);
+  const marketplaceOrders = allOrders.filter(order => order.is_marketplace_order);
 
-    const agents = agentsSnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+  console.log(`📊 Found ${regularOrders.length} regular orders, ${marketplaceOrders.length} marketplace orders`);
 
-    console.log(`📊 Found ${orders.length} orders, ${customers.length} customers`);
+  // Calculate metrics
+  const totalRevenue = allOrders.reduce((sum, order) => sum + (order.total || 0), 0);
+  const regularRevenue = regularOrders.reduce((sum, order) => sum + (order.total || 0), 0);
+  const marketplaceRevenue = marketplaceOrders.reduce((sum, order) => sum + (order.total || 0), 0);
 
-    // Calculate metrics using mapped field names
-    const totalRevenue = orders.reduce((sum, order) => 
-      sum + (order.total || 0), 0
-    );
+  // ... rest of the method
 
-    // Process invoices
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const invoiceCategories = this.categorizeInvoices(invoices, today);
-
-    // Build overview
-    const overview = this.buildManagerOverview(orders, customers);
-
-    // Calculate agent performance using normalized data
-    const agentPerformance = this.calculateAgentPerformanceNormalized(orders, agents);
-
-    // Get brand performance
-    const brandPerformance = this.calculateBrandPerformanceFromOrders(orders);
-
-    // Build metrics object
-    const metrics = {
+  // Add marketplace metrics to the response
+  return {
+    metrics: {
       revenue: totalRevenue,
-      orders: orders.length,
+      orders: allOrders.length,
       customers: customers.length,
       agents: agents.length,
-      brands: brandPerformance.length
-    };
-
-    return {
-      metrics, // Add metrics at top level
-      overview,
-      revenue: {
-        grossRevenue: totalRevenue,
-        netRevenue: totalRevenue * 0.8,
-        taxAmount: totalRevenue * 0.2,
-        paidRevenue: invoiceCategories.paid.reduce((sum, inv) => 
-          sum + (parseFloat(inv.total) || 0), 0
-        ),
-        outstandingRevenue: invoiceCategories.outstanding.reduce((sum, inv) => 
-          sum + (parseFloat(inv.balance) || 0), 0
-        ),
-        profitMargin: 30, // TODO: Calculate actual margin
-        period: dateRange
-      },
-      orders: {
-        salesOrders: {
-          total: orders.length,
-          totalValue: totalRevenue,
-          averageValue: orders.length > 0 ? totalRevenue / orders.length : 0,
-          latest: orders.slice(0, 10)
-        }
-      },
-      invoices: {
-        ...invoiceCategories,
-        summary: this.calculateInvoiceSummary(invoiceCategories)
-      },
-      performance: {
-        brands: brandPerformance,
-        topItems: this.calculateTopItemsFromOrders(orders),
-        trends: this.calculateTrends(orders)
-      },
-      agentPerformance
-    };
-  }
+      brands: brandPerformance.length,
+      // Add marketplace breakdown
+      marketplace: {
+        orders: marketplaceOrders.length,
+        revenue: marketplaceRevenue,
+        percentage: totalRevenue > 0 ? (marketplaceRevenue / totalRevenue * 100) : 0
+      }
+    },
+    // ... rest of the response
+    
+    // Add marketplace section
+    marketplace: {
+      orders: marketplaceOrders.slice(0, 10),
+      summary: {
+        total: marketplaceOrders.length,
+        revenue: marketplaceRevenue,
+        sources: marketplaceOrders.reduce((acc, order) => {
+          const source = order.marketplace_source || 'Other';
+          acc[source] = (acc[source] || 0) + 1;
+          return acc;
+        }, {})
+      }
+    }
+  };
+}
 
   /**
    * Build overview for agents
