@@ -15,7 +15,7 @@ class CronDataSyncService {
   /**
    * Sync sales transactions (line items) to sales_transactions collection
    */
-  async syncSalesTransactions(dateRange = '2_years') {
+  async syncSalesTransactions(dateRange = '30_days') {
     console.log('🔄 Syncing Line Items to sales_transactions collection...');
     try {
       const db = admin.firestore();
@@ -73,61 +73,62 @@ class CronDataSyncService {
   }
   
   /**
-   * Helper function to write data in batches of 499
+   * Helper function to write data in batches
    */
-async _batchWrite(db, collectionName, dataArray, idKey) {
-  if (!dataArray || dataArray.length === 0) {
-    console.log(`No data to write for ${collectionName}, skipping.`);
-    return;
-  }
+  async _batchWrite(db, collectionName, dataArray, idKey) {
+    if (!dataArray || dataArray.length === 0) {
+      console.log(`No data to write for ${collectionName}, skipping.`);
+      return;
+    }
 
-  const collectionRef = db.collection(collectionName);
-  const BATCH_SIZE = 400; // Reduced from 499 to be safer
-  const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024; // 5MB limit
-  
-  let currentBatch = db.batch();
-  let currentBatchSize = 0;
-  let currentPayloadSize = 0;
-  let batchCount = 0;
-  
-  for (const item of dataArray) {
-    const docId = item[idKey];
-    if (!docId) continue;
+    const collectionRef = db.collection(collectionName);
+    const BATCH_SIZE = 400; // Reduced from 499 to be safer
+    const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024; // 5MB limit
     
-    const docRef = collectionRef.doc(docId.toString());
-    const itemWithMetadata = {
-      ...item,
-      _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
-      _syncSource: 'zoho_api'
-    };
+    let currentBatch = db.batch();
+    let currentBatchSize = 0;
+    let currentPayloadSize = 0;
+    let batchCount = 0;
     
-    // Estimate document size
-    const itemSize = JSON.stringify(itemWithMetadata).length;
-    
-    // Check if we need to commit current batch
-    if (currentBatchSize >= BATCH_SIZE || currentPayloadSize + itemSize > MAX_PAYLOAD_SIZE) {
-      await currentBatch.commit();
-      batchCount++;
-      console.log(`  Committed batch ${batchCount} with ${currentBatchSize} documents`);
+    for (const item of dataArray) {
+      const docId = item[idKey];
+      if (!docId) continue;
       
-      currentBatch = db.batch();
-      currentBatchSize = 0;
-      currentPayloadSize = 0;
+      const docRef = collectionRef.doc(docId.toString());
+      const itemWithMetadata = {
+        ...item,
+        _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+        _syncSource: 'zoho_api'
+      };
+      
+      // Estimate document size
+      const itemSize = JSON.stringify(itemWithMetadata).length;
+      
+      // Check if we need to commit current batch
+      if (currentBatchSize >= BATCH_SIZE || currentPayloadSize + itemSize > MAX_PAYLOAD_SIZE) {
+        await currentBatch.commit();
+        batchCount++;
+        console.log(`  Committed batch ${batchCount} with ${currentBatchSize} documents`);
+        
+        currentBatch = db.batch();
+        currentBatchSize = 0;
+        currentPayloadSize = 0;
+      }
+      
+      currentBatch.set(docRef, itemWithMetadata, { merge: true });
+      currentBatchSize++;
+      currentPayloadSize += itemSize;
     }
     
-    currentBatch.set(docRef, itemWithMetadata, { merge: true });
-    currentBatchSize++;
-    currentPayloadSize += itemSize;
+    // Commit remaining items
+    if (currentBatchSize > 0) {
+      await currentBatch.commit();
+      batchCount++;
+    }
+    
+    console.log(`✅ Synced ${dataArray.length} documents to '${collectionName}' in ${batchCount} batches`);
   }
   
-  // Commit remaining items
-  if (currentBatchSize > 0) {
-    await currentBatch.commit();
-    batchCount++;
-  }
-  
-  console.log(`✅ Synced ${dataArray.length} documents to '${collectionName}' in ${batchCount} batches`);
-}
   /**
    * Run data normalization after sync
    */
@@ -145,7 +146,7 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
 
   /**
    * HIGH FREQUENCY SYNC - Every 15 minutes
-   * Syncs recent data and normalizes it
+   * Syncs today's data only
    */
   async highFrequencySync() {
     const jobType = 'high-frequency';
@@ -160,7 +161,7 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
     const db = admin.firestore();
 
     try {
-      console.log('🔄 Starting high frequency sync...');
+      console.log('🔄 Starting high frequency sync (today\'s data)...');
       
       // Get today's sales orders
       const todayOrders = await zohoReportsService.getSalesOrders('today');
@@ -177,13 +178,13 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
         await this._batchWrite(db, 'orders', ordersData, 'salesorder_id');
       }
       
-      // Get recent invoices
-      const recentInvoices = await zohoReportsService.getInvoices('7_days');
+      // Get today's invoices
+      const todayInvoices = await zohoReportsService.getInvoices('today');
       
       const allInvoices = [
-        ...recentInvoices.all,
-        ...recentInvoices.outstanding,
-        ...recentInvoices.overdue
+        ...todayInvoices.all,
+        ...todayInvoices.outstanding,
+        ...todayInvoices.overdue
       ];
       
       const uniqueInvoices = Array.from(
@@ -224,7 +225,7 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
 
   /**
    * MEDIUM FREQUENCY SYNC - Every 2 hours
-   * Syncs last 30 days of data and normalizes
+   * Syncs last 7 days of data (rolling window)
    */
   async mediumFrequencySync() {
     const jobType = 'medium-frequency';
@@ -239,10 +240,10 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
     const db = admin.firestore();
 
     try {
-      console.log('🔄 Starting medium frequency sync...');
+      console.log('🔄 Starting medium frequency sync (last 7 days)...');
       
-      // Get last 30 days of orders
-      const orders = await zohoReportsService.getSalesOrders('30_days');
+      // Get last 7 days of orders
+      const orders = await zohoReportsService.getSalesOrders('7_days');
       
       if (orders.length > 0) {
         const ordersData = orders.map(order => ({
@@ -256,8 +257,8 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
         await this._batchWrite(db, 'orders', ordersData, 'salesorder_id');
       }
       
-      // Get last 30 days of invoices
-      const invoices = await zohoReportsService.getInvoices('30_days');
+      // Get last 7 days of invoices
+      const invoices = await zohoReportsService.getInvoices('7_days');
       const allInvoices = [...invoices.all, ...invoices.outstanding, ...invoices.overdue];
       const uniqueInvoices = Array.from(
         new Map(allInvoices.map(inv => [inv.invoice_id, inv])).values()
@@ -267,8 +268,8 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
         await this._batchWrite(db, 'invoices', uniqueInvoices, 'invoice_id');
       }
       
-      // Sync customers
-      const customers = await zohoReportsService.getCustomerAnalytics('30_days');
+      // Sync recent customer updates
+      const customers = await zohoReportsService.getCustomerAnalytics('7_days');
       if (customers.customers && customers.customers.length > 0) {
         const customerData = customers.customers.map(customer => ({
           customer_id: customer.id,
@@ -286,8 +287,8 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
         await this._batchWrite(db, 'customers', customerData, 'customer_id');
       }
       
-      // Sync last 30 days of transactions
-      await this.syncSalesTransactions('30_days');
+      // Sync last 7 days of transactions
+      await this.syncSalesTransactions('7_days');
       
       // Run normalization
       await this.runNormalization();
@@ -317,7 +318,7 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
 
   /**
    * LOW FREQUENCY SYNC - Daily at 2 AM
-   * Full historical sync with normalization
+   * Syncs last 30 days of data to catch any missed records
    */
   async lowFrequencySync() {
     const jobType = 'low-frequency';
@@ -332,62 +333,50 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
     const db = admin.firestore();
 
     try {
-      console.log('🔄 Starting low frequency sync (full data refresh)...');
+      console.log('🔄 Starting low frequency sync (last 30 days catch-up)...');
       
-      // Sync all products
-      console.log('📦 Syncing all products from Inventory...');
+      // Sync products (only updates/new products)
+      console.log('📦 Syncing product updates from Inventory...');
       const productSyncResult = await syncInventory(true);
       
-      // Fetch data in quarterly chunks
-      const allOrders = [];
-      const allInvoices = [];
-      const allPurchaseOrders = [];
-      const quartersToSync = 8; // 2 years
+      // Get last 30 days of data to catch any missed records
+      console.log('📊 Fetching last 30 days of data...');
+      
+      const [orders30Days, invoices30Days, purchaseOrders30Days] = await Promise.all([
+        zohoReportsService.getSalesOrders('30_days'),
+        zohoReportsService.getInvoices('30_days'),
+        zohoReportsService.getPurchaseOrders('30_days')
+      ]);
 
-      for (let q = 0; q < quartersToSync; q++) {
-        const now = new Date();
-        const endDate = new Date(now.getFullYear(), now.getMonth() - (q * 3), 1);
-        const startDate = new Date(now.getFullYear(), now.getMonth() - ((q + 1) * 3), 1);
-        
-        const customDateRange = {
-          start: startDate.toISOString().split('T')[0],
-          end: endDate.toISOString().split('T')[0]
-        };
-
-        console.log(`   - Fetching data for quarter: ${customDateRange.start} to ${customDateRange.end}`);
-
-        const [ordersChunk, invoicesChunk, poChunk] = await Promise.all([
-          zohoReportsService.getSalesOrders('custom', customDateRange),
-          zohoReportsService.getInvoices('custom', customDateRange),
-          zohoReportsService.getPurchaseOrders('custom', customDateRange)
-        ]);
-
-        if (ordersChunk.length > 0) allOrders.push(...ordersChunk);
-        if (invoicesChunk.all.length > 0) allInvoices.push(...invoicesChunk.all);
-        if (poChunk.length > 0) allPurchaseOrders.push(...poChunk);
+      // Write data to collections
+      if (orders30Days.length > 0) {
+        await this._batchWrite(db, 'orders', orders30Days, 'salesorder_id');
       }
-
-      // Write all data to collections
-      await this._batchWrite(db, 'orders', allOrders, 'salesorder_id');
-      await this._batchWrite(db, 'invoices', allInvoices, 'invoice_id');
-      await this._batchWrite(db, 'purchase_orders', allPurchaseOrders, 'purchaseorder_id');
       
-      // Sync all transactions (2 years)
-      const transactionSyncResult = await this.syncSalesTransactions('2_years');
+      if (invoices30Days.all.length > 0) {
+        await this._batchWrite(db, 'invoices', invoices30Days.all, 'invoice_id');
+      }
       
-      // Sync customer IDs
+      if (purchaseOrders30Days.length > 0) {
+        await this._batchWrite(db, 'purchase_orders', purchaseOrders30Days, 'purchaseorder_id');
+      }
+      
+      // Sync last 30 days of transactions
+      const transactionSyncResult = await this.syncSalesTransactions('30_days');
+      
+      // Sync customer ID mappings (only updates)
       const customerIdSyncResult = await syncInventoryCustomerIds();
       
       // Run full normalization
-      console.log('🔄 Running full data normalization...');
+      console.log('🔄 Running data normalization...');
       await this.runNormalization();
       
       // Update sync metadata
-      await db.collection('sync_metadata').doc('last_full_sync').set({
+      await db.collection('sync_metadata').doc('last_daily_sync').set({
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        orders: allOrders.length,
-        invoices: allInvoices.length,
-        purchaseOrders: allPurchaseOrders.length,
+        orders: orders30Days.length,
+        invoices: invoices30Days.all.length,
+        purchaseOrders: purchaseOrders30Days.length,
         transactions: transactionSyncResult.count,
         normalized: true,
         duration: Date.now() - startTime
@@ -402,9 +391,9 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
         duration,
         recordsProcessed: {
           products: productSyncResult.stats,
-          orders: allOrders.length,
-          invoices: allInvoices.length,
-          purchaseOrders: allPurchaseOrders.length,
+          orders: orders30Days.length,
+          invoices: invoices30Days.all.length,
+          purchaseOrders: purchaseOrders30Days.length,
           transactions: transactionSyncResult.count,
           customerIdsMapped: customerIdSyncResult.processed
         },
@@ -413,6 +402,70 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
       
     } catch (error) {
       console.error('❌ Low frequency sync failed:', error);
+      return { success: false, error: error.message };
+    } finally {
+      this.isRunning.set(jobType, false);
+    }
+  }
+
+  /**
+   * WEEKLY CLEANUP SYNC - Once a week
+   * Optional: Run a deeper sync weekly to ensure data integrity
+   */
+  async weeklyCleanupSync() {
+    const jobType = 'weekly-cleanup';
+    
+    if (this.isRunning.get(jobType)) {
+      console.log('⚠️ Weekly cleanup sync already running, skipping...');
+      return { success: false, message: 'Job already running' };
+    }
+
+    this.isRunning.set(jobType, true);
+    const startTime = Date.now();
+
+    try {
+      console.log('🔄 Starting weekly cleanup sync (last quarter)...');
+      
+      // Sync last quarter's data for consistency
+      const [ordersQuarter, invoicesQuarter, purchaseOrdersQuarter] = await Promise.all([
+        zohoReportsService.getSalesOrders('quarter'),
+        zohoReportsService.getInvoices('quarter'),
+        zohoReportsService.getPurchaseOrders('quarter')
+      ]);
+
+      const db = admin.firestore();
+      
+      // Write data
+      if (ordersQuarter.length > 0) {
+        await this._batchWrite(db, 'orders', ordersQuarter, 'salesorder_id');
+      }
+      
+      if (invoicesQuarter.all.length > 0) {
+        await this._batchWrite(db, 'invoices', invoicesQuarter.all, 'invoice_id');
+      }
+      
+      if (purchaseOrdersQuarter.length > 0) {
+        await this._batchWrite(db, 'purchase_orders', purchaseOrdersQuarter, 'purchaseorder_id');
+      }
+      
+      // Run normalization
+      await this.runNormalization();
+      
+      const duration = Date.now() - startTime;
+      
+      console.log(`✅ Weekly cleanup sync completed in ${duration}ms`);
+      return { 
+        success: true, 
+        duration,
+        recordsProcessed: {
+          orders: ordersQuarter.length,
+          invoices: invoicesQuarter.all.length,
+          purchaseOrders: purchaseOrdersQuarter.length
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Weekly cleanup sync failed:', error);
       return { success: false, error: error.message };
     } finally {
       this.isRunning.set(jobType, false);
@@ -432,12 +485,51 @@ async _batchWrite(db, collectionName, dataArray, idKey) {
   }
 
   /**
-   * Get cached data (for backward compatibility)
-   * This is no longer used with normalized collections
+   * Manual full sync - only use when needed for recovery
    */
-  async getCachedData(cacheKey) {
-    console.warn('⚠️ getCachedData is deprecated. Use normalized collections directly.');
-    return null;
+  async manualFullSync(dateRange = 'year') {
+    console.log(`🔧 Manual full sync requested for ${dateRange}`);
+    
+    const jobType = 'manual-full';
+    
+    if (this.isRunning.get(jobType)) {
+      return { success: false, message: 'Manual sync already running' };
+    }
+
+    this.isRunning.set(jobType, true);
+
+    try {
+      // Run the sync
+      const [orders, invoices, purchaseOrders] = await Promise.all([
+        zohoReportsService.getSalesOrders(dateRange),
+        zohoReportsService.getInvoices(dateRange),
+        zohoReportsService.getPurchaseOrders(dateRange)
+      ]);
+
+      const db = admin.firestore();
+      
+      await this._batchWrite(db, 'orders', orders, 'salesorder_id');
+      await this._batchWrite(db, 'invoices', invoices.all, 'invoice_id');
+      await this._batchWrite(db, 'purchase_orders', purchaseOrders, 'purchaseorder_id');
+      
+      await this.syncSalesTransactions(dateRange);
+      await this.runNormalization();
+      
+      return {
+        success: true,
+        recordsProcessed: {
+          orders: orders.length,
+          invoices: invoices.all.length,
+          purchaseOrders: purchaseOrders.length
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Manual full sync failed:', error);
+      return { success: false, error: error.message };
+    } finally {
+      this.isRunning.set(jobType, false);
+    }
   }
 }
 
