@@ -504,7 +504,6 @@ class DataNormalizationService {
       throw error;
     }
   }
-}
 
   /**
    * Normalize dashboard data structure
