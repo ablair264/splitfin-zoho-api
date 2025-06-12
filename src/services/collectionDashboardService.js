@@ -424,6 +424,338 @@ async getManagerDashboardNormalized(startISO, endISO, dateRange) {
       throw error;
     }
   }
+  
+  /**
+   * Categorize invoices by status
+   */
+  categorizeInvoices(invoices, today) {
+    const categorized = {
+      all: invoices,
+      outstanding: [],
+      overdue: [],
+      dueToday: [],
+      dueIn30Days: [],
+      paid: []
+    };
+
+    invoices.forEach(invoice => {
+      if (invoice.status === 'paid') {
+        categorized.paid.push(invoice);
+      } else {
+        categorized.outstanding.push(invoice);
+        
+        const dueDate = new Date(invoice.due_date);
+        dueDate.setHours(0, 0, 0, 0);
+        
+        if (dueDate < today) {
+          invoice.daysOverdue = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
+          categorized.overdue.push(invoice);
+        } else if (dueDate.getTime() === today.getTime()) {
+          categorized.dueToday.push(invoice);
+        } else {
+          const daysUntilDue = Math.floor((dueDate - today) / (1000 * 60 * 60 * 24));
+          if (daysUntilDue <= 30) {
+            categorized.dueIn30Days.push(invoice);
+          }
+        }
+      }
+    });
+
+    return categorized;
+  }
+
+  /**
+   * Calculate invoice summary
+   */
+  calculateInvoiceSummary(invoiceCategories) {
+    return {
+      totalOverdue: invoiceCategories.overdue.reduce((sum, inv) => 
+        sum + (parseFloat(inv.balance) || 0), 0
+      ),
+      totalDueToday: invoiceCategories.dueToday.reduce((sum, inv) => 
+        sum + (parseFloat(inv.balance) || 0), 0
+      ),
+      totalDueIn30Days: invoiceCategories.dueIn30Days.reduce((sum, inv) => 
+        sum + (parseFloat(inv.balance) || 0), 0
+      ),
+      totalPaid: invoiceCategories.paid.reduce((sum, inv) => 
+        sum + (parseFloat(inv.total) || 0), 0
+      ),
+      totalOutstanding: invoiceCategories.outstanding.reduce((sum, inv) => 
+        sum + (parseFloat(inv.balance) || 0), 0
+      ),
+      count: {
+        overdue: invoiceCategories.overdue.length,
+        dueToday: invoiceCategories.dueToday.length,
+        dueIn30Days: invoiceCategories.dueIn30Days.length,
+        paid: invoiceCategories.paid.length,
+        outstanding: invoiceCategories.outstanding.length
+      }
+    };
+  }
+
+  /**
+   * Build overview for agents
+   */
+  buildAgentOverview(orders, customers) {
+    // Calculate top customers using normalized fields
+    const topCustomers = customers
+      .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
+      .slice(0, 5)
+      .map(c => ({
+        id: c.customer_id,
+        name: c.customer_name,
+        totalSpent: c.total_spent || 0,
+        orderCount: c.order_count || 0
+      }));
+
+    const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
+
+    return {
+      sales: {
+        totalOrders: orders.length,
+        totalRevenue: totalRevenue,
+        averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
+        completedOrders: orders.filter(o => 
+          o.status === 'confirmed' || o.status === 'completed'
+        ).length,
+        pendingOrders: orders.filter(o => 
+          o.status === 'draft' || o.status === 'pending'
+        ).length
+      },
+      customers: {
+        totalCustomers: customers.length,
+        activeCustomers: customers.filter(c => c.order_count > 0).length,
+        topCustomers,
+        averageOrdersPerCustomer: customers.length > 0 
+          ? customers.reduce((sum, c) => sum + (c.order_count || 0), 0) / customers.length
+          : 0
+      },
+      topItems: this.calculateTopItemsFromOrders(orders).slice(0, 5)
+    };
+  }
+
+  /**
+   * Build overview for managers
+   */
+  buildManagerOverview(orders, customers) {
+    // Get active customers (ordered in last 90 days)
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    
+    const activeCustomers = customers.filter(c => {
+      if (!c.last_order_date) return false;
+      return new Date(c.last_order_date) > ninetyDaysAgo;
+    });
+
+    const topCustomers = customers
+      .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
+      .slice(0, 5)
+      .map(c => ({
+        id: c.customer_id,
+        name: c.customer_name,
+        totalSpent: c.total_spent || 0,
+        orderCount: c.order_count || 0,
+        segment: c.segment || 'Low'
+      }));
+
+    const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
+
+    return {
+      sales: {
+        totalOrders: orders.length,
+        totalRevenue: totalRevenue,
+        averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
+        completedOrders: orders.filter(o => 
+          o.status === 'confirmed' || o.status === 'completed'
+        ).length,
+        pendingOrders: orders.filter(o => 
+          o.status === 'draft' || o.status === 'pending'
+        ).length
+      },
+      customers: {
+        totalCustomers: customers.length,
+        activeCustomers: activeCustomers.length,
+        topCustomers,
+        averageOrdersPerCustomer: customers.length > 0 
+          ? customers.reduce((sum, c) => sum + (c.order_count || 0), 0) / customers.length
+          : 0
+      },
+      topItems: this.calculateTopItemsFromOrders(orders).slice(0, 5)
+    };
+  }
+
+  /**
+   * Calculate agent performance using normalized data
+   */
+  calculateAgentPerformanceNormalized(orders, agents) {
+    const agentMap = new Map();
+    
+    // Initialize agents
+    agents.forEach(agent => {
+      agentMap.set(agent.id, {
+        agentId: agent.zohospID,
+        agentName: agent.name || 'Unknown',
+        agentUid: agent.id, // Firebase UID
+        totalRevenue: 0,
+        totalOrders: 0,
+        customers: new Set(),
+        averageOrderValue: 0
+      });
+    });
+
+    // Calculate metrics from orders using mapped fields
+    orders.forEach(order => {
+      if (order.salesperson_uid && agentMap.has(order.salesperson_uid)) {
+        const agent = agentMap.get(order.salesperson_uid);
+        agent.totalRevenue += order.total || 0; // Use mapped field
+        agent.totalOrders += 1;
+        if (order.customer_id) {
+          agent.customers.add(order.customer_id);
+        }
+      }
+    });
+
+    // Convert to array and calculate averages
+    const agentsList = Array.from(agentMap.values()).map(agent => ({
+      ...agent,
+      customers: agent.customers.size,
+      averageOrderValue: agent.totalOrders > 0 
+        ? agent.totalRevenue / agent.totalOrders 
+        : 0
+    }));
+
+    // Sort by revenue
+    agentsList.sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+    const totalRevenue = agentsList.reduce((sum, agent) => sum + agent.totalRevenue, 0);
+
+    return {
+      agents: agentsList,
+      summary: {
+        totalAgents: agentsList.length,
+        totalRevenue,
+        averageRevenue: agentsList.length > 0 ? totalRevenue / agentsList.length : 0,
+        topPerformer: agentsList[0] || null
+      }
+    };
+  }
+
+  /**
+   * Calculate brand performance from normalized orders
+   */
+  calculateBrandPerformanceFromOrders(orders) {
+    const brandMap = new Map();
+    
+    orders.forEach(order => {
+      if (order.line_items && Array.isArray(order.line_items)) {
+        order.line_items.forEach(item => {
+          const brand = item.brand || 'Unknown';
+          
+          if (!brandMap.has(brand)) {
+            brandMap.set(brand, {
+              brand,
+              revenue: 0,
+              quantity: 0,
+              orderCount: new Set(),
+              productCount: new Set()
+            });
+          }
+          
+          const brandData = brandMap.get(brand);
+          brandData.revenue += item.total || 0;
+          brandData.quantity += item.quantity || 0;
+          brandData.orderCount.add(order.id);
+          brandData.productCount.add(item.item_id);
+        });
+      }
+    });
+
+    // Convert to array and calculate metrics
+    const brands = Array.from(brandMap.values()).map(brand => ({
+      brand: brand.brand,
+      name: brand.brand, // Add name property for frontend compatibility
+      revenue: brand.revenue,
+      quantity: brand.quantity,
+      orderCount: brand.orderCount.size,
+      productCount: brand.productCount.size,
+      averageOrderValue: brand.orderCount.size > 0 
+        ? brand.revenue / brand.orderCount.size 
+        : 0
+    }));
+
+    // Sort by revenue and calculate market share
+    brands.sort((a, b) => b.revenue - a.revenue);
+    const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
+    
+    brands.forEach(brand => {
+      brand.marketShare = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
+      brand.market_share = brand.marketShare; // Add snake_case for compatibility
+    });
+
+    return brands;
+  }
+
+  /**
+   * Calculate top items from normalized orders
+   */
+  calculateTopItemsFromOrders(orders) {
+    const itemMap = new Map();
+    
+    orders.forEach(order => {
+      if (order.line_items && Array.isArray(order.line_items)) {
+        order.line_items.forEach(item => {
+          const itemKey = item.item_id;
+          
+          if (!itemMap.has(itemKey)) {
+            itemMap.set(itemKey, {
+              itemId: item.item_id,
+              name: item.item_name || item.name || 'Unknown',
+              sku: item.sku || '',
+              brand: item.brand || 'Unknown',
+              quantity: 0,
+              revenue: 0
+            });
+          }
+          
+          const itemData = itemMap.get(itemKey);
+          itemData.quantity += item.quantity || 0;
+          itemData.revenue += item.total || 0;
+        });
+      }
+    });
+
+    return Array.from(itemMap.values())
+      .sort((a, b) => b.revenue - a.revenue);
+  }
+
+  /**
+   * Calculate sales trends
+   */
+  calculateTrends(orders) {
+    const trendMap = new Map();
+    
+    orders.forEach(order => {
+      const date = new Date(order.date); // Use mapped date field
+      const dateKey = date.toISOString().split('T')[0];
+      
+      if (!trendMap.has(dateKey)) {
+        trendMap.set(dateKey, {
+          period: dateKey,
+          date: dateKey,
+          orders: 0,
+          revenue: 0
+        });
+      }
+      
+      const trend = trendMap.get(dateKey);
+      trend.orders += 1;
+      trend.revenue += order.total || 0; // Use mapped total field
+    });
+
+    return Array.from(trendMap.values())
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+  }
 
   /**
    * Health check for normalized collections
