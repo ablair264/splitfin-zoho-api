@@ -6,8 +6,12 @@ import admin from 'firebase-admin';
 class CollectionDashboardService {
   constructor() {
     this.db = admin.firestore();
-  }
 
+    // Bind 'this' to the methods that need it
+    this.getManagerDashboardNormalized = this.getManagerDashboardNormalized.bind(this);
+    this.getDashboardData = this.getDashboardData.bind(this);
+    // Add any other methods that use 'this' and are called in a way that might lose context
+  }
   /**
    * Get date range helper
    */
