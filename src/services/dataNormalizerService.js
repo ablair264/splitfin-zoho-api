@@ -506,4 +506,50 @@ class DataNormalizationService {
   }
 }
 
-export default new DataNormalizationService();
+  /**
+   * Normalize dashboard data structure
+   * Since collectionDashboardService already returns normalized data,
+   * this method just passes it through without transformation
+   */
+  normalizeDashboardData(data, userId) {
+    if (!data) return null;
+
+    // The data from collectionDashboardService is already properly structured
+    // Just return it as-is, ensuring all required fields exist
+    return {
+      ...data,
+      userId: userId || data.userId,
+      
+      // Ensure all required top-level fields exist
+      role: data.role || 'unknown',
+      dateRange: data.dateRange || '30_days',
+      metrics: data.metrics || {
+        revenue: 0,
+        orders: 0,
+        customers: 0,
+        agents: 0,
+        brands: 0
+      },
+      
+      // These should already be present from collectionDashboardService
+      overview: data.overview || {},
+      revenue: data.revenue || {},
+      orders: data.orders || { salesOrders: { total: 0, totalValue: 0, latest: [] } },
+      invoices: data.invoices || { all: [], outstanding: [], overdue: [], paid: [] },
+      performance: data.performance || { brands: [], topCustomers: [], topItems: [] },
+      
+      // Role-specific data
+      commission: data.commission || null,
+      agentPerformance: data.agentPerformance || null,
+      
+      // Metadata
+      structure: data.structure || {},
+      lastUpdated: data.lastUpdated || new Date().toISOString(),
+      dataSource: data.dataSource || 'normalized-collections',
+      loadTime: data.loadTime || 0
+    };
+  }
+}
+
+// IMPORTANT: Make sure this line exists at the end
+export default new DataNormalizerService();
