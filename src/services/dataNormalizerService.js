@@ -3,7 +3,7 @@
 
 import admin from 'firebase-admin';
 
-class DataNormalizationService {
+class DataNormalizerService {
   constructor() {
     this.db = admin.firestore();
   }
@@ -283,47 +283,6 @@ class DataNormalizationService {
     await batch.commit();
     console.log(`✅ Normalized ${count} customers`);
   }
-  
-  async normalizeInvoices() {
-  console.log('📄 Normalizing invoices...');
-  
-  const invoicesSnapshot = await this.db.collection('invoices').get();
-  const batch = this.db.batch();
-  let count = 0;
-  
-  invoicesSnapshot.forEach(doc => {
-    const invoice = doc.data();
-    const invoiceId = invoice.invoice_id || doc.id;
-    
-    const normalizedInvoice = {
-      invoice_id: invoiceId,
-      invoice_number: invoice.invoice_number,
-      customer_id: invoice.customer_id,
-      customer_name: invoice.customer_name,
-      date: invoice.date,
-      due_date: invoice.due_date,
-      total: parseFloat(invoice.total) || 0,
-      balance: parseFloat(invoice.balance) || 0,
-      paid: parseFloat(invoice.paid) || 0,
-      status: invoice.status,
-      days_overdue: invoice.daysOverdue || 0,
-      _source: 'zoho_inventory',
-      _normalized_at: admin.firestore.FieldValue.serverTimestamp(),
-      _original_id: invoiceId
-    };
-    
-    const docRef = this.db.collection('normalized_invoices').doc(invoiceId);
-    batch.set(docRef, normalizedInvoice, { merge: true });
-    count++;
-    
-    if (count % 400 === 0) {
-      batch.commit();
-    }
-  });
-  
-  await batch.commit();
-  console.log(`✅ Normalized ${count} invoices`);
-}
 
   /**
    * Normalize products collection
@@ -504,51 +463,6 @@ class DataNormalizationService {
       throw error;
     }
   }
-
-  /**
-   * Normalize dashboard data structure
-   * Since collectionDashboardService already returns normalized data,
-   * this method just passes it through without transformation
-   */
-  normalizeDashboardData(data, userId) {
-    if (!data) return null;
-
-    // The data from collectionDashboardService is already properly structured
-    // Just return it as-is, ensuring all required fields exist
-    return {
-      ...data,
-      userId: userId || data.userId,
-      
-      // Ensure all required top-level fields exist
-      role: data.role || 'unknown',
-      dateRange: data.dateRange || '30_days',
-      metrics: data.metrics || {
-        revenue: 0,
-        orders: 0,
-        customers: 0,
-        agents: 0,
-        brands: 0
-      },
-      
-      // These should already be present from collectionDashboardService
-      overview: data.overview || {},
-      revenue: data.revenue || {},
-      orders: data.orders || { salesOrders: { total: 0, totalValue: 0, latest: [] } },
-      invoices: data.invoices || { all: [], outstanding: [], overdue: [], paid: [] },
-      performance: data.performance || { brands: [], topCustomers: [], topItems: [] },
-      
-      // Role-specific data
-      commission: data.commission || null,
-      agentPerformance: data.agentPerformance || null,
-      
-      // Metadata
-      structure: data.structure || {},
-      lastUpdated: data.lastUpdated || new Date().toISOString(),
-      dataSource: data.dataSource || 'normalized-collections',
-      loadTime: data.loadTime || 0
-    };
-  }
 }
 
-// IMPORTANT: Make sure this line exists at the end
 export default new DataNormalizerService();
