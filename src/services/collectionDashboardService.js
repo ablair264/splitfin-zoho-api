@@ -374,7 +374,6 @@ return {
     agentPerformance,
     commission: null // Remove the duplicate orders: orders line
   };
-}
 
   /**
    * Get limited dashboard data for timeout scenarios
