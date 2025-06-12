@@ -3,6 +3,7 @@
 import admin from 'firebase-admin';
 import cronDataSyncService from './cronDataSyncService.js';
 import zohoReportsService from './zohoReportsService.js';
+import dataNormalizationService from './dataNormalizerService.js';
 
 class FastDashboardService {
   constructor() {

@@ -1,6 +1,6 @@
 // src/routes/normalization.js
 import express from 'express';
-import dataNormalizationService from '../services/dataNormalizationService.js';
+import dataNormalizationService from '../services/dataNormalizerService.js';
 import collectionDashboardService from '../services/collectionDashboardService.js';
 
 const router = express.Router();
