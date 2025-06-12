@@ -1,3 +1,4 @@
+import admin from 'firebase-admin';
 import './config/firebase.js'; 
 import express from 'express';
 import axios from 'axios';
@@ -448,34 +449,32 @@ async function getAccessToken() {
 
 // Items endpoint with sync status metadata (enhanced with CRM info)
 app.get('/api/items', async (req, res) => {
-  try {
-    // ADD THIS LINE TO FIX THE ERROR
-    const db = admin.firestore();
+  try {
+    const db = admin.firestore(); // Now properly using the imported admin
 
-    const includeMetadata = req.query.metadata === 'true';
-    
-    const snap = await db.collection('products').get();
-    const products = snap.docs.map(d => d.data());
-    
-    let response = { 
-      items: products,
-      dataStrategy: CRON_MODE ? 'CRON-cached with live fallback' : 'CRM-first with Inventory fallback'
-    };
-    
-    if (includeMetadata) {
-      const syncStatus = await getSyncStatus();
-      response.syncMetadata = syncStatus;
-      response.syncMetadata.dataSource = 'CRM';
-      response.syncMetadata.mode = CRON_MODE ? 'cron-optimized' : 'real-time';
-    }
-    
-    res.json(response);
-  } catch (err) {
-    console.error('Firestore /api/items failed:', err);
-    res.status(500).send('Items fetch failed');
-  }
+    const includeMetadata = req.query.metadata === 'true';
+    
+    const snap = await db.collection('products').get();
+    const products = snap.docs.map(d => d.data());
+    
+    let response = { 
+      items: products,
+      dataStrategy: CRON_MODE ? 'CRON-cached with live fallback' : 'CRM-first with Inventory fallback'
+    };
+    
+    if (includeMetadata) {
+      const syncStatus = await getSyncStatus();
+      response.syncMetadata = syncStatus;
+      response.syncMetadata.dataSource = 'CRM';
+      response.syncMetadata.mode = CRON_MODE ? 'cron-optimized' : 'real-time';
+    }
+    
+    res.json(response);
+  } catch (err) {
+    console.error('Firestore /api/items failed:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
-
 // Batch sync endpoint for mobile apps (conditional)
 app.post('/api/sync-batch', async (req, res) => {
   if (CRON_MODE) {

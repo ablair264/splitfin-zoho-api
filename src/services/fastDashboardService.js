@@ -55,133 +55,279 @@ class FastDashboardService {
    * Updated to handle agent-specific filtering
    */
   async getCachedDashboardData(userId, dateRange, isAgent, agentId) {
-    try {
-      const [
-        recentOrders,
-        quickMetrics,
-        brandPerformance,
-        customerAnalytics,
-        revenueAnalysis,
-        agentPerformance,
-        recentInvoices
-      ] = await Promise.all([
-        cronDataSyncService.getCachedData('recent_orders'),
-        cronDataSyncService.getCachedData('quick_metrics'),
-        cronDataSyncService.getCachedData('brand_performance'),
-        cronDataSyncService.getCachedData('customer_analytics'),
-        cronDataSyncService.getCachedData('revenue_analysis'),
-        !isAgent ? cronDataSyncService.getCachedData('agent_performance') : null,
-        cronDataSyncService.getCachedData('recent_invoices')
-      ]);
+  try {
+    console.log(`📊 Building cached dashboard for ${isAgent ? 'Agent' : 'Brand Manager'}: ${userId}`);
+    
+    const [
+      recentOrders,
+      quickMetrics,
+      brandPerformance,
+      customerAnalytics,
+      revenueAnalysis,
+      agentPerformance,
+      recentInvoices
+    ] = await Promise.all([
+      cronDataSyncService.getCachedData('recent_orders'),
+      cronDataSyncService.getCachedData('quick_metrics'),
+      cronDataSyncService.getCachedData('brand_performance'),
+      cronDataSyncService.getCachedData('customer_analytics'),
+      cronDataSyncService.getCachedData('revenue_analysis'),
+      !isAgent ? cronDataSyncService.getCachedData('agent_performance') : null,
+      cronDataSyncService.getCachedData('recent_invoices')
+    ]);
 
-      if (!recentOrders || !quickMetrics || !brandPerformance) {
-        console.warn('⚠️ Missing critical cache data: orders, metrics, or brand performance');
-        return null;
-      }
-
-      // Filter data for agents
-      let filteredOrders = recentOrders;
-      let filteredCustomers = customerAnalytics;
-      let filteredInvoices = recentInvoices;
-
-      if (isAgent && agentId) {
-        // Filter orders by agent
-        filteredOrders = recentOrders.filter(order => order.salesperson_id === agentId);
-        
-        // Get customer IDs from agent's orders
-        const agentCustomerIds = new Set(filteredOrders.map(order => order.customer_id));
-        
-        // Filter customers
-        if (customerAnalytics && customerAnalytics.customers) {
-          filteredCustomers = {
-            ...customerAnalytics,
-            customers: customerAnalytics.customers.filter(customer => 
-              agentCustomerIds.has(customer.id)
-            )
-          };
-        }
-        
-        // Filter invoices by agent's customers
-        if (recentInvoices) {
-          const filterInvoiceList = (invoices) => 
-            invoices.filter(inv => agentCustomerIds.has(inv.customer_id));
-          
-          filteredInvoices = {
-            all: filterInvoiceList(recentInvoices.all || []),
-            outstanding: filterInvoiceList(recentInvoices.outstanding || []),
-            overdue: filterInvoiceList(recentInvoices.overdue || []),
-            dueToday: filterInvoiceList(recentInvoices.dueToday || []),
-            dueIn30Days: filterInvoiceList(recentInvoices.dueIn30Days || []),
-            paid: filterInvoiceList(recentInvoices.paid || []),
-            summary: this.recalculateInvoiceSummary(recentInvoices, agentCustomerIds)
-          };
-        }
-      }
-
-      const overview = this.buildOverview(filteredOrders, filteredCustomers, quickMetrics, isAgent);
-      
-      // Calculate commission for agents
-      let commission = null;
-      if (isAgent) {
-        const totalSalesValue = filteredOrders.reduce((sum, order) => 
-          sum + parseFloat(order.total || 0), 0
-        );
-        const commissionRate = 0.125; // 12.5%
-        commission = {
-          rate: commissionRate,
-          total: totalSalesValue * commissionRate,
-          salesValue: totalSalesValue
-        };
-      }
-
-      const dashboardData = {
-        role: isAgent ? 'salesAgent' : 'brandManager',
-        dateRange,
-        overview,
-        revenue: revenueAnalysis || { grossRevenue: 0, netRevenue: 0 },
-        orders: {
-          salesOrders: {
-            total: filteredOrders.length,
-            totalValue: filteredOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0),
-            averageValue: filteredOrders.length > 0 
-              ? filteredOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0) / filteredOrders.length 
-              : 0,
-            latest: filteredOrders.slice(0, 10)
-          }
-        },
-        invoices: filteredInvoices || { outstanding: [], paid: [], summary: {} },
-        performance: {
-          brands: brandPerformance.brands || [],
-          customers: filteredCustomers?.customers?.slice(0, 10) || [],
-          topItems: this.calculateTopItems(filteredOrders),
-          trends: this.calculateQuickTrends(filteredOrders),
-          agents: agentPerformance?.agents || []
-        },
-        dataFreshness: {
-          orders: this.getDataFreshness('recent_orders'),
-          metrics: this.getDataFreshness('quick_metrics'),
-          brands: this.getDataFreshness('brand_performance'),
-          revenue: this.getDataFreshness('revenue_analysis')
-        }
-      };
-
-      // Add commission for agents
-      if (commission) {
-        dashboardData.commission = commission;
-      }
-
-      // Add agent performance for brand managers
-      if (!isAgent && agentPerformance) {
-        dashboardData.agentPerformance = agentPerformance;
-      }
-
-      return dashboardData;
-
-    } catch (error) {
-      console.error('❌ Error getting cached dashboard data:', error.message);
+    // Validate critical data
+    if (!recentOrders && !quickMetrics) {
+      console.warn('⚠️ No cached data available');
       return null;
     }
+
+    // Ensure orders is an array
+    let ordersArray = [];
+    if (Array.isArray(recentOrders)) {
+      ordersArray = recentOrders;
+    } else if (recentOrders?.orders) {
+      ordersArray = recentOrders.orders;
+    } else if (recentOrders?.data) {
+      ordersArray = recentOrders.data;
+    }
+
+    // Filter data for agents
+    let filteredOrders = ordersArray;
+    let filteredCustomers = customerAnalytics || { customers: [] };
+    let filteredInvoices = recentInvoices || { outstanding: [], paid: [] };
+
+    if (isAgent && agentId) {
+      console.log(`🔍 Filtering data for agent: ${agentId}`);
+      
+      // Filter orders by agent
+      filteredOrders = ordersArray.filter(order => {
+        return order.salesperson_id === agentId || 
+               order.agent_id === agentId ||
+               order.cf_agent === agentId;
+      });
+      
+      console.log(`📦 Agent has ${filteredOrders.length} orders out of ${ordersArray.length} total`);
+      
+      // Get unique customer IDs from agent's orders
+      const agentCustomerIds = new Set(
+        filteredOrders.map(order => order.customer_id).filter(id => id)
+      );
+      
+      // Filter customers
+      if (customerAnalytics?.customers) {
+        const allCustomers = Array.isArray(customerAnalytics.customers) 
+          ? customerAnalytics.customers 
+          : [];
+          
+        filteredCustomers = {
+          ...customerAnalytics,
+          customers: allCustomers.filter(customer => 
+            agentCustomerIds.has(customer.id) || 
+            agentCustomerIds.has(customer.customerId)
+          )
+        };
+      }
+      
+      // Filter invoices
+      if (recentInvoices) {
+        const filterInvoiceList = (invoices) => {
+          if (!Array.isArray(invoices)) return [];
+          return invoices.filter(inv => 
+            agentCustomerIds.has(inv.customer_id) || 
+            agentCustomerIds.has(inv.contact_id)
+          );
+        };
+        
+        filteredInvoices = {
+          all: filterInvoiceList(recentInvoices.all || []),
+          outstanding: filterInvoiceList(recentInvoices.outstanding || []),
+          overdue: filterInvoiceList(recentInvoices.overdue || []),
+          dueToday: filterInvoiceList(recentInvoices.dueToday || []),
+          dueIn30Days: filterInvoiceList(recentInvoices.dueIn30Days || []),
+          paid: filterInvoiceList(recentInvoices.paid || []),
+          summary: this.recalculateInvoiceSummary(recentInvoices, agentCustomerIds)
+        };
+      }
+    }
+
+    // Calculate totals
+    const totalOrdersValue = filteredOrders.reduce((sum, order) => 
+      sum + (parseFloat(order.total) || parseFloat(order.amount) || 0), 0
+    );
+
+    // Build overview with proper structure
+    const overview = {
+      sales: {
+        totalOrders: filteredOrders.length,
+        totalRevenue: revenueAnalysis?.grossRevenue || totalOrdersValue,
+        averageOrderValue: filteredOrders.length > 0 
+          ? totalOrdersValue / filteredOrders.length 
+          : 0,
+        completedOrders: filteredOrders.filter(order => 
+          order.status === 'confirmed' || 
+          order.status === 'completed' ||
+          order.status === 'closed'
+        ).length,
+        pendingOrders: filteredOrders.filter(order => 
+          order.status === 'draft' || 
+          order.status === 'pending' ||
+          order.status === 'open'
+        ).length
+      },
+      topItems: this.calculateTopItems(filteredOrders),
+      customers: {
+        totalCustomers: filteredCustomers?.customers?.length || 0,
+        activeCustomers: (filteredCustomers?.customers || []).filter(c => {
+          if (!c.lastOrderDate) return false;
+          const daysSince = (Date.now() - new Date(c.lastOrderDate).getTime()) / (1000 * 60 * 60 * 24);
+          return daysSince <= 90;
+        }).length,
+        topCustomers: (filteredCustomers?.customers || [])
+          .sort((a, b) => (b.totalSpent || 0) - (a.totalSpent || 0))
+          .slice(0, 5)
+          .map(c => ({
+            id: c.id || c.customerId,
+            name: c.name || c.Account_Name || 'Unknown',
+            totalSpent: c.totalSpent || 0,
+            orderCount: c.orderCount || 0
+          })),
+        averageOrdersPerCustomer: filteredCustomers?.customers?.length > 0
+          ? (filteredCustomers.customers.reduce((sum, c) => sum + (c.orderCount || 0), 0) / 
+             filteredCustomers.customers.length)
+          : 0
+      }
+    };
+
+    // Ensure revenue object exists with all required fields
+    const revenue = {
+      grossRevenue: revenueAnalysis?.grossRevenue || totalOrdersValue,
+      netRevenue: revenueAnalysis?.netRevenue || (totalOrdersValue * 0.8),
+      taxAmount: revenueAnalysis?.taxAmount || (totalOrdersValue * 0.2),
+      paidRevenue: revenueAnalysis?.paidRevenue || 0,
+      outstandingRevenue: revenueAnalysis?.outstandingRevenue || 0,
+      profitMargin: revenueAnalysis?.profitMargin || 20,
+      period: dateRange
+    };
+
+    // Build complete dashboard data structure
+    const dashboardData = {
+      role: isAgent ? 'salesAgent' : 'brandManager',
+      dateRange,
+      overview,
+      revenue,
+      orders: {
+        salesOrders: {
+          total: filteredOrders.length,
+          totalValue: totalOrdersValue,
+          averageValue: overview.sales.averageOrderValue,
+          latest: filteredOrders.slice(0, 10).map(order => ({
+            id: order.salesorder_id || order.id,
+            salesorder_number: order.salesorder_number || order.order_number || order.id,
+            customer_id: order.customer_id,
+            customer_name: order.customer_name || order.customer || 'Unknown',
+            date: order.date || order.created_at || new Date().toISOString(),
+            total: parseFloat(order.total) || parseFloat(order.amount) || 0,
+            status: order.status || 'pending',
+            salesperson_id: order.salesperson_id,
+            salesperson_name: order.salesperson_name,
+            line_items: order.line_items || []
+          }))
+        }
+      },
+      invoices: {
+        outstanding: filteredInvoices.outstanding || [],
+        paid: filteredInvoices.paid || [],
+        overdue: filteredInvoices.overdue || [],
+        dueToday: filteredInvoices.dueToday || [],
+        dueIn30Days: filteredInvoices.dueIn30Days || [],
+        all: filteredInvoices.all || [],
+        summary: filteredInvoices.summary || {
+          totalOutstanding: 0,
+          totalPaid: 0,
+          totalOverdue: 0,
+          totalDueToday: 0,
+          totalDueIn30Days: 0,
+          count: {
+            outstanding: 0,
+            paid: 0,
+            overdue: 0,
+            dueToday: 0,
+            dueIn30Days: 0
+          }
+        }
+      },
+      performance: {
+        brands: Array.isArray(brandPerformance?.brands) 
+          ? brandPerformance.brands 
+          : [],
+        customers: (filteredCustomers?.customers || [])
+          .slice(0, 10)
+          .map(c => ({
+            id: c.id || c.customerId,
+            name: c.name || c.Account_Name || 'Unknown',
+            totalSpent: c.totalSpent || 0,
+            orderCount: c.orderCount || 0,
+            lastOrderDate: c.lastOrderDate,
+            segment: c.segment || 'Low'
+          })),
+        topItems: overview.topItems || [],
+        trends: this.calculateQuickTrends(filteredOrders)
+      },
+      dataFreshness: {
+        orders: 'Cached',
+        metrics: 'Cached',
+        brands: 'Cached',
+        revenue: 'Cached'
+      }
+    };
+
+    // Add commission for agents
+    if (isAgent) {
+      const commissionRate = 0.125; // 12.5%
+      dashboardData.commission = {
+        rate: commissionRate,
+        total: totalOrdersValue * commissionRate,
+        salesValue: totalOrdersValue
+      };
+    }
+
+    // Add agent performance for brand managers
+    if (!isAgent && agentPerformance) {
+      dashboardData.agentPerformance = {
+        agents: Array.isArray(agentPerformance?.agents) 
+          ? agentPerformance.agents.map(agent => ({
+              agentId: agent.agentId || agent.id,
+              agentName: agent.agentName || agent.name || 'Unknown',
+              totalRevenue: agent.totalRevenue || agent.revenue || 0,
+              totalOrders: agent.totalOrders || agent.orders || 0,
+              customers: agent.customers || 0,
+              averageOrderValue: agent.averageOrderValue || 0
+            }))
+          : [],
+        summary: agentPerformance?.summary || {
+          totalAgents: 0,
+          totalRevenue: 0,
+          averageRevenue: 0,
+          topPerformer: null
+        }
+      };
+    }
+
+    console.log('✅ Dashboard data structure built successfully', {
+      role: dashboardData.role,
+      ordersCount: dashboardData.orders.salesOrders.total,
+      revenue: dashboardData.revenue.grossRevenue,
+      hasAgentPerformance: !!dashboardData.agentPerformance
+    });
+
+    return dashboardData;
+
+  } catch (error) {
+    console.error('❌ Error building cached dashboard data:', error);
+    return null;
   }
+}
 
   /**
    * Recalculate invoice summary for filtered invoices
