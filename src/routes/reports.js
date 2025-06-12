@@ -3,6 +3,7 @@ import express from 'express';
 import zohoReportsService from '../services/zohoReportsService.js';
 import admin from 'firebase-admin';
 import collectionDashboardService from '../services/collectionDashboardService.js';
+import dataNormalizerService from '../services/dataNormalizerService.js';
 
 const router = express.Router();
 
@@ -114,16 +115,32 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
     
     console.log(`📊 Dashboard request: User ${userId}, Range: ${dateRange}`);
     
-    // Use the collection-based dashboard service
-    const dashboardData = await collectionDashboardService.getDashboardData(
+    // Use the collection-based dashboard service with timeout protection
+    const rawDashboardData = await collectionDashboardService.getDashboardDataWithTimeout(
       userId, 
       dateRange, 
       customDateRange
     );
     
+    // Normalize the data for consistent frontend consumption
+    const normalizedData = dataNormalizerService.normalizeDashboardData(
+      rawDashboardData,
+      userId
+    );
+    
+    // Log data structure for debugging
+    console.log('📊 Normalized dashboard structure:', {
+      hasMetrics: !!normalizedData.metrics,
+      ordersCount: normalizedData.orders.length,
+      invoicesCount: normalizedData.invoices.all.length,
+      brandsCount: normalizedData.performance.brands.length,
+      hasCommission: !!normalizedData.commission,
+      hasAgentPerformance: !!normalizedData.agentPerformance
+    });
+    
     res.json({
       success: true,
-      data: dashboardData,
+      data: normalizedData,
       userContext: {
         role: req.userContext.role,
         userId: req.userContext.userId,
@@ -134,6 +151,17 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
     
   } catch (error) {
     console.error('❌ Error fetching dashboard data:', error);
+    
+    // Check if it was a timeout error
+    if (error.message && error.message.includes('timeout')) {
+      return res.status(408).json({
+        success: false,
+        error: 'Dashboard query timed out. Try a smaller date range.',
+        suggestion: 'Use 7_days or today for faster loading',
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
+    }
+    
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to fetch dashboard data',
