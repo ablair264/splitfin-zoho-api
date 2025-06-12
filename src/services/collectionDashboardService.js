@@ -2,6 +2,7 @@
 // Updated to use normalized collections for better performance and accuracy
 
 import admin from 'firebase-admin';
+import dataNormalizationService from './dataNormalizerService.js';
 
 class CollectionDashboardService {
   constructor() {
