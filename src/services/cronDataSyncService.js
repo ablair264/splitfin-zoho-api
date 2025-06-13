@@ -3,7 +3,7 @@
 
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
-import dataNormalizationService from './dataNormalizerService.js';
+import dataNormalizerService from './dataNormalizerService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 
 class CronDataSyncService {
