@@ -9,9 +9,11 @@ class CollectionDashboardService {
 
     // Bind 'this' to the methods that need it
     this.getManagerDashboardNormalized = this.getManagerDashboardNormalized.bind(this);
+    this.getAgentDashboardNormalized = this.getAgentDashboardNormalized.bind(this);
     this.getDashboardData = this.getDashboardData.bind(this);
-    // Add any other methods that use 'this' and are called in a way that might lose context
+    this.getLimitedDashboardData = this.getLimitedDashboardData.bind(this);
   }
+
   /**
    * Get date range helper
    */
@@ -143,180 +145,310 @@ class CollectionDashboardService {
     }
   }
 
-async getManagerDashboardNormalized(startISO, endISO, dateRange) {
-  console.log(`🔍 Building manager dashboard using normalized data`);
+  /**
+   * Get manager dashboard using normalized collections
+   */
+  async getManagerDashboardNormalized(startISO, endISO, dateRange) {
+    console.log(`🔍 Building manager dashboard using normalized data`);
 
-  // Fetch all data for the period
-  const [
-    ordersSnapshot,
-    customersSnapshot,
-    invoicesSnapshot,
-    agentsSnapshot
-  ] = await Promise.all([
-    // Get all orders
-    this.db.collection('normalized_orders')
-      .where('created_time', '>=', startISO)
-      .where('created_time', '<=', endISO)
-      .orderBy('created_time', 'desc')
-      .get(),
+    // Fetch all data for the period
+    const [
+      ordersSnapshot,
+      customersSnapshot,
+      invoicesSnapshot,
+      agentsSnapshot
+    ] = await Promise.all([
+      // Get all orders
+      this.db.collection('normalized_orders')
+        .where('created_time', '>=', startISO)
+        .where('created_time', '<=', endISO)
+        .orderBy('created_time', 'desc')
+        .get(),
 
-    // Get all customers
-    this.db.collection('normalized_customers').get(),
+      // Get all customers
+      this.db.collection('normalized_customers').get(),
 
-    // Get all invoices
-    this.db.collection('invoices')
-      .where('date', '>=', startISO)
-      .where('date', '<=', endISO)
-      .get(),
+      // Get all invoices
+      this.db.collection('invoices')
+        .where('date', '>=', startISO)
+        .where('date', '<=', endISO)
+        .get(),
 
-    // Get all agents
-    this.db.collection('users')
-      .where('role', '==', 'salesAgent')
-      .get()
-  ]);
+      // Get all agents
+      this.db.collection('users')
+        .where('role', '==', 'salesAgent')
+        .get()
+    ]);
 
-  // STEP 1: Process all the data from snapshots FIRST
-  // Process orders
-  const orders = ordersSnapshot.docs.map(doc => {
-    const data = doc.data();
-    return {
+    // STEP 1: Process all the data from snapshots FIRST
+    // Process orders
+    const orders = ordersSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        order_number: data.order_number,
+        customer_id: data.customer_id,
+        customer_name: data.customer_name,
+        salesperson_id: data.salesperson_id,
+        salesperson_uid: data.salesperson_uid,
+        salesperson_name: data.salesperson_name,
+        date: data.created_time,
+        total: data.total_amount,
+        status: data.order_status,
+        line_items: data.line_items || [],
+        is_marketplace_order: data.is_marketplace_order || false,
+        marketplace_source: data.marketplace_source || null
+      };
+    });
+
+    // Process customers
+    const customers = customersSnapshot.docs.map(doc => ({
       id: doc.id,
-      order_number: data.order_number,
-      customer_id: data.customer_id,
-      customer_name: data.customer_name,
-      salesperson_id: data.salesperson_id,
-      salesperson_uid: data.salesperson_uid,
-      salesperson_name: data.salesperson_name,
-      date: data.created_time,
-      total: data.total_amount,
-      status: data.order_status,
-      line_items: data.line_items || [],
-      is_marketplace_order: data.is_marketplace_order || false,
-      marketplace_source: data.marketplace_source || null
-    };
-  });
+      ...doc.data()
+    }));
 
-  // Process customers
-  const customers = customersSnapshot.docs.map(doc => ({
-    id: doc.id,
-    ...doc.data()
-  }));
+    // Process invoices
+    const invoices = invoicesSnapshot.docs.map(doc => doc.data());
 
-  // Process invoices
-  const invoices = invoicesSnapshot.docs.map(doc => doc.data());
+    // Process agents
+    const agents = agentsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
 
-  // Process agents
-  const agents = agentsSnapshot.docs.map(doc => ({
-    id: doc.id,
-    ...doc.data()
-  }));
+    // STEP 2: Now do logging and calculations
+    // Separate marketplace and regular orders
+    const marketplaceOrders = orders.filter(o => o.is_marketplace_order);
+    const regularOrders = orders.filter(o => !o.is_marketplace_order);
+    
+    console.log(`📊 Found ${regularOrders.length} regular orders, ${marketplaceOrders.length} marketplace orders`);
+    console.log(`👥 Found ${customers.length} customers, ${agents.length} agents`);
 
-  // STEP 2: Now do logging and calculations
-  // Separate marketplace and regular orders
-  const marketplaceOrders = orders.filter(o => o.is_marketplace_order);
-  const regularOrders = orders.filter(o => !o.is_marketplace_order);
-  
-  console.log(`📊 Found ${regularOrders.length} regular orders, ${marketplaceOrders.length} marketplace orders`);
-  console.log(`👥 Found ${customers.length} customers, ${agents.length} agents`);
+    // Calculate total revenue
+    const totalRevenue = orders.reduce((sum, order) => 
+      sum + (order.total || 0), 0
+    );
 
-  // Calculate total revenue
-  const totalRevenue = orders.reduce((sum, order) => 
-    sum + (order.total || 0), 0
-  );
+    // Process invoices
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const invoiceCategories = this.categorizeInvoices(invoices, today);
 
-  // Process invoices
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const invoiceCategories = this.categorizeInvoices(invoices, today);
+    // STEP 3: Build derived data (overview, performance, etc.)
+    // Build overview - NOW customers is defined
+    const overview = this.buildManagerOverview(orders, customers);
 
-  // STEP 3: Build derived data (overview, performance, etc.)
-  // Build overview - NOW customers is defined
-  const overview = this.buildManagerOverview(orders, customers);
+    // Calculate agent performance
+    const agentPerformance = this.calculateAgentPerformanceNormalized(orders, agents);
 
-  // Calculate agent performance
-  const agentPerformance = this.calculateAgentPerformanceNormalized(orders, agents);
+    // Get brand performance
+    const brandPerformance = this.calculateBrandPerformanceFromOrders(orders);
 
-  // Get brand performance
-  const brandPerformance = this.calculateBrandPerformanceFromOrders(orders);
+    // Calculate top items
+    const topItems = this.calculateTopItemsFromOrders(orders);
 
-  // Calculate top items
-  const topItems = this.calculateTopItemsFromOrders(orders);
-
-  // STEP 4: Build final response structure
-  // Build metrics object
-  const metrics = {
-    revenue: totalRevenue,
-    orders: orders.length,
-    customers: customers.length,
-    agents: agents.length,
-    brands: brandPerformance.length,
-    totalRevenue: totalRevenue,
-    totalOrders: orders.length,
-    averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
-    outstandingInvoices: invoiceCategories.outstanding.reduce((sum, inv) => 
-      sum + (parseFloat(inv.balance) || 0), 0
-    ),
-    marketplaceOrders: marketplaceOrders.length,
-    regularOrders: regularOrders.length
-  };
-
-  // Return complete dashboard data
-return {
-    metrics,
-    overview,
-    revenue: {
-      grossRevenue: totalRevenue,
-      netRevenue: totalRevenue * 0.8,
-      taxAmount: totalRevenue * 0.2,
-      paidRevenue: invoiceCategories.paid.reduce((sum, inv) => 
-        sum + (parseFloat(inv.total) || 0), 0
-      ),
-      outstandingRevenue: invoiceCategories.outstanding.reduce((sum, inv) => 
+    // STEP 4: Build final response structure
+    // Build metrics object
+    const metrics = {
+      revenue: totalRevenue,
+      orders: orders.length,
+      customers: customers.length,
+      agents: agents.length,
+      brands: brandPerformance.length,
+      totalRevenue: totalRevenue,
+      totalOrders: orders.length,
+      averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
+      outstandingInvoices: invoiceCategories.outstanding.reduce((sum, inv) => 
         sum + (parseFloat(inv.balance) || 0), 0
       ),
-      profitMargin: 30,
-      period: dateRange
-    },
-    orders: orders, // This should be the array of orders
-    ordersSummary: { // Rename this to avoid conflict
-      salesOrders: {
-        total: orders.length,
-        totalValue: totalRevenue,
-        averageValue: orders.length > 0 ? totalRevenue / orders.length : 0,
-        latest: orders.slice(0, 10),
-        marketplace: marketplaceOrders.length,
-        regular: regularOrders.length
+      marketplaceOrders: marketplaceOrders.length,
+      regularOrders: regularOrders.length
+    };
+
+    // Return complete dashboard data
+    return {
+      metrics,
+      overview,
+      revenue: {
+        grossRevenue: totalRevenue,
+        netRevenue: totalRevenue * 0.8,
+        taxAmount: totalRevenue * 0.2,
+        paidRevenue: invoiceCategories.paid.reduce((sum, inv) => 
+          sum + (parseFloat(inv.total) || 0), 0
+        ),
+        outstandingRevenue: invoiceCategories.outstanding.reduce((sum, inv) => 
+          sum + (parseFloat(inv.balance) || 0), 0
+        ),
+        profitMargin: 30,
+        period: dateRange
+      },
+      orders: orders, // This should be the array of orders
+      ordersSummary: { // Separate object to avoid conflict
+        salesOrders: {
+          total: orders.length,
+          totalValue: totalRevenue,
+          averageValue: orders.length > 0 ? totalRevenue / orders.length : 0,
+          latest: orders.slice(0, 10),
+          marketplace: marketplaceOrders.length,
+          regular: regularOrders.length
+        }
+      },
+      invoices: {
+        ...invoiceCategories,
+        summary: this.calculateInvoiceSummary(invoiceCategories)
+      },
+      performance: {
+        brands: brandPerformance,
+        topItems: topItems,
+        trends: this.calculateTrends(orders),
+        top_customers: customers
+          .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
+          .slice(0, 10)
+          .map(c => ({
+            id: c.customer_id,
+            name: c.customer_name,
+            total_spent: c.total_spent || 0,
+            order_count: c.order_count || 0
+          })),
+        top_items: topItems.slice(0, 10).map(item => ({
+          id: item.itemId,
+          name: item.name,
+          quantity: item.quantity,
+          revenue: item.revenue,
+          brand: item.brand
+        }))
+      },
+      agentPerformance,
+      commission: null
+    };
+  }
+
+  /**
+   * Get agent dashboard using normalized collections
+   */
+  async getAgentDashboardNormalized(userUid, startISO, endISO, dateRange) {
+    console.log(`🔍 Building agent dashboard for UID: ${userUid}`);
+
+    // 1. Fetch data specific to this agent
+    const [
+      ordersSnapshot,
+      invoicesSnapshot
+    ] = await Promise.all([
+      // Get orders for this specific agent within the date range
+      this.db.collection('normalized_orders')
+        .where('salesperson_uid', '==', userUid)
+        .where('created_time', '>=', startISO)
+        .where('created_time', '<=', endISO)
+        .orderBy('created_time', 'desc')
+        .get(),
+
+      // Get invoices for this agent (assuming a salesperson_uid exists on invoices)
+      this.db.collection('invoices')
+        .where('salesperson_uid', '==', userUid)
+        .where('date', '>=', startISO)
+        .where('date', '<=', endISO)
+        .get()
+    ]);
+
+    // 2. Process the snapshot data
+    const orders = ordersSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        order_number: data.order_number,
+        customer_id: data.customer_id,
+        customer_name: data.customer_name,
+        salesperson_uid: data.salesperson_uid,
+        salesperson_name: data.salesperson_name,
+        date: data.created_time,
+        total: data.total_amount,
+        status: data.order_status,
+        line_items: data.line_items || [],
+      };
+    });
+
+    const invoices = invoicesSnapshot.docs.map(doc => doc.data());
+
+    // Create a customer list from the orders
+    const customerMap = new Map();
+    orders.forEach(order => {
+      if (!customerMap.has(order.customer_id)) {
+        customerMap.set(order.customer_id, {
+          customer_id: order.customer_id,
+          customer_name: order.customer_name,
+          total_spent: 0,
+          order_count: 0,
+        });
       }
-    },
-    invoices: {
-      ...invoiceCategories,
-      summary: this.calculateInvoiceSummary(invoiceCategories)
-    },
-    performance: {
-      brands: brandPerformance,
-      topItems: topItems,
-      trends: this.calculateTrends(orders),
-      top_customers: customers
-        .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
-        .slice(0, 10)
-        .map(c => ({
-          id: c.customer_id,
-          name: c.customer_name,
-          total_spent: c.total_spent || 0,
-          order_count: c.order_count || 0
-        })),
-      top_items: topItems.slice(0, 10).map(item => ({
-        id: item.itemId,
-        name: item.name,
-        quantity: item.quantity,
-        revenue: item.revenue,
-        brand: item.brand
-      }))
-    },
-    agentPerformance,
-    commission: null // Remove the duplicate orders: orders line
-  };
-}
+      const customer = customerMap.get(order.customer_id);
+      customer.total_spent += order.total || 0;
+      customer.order_count += 1;
+    });
+    const customers = Array.from(customerMap.values());
+
+    // 3. Perform calculations
+    const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const invoiceCategories = this.categorizeInvoices(invoices, today);
+
+    // 4. Build derived data using your helper functions
+    const overview = this.buildAgentOverview(orders, customers);
+    const brandPerformance = this.calculateBrandPerformanceFromOrders(orders);
+    const topItems = this.calculateTopItemsFromOrders(orders);
+
+    // Build metrics
+    const metrics = {
+      revenue: totalRevenue,
+      orders: orders.length,
+      customers: customers.length,
+      totalRevenue: totalRevenue,
+      totalOrders: orders.length,
+      averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0,
+      outstandingInvoices: invoiceCategories.outstanding.reduce((sum, inv) =>
+        sum + (parseFloat(inv.balance) || 0), 0
+      ),
+    };
+
+    // 5. Build the final response object
+    return {
+      metrics,
+      overview,
+      revenue: {
+        grossRevenue: totalRevenue,
+        paidRevenue: invoiceCategories.paid.reduce((sum, inv) =>
+          sum + (parseFloat(inv.total) || 0), 0
+        ),
+        outstandingRevenue: invoiceCategories.outstanding.reduce((sum, inv) =>
+          sum + (parseFloat(inv.balance) || 0), 0
+        ),
+        period: dateRange,
+      },
+      orders: orders, // The actual orders array
+      ordersSummary: { // Summary object
+        salesOrders: {
+          total: orders.length,
+          totalValue: totalRevenue,
+          latest: orders.slice(0, 10),
+        }
+      },
+      invoices: {
+        ...invoiceCategories,
+        summary: this.calculateInvoiceSummary(invoiceCategories)
+      },
+      performance: {
+        brands: brandPerformance,
+        topItems: topItems,
+        top_items: topItems, // Add both formats for compatibility
+        trends: this.calculateTrends(orders),
+        top_customers: customers
+          .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
+          .slice(0, 10)
+      },
+      agentPerformance: null,
+      commission: null
+    };
+  }
 
   /**
    * Get limited dashboard data for timeout scenarios
@@ -386,7 +518,10 @@ return {
         orders: orders.length,
         customers: undefined,
         agents: isAgent ? 1 : undefined,
-        brands: undefined
+        brands: undefined,
+        totalRevenue: totalRevenue,
+        totalOrders: orders.length,
+        averageOrderValue: orders.length > 0 ? totalRevenue / orders.length : 0
       };
       
       return {
@@ -406,13 +541,30 @@ return {
           period: dateRange,
           isLimited: true
         },
-        orders: {
+        orders: orders, // Always return as array
+        ordersSummary: {
           salesOrders: {
             total: orders.length,
             totalValue: totalRevenue,
             latest: orders.slice(0, 10),
             isLimited: true
           }
+        },
+        invoices: {
+          all: [],
+          outstanding: [],
+          overdue: [],
+          paid: [],
+          dueToday: [],
+          dueIn30Days: [],
+          summary: {}
+        },
+        performance: {
+          brands: [],
+          topItems: [],
+          top_items: [],
+          trends: [],
+          top_customers: []
         },
         role: userData.role,
         dateRange,
@@ -451,7 +603,7 @@ return {
         dueDate.setHours(0, 0, 0, 0);
         
         if (dueDate < today) {
-          invoice.daysOverdue = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
+          invoice.days_overdue = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
           categorized.overdue.push(invoice);
         } else if (dueDate.getTime() === today.getTime()) {
           categorized.dueToday.push(invoice);
@@ -713,6 +865,7 @@ return {
           if (!itemMap.has(itemKey)) {
             itemMap.set(itemKey, {
               itemId: item.item_id,
+              id: item.item_id, // Add id for compatibility
               name: item.item_name || item.name || 'Unknown',
               sku: item.sku || '',
               brand: item.brand || 'Unknown',
