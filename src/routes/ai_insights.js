@@ -7,7 +7,7 @@ import {
   generateCardInsights, 
   generateDrillDownInsights,
   generateComparativeInsights,
-  generateSeasonalInsights
+  generateSeasonalInsights,
   generateCustomerInsights // Add this import
 } from '../services/aiAnalyticsService.js';
 
