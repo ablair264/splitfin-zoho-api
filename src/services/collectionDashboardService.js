@@ -261,64 +261,6 @@ async getManagerDashboardNormalized(startISO, endISO, dateRange) {
   };
 
   // Return complete dashboard data
-  return {
-    metrics,
-    overview,
-    revenue: {
-      grossRevenue: totalRevenue,
-      netRevenue: totalRevenue * 0.8,
-      taxAmount: totalRevenue * 0.2,
-      paidRevenue: invoiceCategories.paid.reduce((sum, inv) => 
-        sum + (parseFloat(inv.total) || 0), 0
-      ),
-      outstandingRevenue: invoiceCategories.outstanding.reduce((sum, inv) => 
-        sum + (parseFloat(inv.balance) || 0), 0
-      ),
-      profitMargin: 30,
-      period: dateRange
-    },
-    orders: {
-      salesOrders: {
-        total: orders.length,
-        totalValue: totalRevenue,
-        averageValue: orders.length > 0 ? totalRevenue / orders.length : 0,
-        latest: orders.slice(0, 10),
-        marketplace: marketplaceOrders.length,
-        regular: regularOrders.length
-      }
-    },
-    invoices: {
-      ...invoiceCategories,
-      summary: this.calculateInvoiceSummary(invoiceCategories)
-    },
-    performance: {
-      brands: brandPerformance,
-      topItems: topItems,
-      trends: this.calculateTrends(orders),
-      top_customers: customers
-        .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
-        .slice(0, 10)
-        .map(c => ({
-          id: c.customer_id,
-          name: c.customer_name,
-          total_spent: c.total_spent || 0,
-          order_count: c.order_count || 0
-        })),
-      top_items: topItems.slice(0, 10).map(item => ({
-        id: item.itemId,
-        name: item.name,
-        quantity: item.quantity,
-        revenue: item.revenue,
-        brand: item.brand
-      }))
-    },
-    agentPerformance,
-    orders: orders,
-    invoices: invoiceCategories,
-    commission: null
-  };
-}
-
 return {
     metrics,
     overview,
@@ -374,6 +316,7 @@ return {
     agentPerformance,
     commission: null // Remove the duplicate orders: orders line
   };
+}
 
   /**
    * Get limited dashboard data for timeout scenarios
