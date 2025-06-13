@@ -1,5 +1,5 @@
 // src/services/cronDataSyncService.js
-// Updated to include data normalization after sync
+// Updated to include data normalization after sync and incremental syncing
 
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
@@ -10,6 +10,41 @@ class CronDataSyncService {
   constructor() {
     this.isRunning = new Map();
     this.lastSync = {};
+  }
+  
+  /**
+   * Get last successful sync timestamp for a specific sync type
+   */
+  async getLastSyncTimestamp(syncType) {
+    try {
+      const db = admin.firestore();
+      const doc = await db.collection('sync_metadata').doc(`last_sync_${syncType}`).get();
+      
+      if (doc.exists && doc.data().timestamp) {
+        return new Date(doc.data().timestamp);
+      }
+      
+      // Return null if no sync record exists
+      return null;
+    } catch (error) {
+      console.error(`Error getting last sync timestamp for ${syncType}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Update last successful sync timestamp
+   */
+  async updateLastSyncTimestamp(syncType) {
+    try {
+      const db = admin.firestore();
+      await db.collection('sync_metadata').doc(`last_sync_${syncType}`).set({
+        timestamp: new Date().toISOString(),
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+      });
+    } catch (error) {
+      console.error(`Error updating last sync timestamp for ${syncType}:`, error);
+    }
   }
   
   /**
@@ -113,6 +148,67 @@ class CronDataSyncService {
   }
   
   /**
+   * Sync sales transactions for specific orders
+   */
+  async syncSalesTransactionsForOrders(orders) {
+    console.log('🔄 Syncing sales transactions for specific orders...');
+    try {
+      const db = admin.firestore();
+      const transactions = [];
+      
+      orders.forEach(order => {
+        if (order.line_items && Array.isArray(order.line_items)) {
+          order.line_items.forEach(item => {
+            transactions.push({
+              transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
+              item_id: item.item_id,
+              item_name: item.name,
+              sku: item.sku,
+              brand: item.brand || 'Unknown',
+              quantity: parseInt(item.quantity || 0),
+              price: parseFloat(item.rate || 0),
+              total: parseFloat(item.item_total || item.total || 0),
+              order_id: order.salesorder_id,
+              order_number: order.salesorder_number,
+              order_date: order.date,
+              customer_id: order.customer_id,
+              customer_name: order.customer_name,
+              salesperson_id: order.salesperson_id,
+              salesperson_name: order.salesperson_name,
+              created_at: order.date,
+              last_modified: admin.firestore.FieldValue.serverTimestamp()
+            });
+          });
+        }
+      });
+
+      if (transactions.length > 0) {
+        await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
+      }
+      
+      return { success: true, count: transactions.length };
+      
+    } catch (error) {
+      console.error('❌ Sales transactions sync failed:', error);
+      return { success: false, error: error.message };
+    }
+  }
+  
+  /**
+   * Enrich normalized orders with line items
+   */
+  async enrichNormalizedOrdersWithLineItems(orderIds) {
+    console.log('🔄 Enriching normalized orders with line items...');
+    try {
+      const result = await dataNormalizationService.enrichNormalizedOrdersWithLineItems(orderIds);
+      return result;
+    } catch (error) {
+      console.error('❌ Error enriching normalized orders:', error);
+      return { success: false, error: error.message };
+    }
+  }
+  
+  /**
    * ONE-OFF: Sync all data going back 2 years
    */
   async syncTwoYearsData() {
@@ -135,41 +231,40 @@ class CronDataSyncService {
       console.log('📦 Syncing all products...');
       const productSyncResult = await syncInventory(true);
       
-console.log('📊 Fetching 2 years of sales orders...');
-const orders2Years = await zohoReportsService.getSalesOrders('2_years');
-console.log(`Found ${orders2Years.length} orders`);
+      console.log('📊 Fetching 2 years of sales orders...');
+      const orders2Years = await zohoReportsService.getSalesOrders('2_years');
+      console.log(`Found ${orders2Years.length} orders`);
 
-if (orders2Years.length > 0) {
-  // Filter out orders without valid IDs and ensure proper ID field
-  const validOrders = orders2Years
-    .map(order => {
-      // Try to find a valid ID from multiple possible fields
-      const orderId = order.salesorder_id || order.id || order.order_id;
-      
-      // Only include orders with valid IDs
-      if (orderId && String(orderId).trim()) {
-        return {
-          ...order,
-          salesorder_id: String(orderId).trim()
-        };
+      if (orders2Years.length > 0) {
+        // Filter out orders without valid IDs and ensure proper ID field
+        const validOrders = orders2Years
+          .map(order => {
+            // Try to find a valid ID from multiple possible fields
+            const orderId = order.salesorder_id || order.id || order.order_id;
+            
+            // Only include orders with valid IDs
+            if (orderId && String(orderId).trim()) {
+              return {
+                ...order,
+                salesorder_id: String(orderId).trim()
+              };
+            }
+            
+            console.warn('⚠️ Order missing ID:', {
+              salesorder_number: order.salesorder_number,
+              customer_name: order.customer_name,
+              date: order.date
+            });
+            return null;
+          })
+          .filter(order => order !== null);
+        
+        console.log(`Processing ${validOrders.length} valid orders out of ${orders2Years.length} total`);
+        
+        if (validOrders.length > 0) {
+          await this._batchWrite(db, 'orders', validOrders, 'salesorder_id');
+        }
       }
-      
-      console.warn('⚠️ Order missing ID:', {
-        salesorder_number: order.salesorder_number,
-        customer_name: order.customer_name,
-        date: order.date
-      });
-      return null;
-    })
-    .filter(order => order !== null);
-  
-  console.log(`Processing ${validOrders.length} valid orders out of ${orders2Years.length} total`);
-  
-  if (validOrders.length > 0) {
-    await this._batchWrite(db, 'orders', validOrders, 'salesorder_id');
-  }
-
-}
       
       // Get 2 years of invoices
       console.log('📄 Fetching 2 years of invoices...');
@@ -336,98 +431,98 @@ if (orders2Years.length > 0) {
    * Helper function to write data in batches
    */
   async _batchWrite(db, collectionName, dataArray, idKey) {
-  if (!dataArray || dataArray.length === 0) {
-    console.log(`No data to write for ${collectionName}, skipping.`);
-    return;
-  }
+    if (!dataArray || dataArray.length === 0) {
+      console.log(`No data to write for ${collectionName}, skipping.`);
+      return;
+    }
 
-  const collectionRef = db.collection(collectionName);
-  const BATCH_SIZE = 400;
-  const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024;
-  
-  let currentBatch = db.batch();
-  let currentBatchSize = 0;
-  let currentPayloadSize = 0;
-  let batchCount = 0;
-  let skippedCount = 0;
-  
-  // Helper to clean undefined values
-  const cleanUndefined = (obj) => {
-    return JSON.parse(JSON.stringify(obj, (key, value) => 
-      value === undefined ? null : value
-    ));
-  };
-  
-  for (const item of dataArray) {
-    const docId = item[idKey];
+    const collectionRef = db.collection(collectionName);
+    const BATCH_SIZE = 400;
+    const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024;
     
-    // More robust check for valid document ID
-    if (!docId || docId === '' || docId === null || docId === undefined) {
-      console.warn(`⚠️ Skipping document with invalid ID in ${collectionName}:`, { 
-        idKey, 
-        idValue: docId,
-        itemKeys: Object.keys(item).slice(0, 5) // Show first 5 keys for debugging
-      });
-      skippedCount++;
-      continue;
-    }
+    let currentBatch = db.batch();
+    let currentBatchSize = 0;
+    let currentPayloadSize = 0;
+    let batchCount = 0;
+    let skippedCount = 0;
     
-    // Ensure docId is a string and trim whitespace
-    const cleanDocId = String(docId).trim();
+    // Helper to clean undefined values
+    const cleanUndefined = (obj) => {
+      return JSON.parse(JSON.stringify(obj, (key, value) => 
+        value === undefined ? null : value
+      ));
+    };
     
-    if (!cleanDocId) {
-      console.warn(`⚠️ Skipping document with empty ID after cleaning in ${collectionName}`);
-      skippedCount++;
-      continue;
-    }
-    
-    try {
-      const docRef = collectionRef.doc(cleanDocId);
-      const itemWithMetadata = {
-        ...item,
-        _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
-        _syncSource: 'zoho_api'
-      };
+    for (const item of dataArray) {
+      const docId = item[idKey];
       
-      // Clean undefined values before writing
-      const cleanedItem = cleanUndefined(itemWithMetadata);
-      
-      // Estimate document size
-      const itemSize = JSON.stringify(cleanedItem).length;
-      
-      // Check if we need to commit current batch
-      if (currentBatchSize >= BATCH_SIZE || currentPayloadSize + itemSize > MAX_PAYLOAD_SIZE) {
-        await currentBatch.commit();
-        batchCount++;
-        console.log(`  Committed batch ${batchCount} with ${currentBatchSize} documents`);
-        
-        currentBatch = db.batch();
-        currentBatchSize = 0;
-        currentPayloadSize = 0;
+      // More robust check for valid document ID
+      if (!docId || docId === '' || docId === null || docId === undefined) {
+        console.warn(`⚠️ Skipping document with invalid ID in ${collectionName}:`, { 
+          idKey, 
+          idValue: docId,
+          itemKeys: Object.keys(item).slice(0, 5) // Show first 5 keys for debugging
+        });
+        skippedCount++;
+        continue;
       }
       
-      currentBatch.set(docRef, cleanedItem, { merge: true });
-      currentBatchSize++;
-      currentPayloadSize += itemSize;
+      // Ensure docId is a string and trim whitespace
+      const cleanDocId = String(docId).trim();
       
-    } catch (error) {
-      console.error(`❌ Error processing document ${cleanDocId} in ${collectionName}:`, error.message);
-      skippedCount++;
+      if (!cleanDocId) {
+        console.warn(`⚠️ Skipping document with empty ID after cleaning in ${collectionName}`);
+        skippedCount++;
+        continue;
+      }
+      
+      try {
+        const docRef = collectionRef.doc(cleanDocId);
+        const itemWithMetadata = {
+          ...item,
+          _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+          _syncSource: 'zoho_api'
+        };
+        
+        // Clean undefined values before writing
+        const cleanedItem = cleanUndefined(itemWithMetadata);
+        
+        // Estimate document size
+        const itemSize = JSON.stringify(cleanedItem).length;
+        
+        // Check if we need to commit current batch
+        if (currentBatchSize >= BATCH_SIZE || currentPayloadSize + itemSize > MAX_PAYLOAD_SIZE) {
+          await currentBatch.commit();
+          batchCount++;
+          console.log(`  Committed batch ${batchCount} with ${currentBatchSize} documents`);
+          
+          currentBatch = db.batch();
+          currentBatchSize = 0;
+          currentPayloadSize = 0;
+        }
+        
+        currentBatch.set(docRef, cleanedItem, { merge: true });
+        currentBatchSize++;
+        currentPayloadSize += itemSize;
+        
+      } catch (error) {
+        console.error(`❌ Error processing document ${cleanDocId} in ${collectionName}:`, error.message);
+        skippedCount++;
+      }
+    }
+    
+    // Commit remaining items
+    if (currentBatchSize > 0) {
+      await currentBatch.commit();
+      batchCount++;
+    }
+    
+    const processedCount = dataArray.length - skippedCount;
+    console.log(`✅ Synced ${processedCount} documents to '${collectionName}' in ${batchCount} batches`);
+    if (skippedCount > 0) {
+      console.log(`⚠️ Skipped ${skippedCount} documents with invalid IDs`);
     }
   }
-  
-  // Commit remaining items
-  if (currentBatchSize > 0) {
-    await currentBatch.commit();
-    batchCount++;
-  }
-  
-  const processedCount = dataArray.length - skippedCount;
-  console.log(`✅ Synced ${processedCount} documents to '${collectionName}' in ${batchCount} batches`);
-  if (skippedCount > 0) {
-    console.log(`⚠️ Skipped ${skippedCount} documents with invalid IDs`);
-  }
-}
   
   /**
    * Run data normalization after sync
@@ -446,7 +541,7 @@ if (orders2Years.length > 0) {
 
   /**
    * HIGH FREQUENCY SYNC - Every 15 minutes
-   * Syncs today's data only
+   * Syncs only new/modified data
    */
   async highFrequencySync() {
     const jobType = 'high-frequency';
@@ -461,31 +556,41 @@ if (orders2Years.length > 0) {
     const db = admin.firestore();
 
     try {
-      console.log('🔄 Starting high frequency sync (today\'s data)...');
+      console.log('🔄 Starting high frequency sync (incremental)...');
       
-      // Get today's sales orders
-      const todayOrders = await zohoReportsService.getSalesOrders('today');
+      // Get last sync timestamp
+      const lastSync = await this.getLastSyncTimestamp('high_frequency');
+      const syncParams = lastSync ? { 
+        modifiedSince: lastSync.toISOString() 
+      } : { 
+        dateRange: 'today' 
+      };
       
-      if (todayOrders.length > 0) {
-        const ordersData = todayOrders.map(order => ({
-          ...order,
-          salesorder_id: order.salesorder_id,
-          date: order.date,
-          created_at: order.date,
-          last_modified: admin.firestore.FieldValue.serverTimestamp()
-        }));
+      console.log(`Syncing records modified since: ${lastSync || 'beginning of today'}`);
+      
+      // Get orders modified since last sync
+      const orders = await zohoReportsService.getSalesOrdersModified 
+        ? await zohoReportsService.getSalesOrdersModified(syncParams)
+        : await zohoReportsService.getSalesOrders('today');
+      
+      if (orders.length > 0) {
+        await this._batchWrite(db, 'orders', orders, 'salesorder_id');
         
-        await this._batchWrite(db, 'orders', ordersData, 'salesorder_id');
+        // Sync transactions for these orders
+        await this.syncSalesTransactionsForOrders(orders);
+        
+        // Enrich normalized orders with line items
+        await this.enrichNormalizedOrdersWithLineItems(orders.map(o => o.salesorder_id));
       }
       
-      // Get today's invoices
-      const todayInvoices = await zohoReportsService.getInvoices('today');
+      // Get invoices modified since last sync
+      const invoices = await zohoReportsService.getInvoicesModified
+        ? await zohoReportsService.getInvoicesModified(syncParams)
+        : await zohoReportsService.getInvoices('today');
       
-      const allInvoices = [
-        ...todayInvoices.all,
-        ...todayInvoices.outstanding,
-        ...todayInvoices.overdue
-      ];
+      const allInvoices = Array.isArray(invoices) 
+        ? invoices 
+        : [...invoices.all, ...invoices.outstanding, ...invoices.overdue];
       
       const uniqueInvoices = Array.from(
         new Map(allInvoices.map(inv => [inv.invoice_id, inv])).values()
@@ -495,11 +600,11 @@ if (orders2Years.length > 0) {
         await this.syncAndNormalizeInvoices(uniqueInvoices);
       }
       
-      // Sync today's transactions
-      await this.syncSalesTransactions('today');
-      
-      // Run normalization for today's data
+      // Run normalization for new data
       await this.runNormalization();
+      
+      // Update last sync timestamp on success
+      await this.updateLastSyncTimestamp('high_frequency');
       
       const duration = Date.now() - startTime;
       this.lastSync.high = new Date();
@@ -509,7 +614,7 @@ if (orders2Years.length > 0) {
         success: true, 
         duration, 
         recordsProcessed: {
-          orders: todayOrders.length,
+          orders: orders.length,
           invoices: uniqueInvoices.length
         },
         normalized: true
@@ -542,6 +647,10 @@ if (orders2Years.length > 0) {
     try {
       console.log('🔄 Starting medium frequency sync (last 7 days)...');
       
+      // Check if we should do incremental sync
+      const lastSync = await this.getLastSyncTimestamp('medium_frequency');
+      const useIncremental = lastSync && (new Date() - lastSync) < 7 * 24 * 60 * 60 * 1000;
+      
       // Get last 7 days of orders
       const orders = await zohoReportsService.getSalesOrders('7_days');
       
@@ -555,6 +664,9 @@ if (orders2Years.length > 0) {
         }));
         
         await this._batchWrite(db, 'orders', ordersData, 'salesorder_id');
+        
+        // Enrich new orders
+        await this.enrichNormalizedOrdersWithLineItems(orders.map(o => o.salesorder_id));
       }
       
       // Get last 7 days of invoices
@@ -592,6 +704,9 @@ if (orders2Years.length > 0) {
       
       // Run normalization
       await this.runNormalization();
+      
+      // Update last sync timestamp
+      await this.updateLastSyncTimestamp('medium_frequency');
       
       const duration = Date.now() - startTime;
       this.lastSync.medium = new Date();
@@ -651,6 +766,9 @@ if (orders2Years.length > 0) {
       // Write data to collections
       if (orders30Days.length > 0) {
         await this._batchWrite(db, 'orders', orders30Days, 'salesorder_id');
+        
+        // Enrich orders
+        await this.enrichNormalizedOrdersWithLineItems(orders30Days.map(o => o.salesorder_id));
       }
       
       const uniqueInvoices = Array.from(
@@ -685,6 +803,9 @@ if (orders2Years.length > 0) {
         normalized: true,
         duration: Date.now() - startTime
       });
+      
+      // Update last sync timestamp
+      await this.updateLastSyncTimestamp('low_frequency');
       
       const duration = Date.now() - startTime;
       this.lastSync.low = new Date();
@@ -758,6 +879,9 @@ if (orders2Years.length > 0) {
       
       // Run normalization
       await this.runNormalization();
+      
+      // Update last sync timestamp
+      await this.updateLastSyncTimestamp('weekly_cleanup');
       
       const duration = Date.now() - startTime;
       
