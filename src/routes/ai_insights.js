@@ -8,6 +8,7 @@ import {
   generateDrillDownInsights,
   generateComparativeInsights,
   generateSeasonalInsights
+  generateCustomerInsights // Add this import
 } from '../services/aiAnalyticsService.js';
 
 const router = express.Router();
@@ -425,6 +426,32 @@ router.get('/test', (req, res) => {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
+});
+
+router.post('/customer-insights', async (req, res) => {
+  try {
+    const { customer, orderHistory, userRole, agentId } = req.body;
+    
+    // Generate insights
+    const insights = await generateCustomerInsights(
+      customer,
+      orderHistory,
+      userRole,
+      agentId
+    );
+    
+    res.json({
+      success: true,
+      data: insights
+    });
+  } catch (error) {
+    console.error('❌ Error generating customer insights:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate customer insights',
+      error: error.message
+    });
+  }
 });
 
 /**
