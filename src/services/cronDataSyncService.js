@@ -135,14 +135,41 @@ class CronDataSyncService {
       console.log('📦 Syncing all products...');
       const productSyncResult = await syncInventory(true);
       
-      // Get 2 years of sales orders
-      console.log('📊 Fetching 2 years of sales orders...');
-      const orders2Years = await zohoReportsService.getSalesOrders('2_years');
-      console.log(`Found ${orders2Years.length} orders`);
+console.log('📊 Fetching 2 years of sales orders...');
+const orders2Years = await zohoReportsService.getSalesOrders('2_years');
+console.log(`Found ${orders2Years.length} orders`);
+
+if (orders2Years.length > 0) {
+  // Filter out orders without valid IDs and ensure proper ID field
+  const validOrders = orders2Years
+    .map(order => {
+      // Try to find a valid ID from multiple possible fields
+      const orderId = order.salesorder_id || order.id || order.order_id;
       
-      if (orders2Years.length > 0) {
-        await this._batchWrite(db, 'orders', orders2Years, 'salesorder_id');
+      // Only include orders with valid IDs
+      if (orderId && String(orderId).trim()) {
+        return {
+          ...order,
+          salesorder_id: String(orderId).trim()
+        };
       }
+      
+      console.warn('⚠️ Order missing ID:', {
+        salesorder_number: order.salesorder_number,
+        customer_name: order.customer_name,
+        date: order.date
+      });
+      return null;
+    })
+    .filter(order => order !== null);
+  
+  console.log(`Processing ${validOrders.length} valid orders out of ${orders2Years.length} total`);
+  
+  if (validOrders.length > 0) {
+    await this._batchWrite(db, 'orders', validOrders, 'salesorder_id');
+  }
+
+}
       
       // Get 2 years of invoices
       console.log('📄 Fetching 2 years of invoices...');
@@ -309,33 +336,64 @@ class CronDataSyncService {
    * Helper function to write data in batches
    */
   async _batchWrite(db, collectionName, dataArray, idKey) {
-    if (!dataArray || dataArray.length === 0) {
-      console.log(`No data to write for ${collectionName}, skipping.`);
-      return;
-    }
+  if (!dataArray || dataArray.length === 0) {
+    console.log(`No data to write for ${collectionName}, skipping.`);
+    return;
+  }
 
-    const collectionRef = db.collection(collectionName);
-    const BATCH_SIZE = 400; // Reduced from 499 to be safer
-    const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024; // 5MB limit
+  const collectionRef = db.collection(collectionName);
+  const BATCH_SIZE = 400;
+  const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024;
+  
+  let currentBatch = db.batch();
+  let currentBatchSize = 0;
+  let currentPayloadSize = 0;
+  let batchCount = 0;
+  let skippedCount = 0;
+  
+  // Helper to clean undefined values
+  const cleanUndefined = (obj) => {
+    return JSON.parse(JSON.stringify(obj, (key, value) => 
+      value === undefined ? null : value
+    ));
+  };
+  
+  for (const item of dataArray) {
+    const docId = item[idKey];
     
-    let currentBatch = db.batch();
-    let currentBatchSize = 0;
-    let currentPayloadSize = 0;
-    let batchCount = 0;
+    // More robust check for valid document ID
+    if (!docId || docId === '' || docId === null || docId === undefined) {
+      console.warn(`⚠️ Skipping document with invalid ID in ${collectionName}:`, { 
+        idKey, 
+        idValue: docId,
+        itemKeys: Object.keys(item).slice(0, 5) // Show first 5 keys for debugging
+      });
+      skippedCount++;
+      continue;
+    }
     
-    for (const item of dataArray) {
-      const docId = item[idKey];
-      if (!docId) continue;
-      
-      const docRef = collectionRef.doc(docId.toString());
+    // Ensure docId is a string and trim whitespace
+    const cleanDocId = String(docId).trim();
+    
+    if (!cleanDocId) {
+      console.warn(`⚠️ Skipping document with empty ID after cleaning in ${collectionName}`);
+      skippedCount++;
+      continue;
+    }
+    
+    try {
+      const docRef = collectionRef.doc(cleanDocId);
       const itemWithMetadata = {
         ...item,
         _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
         _syncSource: 'zoho_api'
       };
       
+      // Clean undefined values before writing
+      const cleanedItem = cleanUndefined(itemWithMetadata);
+      
       // Estimate document size
-      const itemSize = JSON.stringify(itemWithMetadata).length;
+      const itemSize = JSON.stringify(cleanedItem).length;
       
       // Check if we need to commit current batch
       if (currentBatchSize >= BATCH_SIZE || currentPayloadSize + itemSize > MAX_PAYLOAD_SIZE) {
@@ -348,19 +406,28 @@ class CronDataSyncService {
         currentPayloadSize = 0;
       }
       
-      currentBatch.set(docRef, itemWithMetadata, { merge: true });
+      currentBatch.set(docRef, cleanedItem, { merge: true });
       currentBatchSize++;
       currentPayloadSize += itemSize;
+      
+    } catch (error) {
+      console.error(`❌ Error processing document ${cleanDocId} in ${collectionName}:`, error.message);
+      skippedCount++;
     }
-    
-    // Commit remaining items
-    if (currentBatchSize > 0) {
-      await currentBatch.commit();
-      batchCount++;
-    }
-    
-    console.log(`✅ Synced ${dataArray.length} documents to '${collectionName}' in ${batchCount} batches`);
   }
+  
+  // Commit remaining items
+  if (currentBatchSize > 0) {
+    await currentBatch.commit();
+    batchCount++;
+  }
+  
+  const processedCount = dataArray.length - skippedCount;
+  console.log(`✅ Synced ${processedCount} documents to '${collectionName}' in ${batchCount} batches`);
+  if (skippedCount > 0) {
+    console.log(`⚠️ Skipped ${skippedCount} documents with invalid IDs`);
+  }
+}
   
   /**
    * Run data normalization after sync
