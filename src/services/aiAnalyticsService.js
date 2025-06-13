@@ -429,6 +429,94 @@ export async function generateComparativeInsights(currentData, previousData, com
   }
 }
 
+export async function generateCustomerInsights(customer, orderHistory, userRole, agentId) {
+  // Determine which context to use based on role
+  const baseContext = userRole === 'salesAgent' ? SALES_AGENT_CONTEXT : DM_BRANDS_CONTEXT;
+  
+  // Role-specific prompt additions
+  const roleSpecificInstructions = userRole === 'salesAgent' 
+    ? `
+      **CRITICAL REMINDER:** This is YOUR customer. Focus on:
+      - How to strengthen YOUR relationship with this specific customer
+      - Opportunities to increase sales to THIS customer
+      - Personalized strategies based on THEIR buying patterns
+      **Agent ID:** ${agentId || 'Not specified'}
+    `
+    : `
+      **ANALYSIS PERSPECTIVE:** As a brand manager, focus on:
+      - Customer value and profitability analysis
+      - Brand preferences and opportunities
+      - Strategic importance to DM Brands
+    `;
+
+  const prompt = `
+    ${baseContext}
+    
+    **CUSTOMER DEEP DIVE ANALYSIS**
+    
+    ${roleSpecificInstructions}
+    
+    **Customer Profile:**
+    ${JSON.stringify(customer, null, 2)}
+    
+    **Order History (if available):**
+    ${JSON.stringify(orderHistory || 'No order history provided', null, 2)}
+    
+    **TASK:** Generate comprehensive customer insights as JSON:
+    
+    1. **"customerProfile"**: 2-3 sentence overview of this customer's value and characteristics
+    
+    2. **"orderTrends"**: Analysis of their ordering patterns including:
+       - Frequency of orders
+       - Average order value trends
+       - Seasonal buying patterns
+       - Product/brand preferences
+    
+    3. **"opportunities"**: 3-4 specific opportunities to grow business with this customer
+    
+    4. **"riskFactors"**: Any risks or concerns (e.g., declining orders, overdue payments)
+    
+    5. **"recommendedActions"**: 3-5 specific, actionable recommendations for ${userRole === 'salesAgent' ? 'YOUR next interaction with this customer' : 'managing this account'}
+    
+    6. **"relationshipStrategy"**: Long-term strategy for this customer relationship
+    
+    7. **"nextSteps"**: Immediate next steps (within next 2 weeks)
+    
+    ${userRole === 'salesAgent' 
+      ? 'Make recommendations personal and actionable - what should YOU do next with THIS customer?'
+      : 'Focus on strategic account management and profitability optimization.'
+    }
+    
+    Respond with ONLY clean JSON - no formatting.
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    const jsonResponse = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    return JSON.parse(jsonResponse);
+
+  } catch (error) {
+    console.error(`❌ Error generating customer insights:`, error);
+    return {
+      customerProfile: "Customer analysis temporarily unavailable.",
+      orderTrends: {
+        frequency: "Analysis pending",
+        averageValue: "Unknown",
+        seasonalPatterns: "To be determined",
+        brandPreferences: []
+      },
+      opportunities: ["Analysis unavailable - please try again"],
+      riskFactors: ["Unable to assess at this time"],
+      recommendedActions: ["Please retry analysis"],
+      relationshipStrategy: "Strategy pending",
+      nextSteps: ["Retry customer analysis"]
+    };
+  }
+}
+
 /**
  * Generate seasonal insights for planning
  */
