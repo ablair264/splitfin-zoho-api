@@ -44,6 +44,18 @@ router.post('/high-frequency', validateCronRequest, async (req, res) => {
   }
 });
 
+router.post('/sync-two-years', async (req, res) => {
+  try {
+    const result = await cronDataSyncService.syncTwoYearsData();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
 /**
  * MEDIUM FREQUENCY SYNC - Every 2 hours
  */

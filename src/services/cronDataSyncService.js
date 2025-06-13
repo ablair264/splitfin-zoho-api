@@ -13,6 +13,239 @@ class CronDataSyncService {
   }
   
   /**
+   * Sync and normalize invoices to normalized_invoices collection
+   */
+  async syncAndNormalizeInvoices(invoices) {
+    console.log('🔄 Syncing and normalizing invoices...');
+    try {
+      const db = admin.firestore();
+      
+      // Get all users to map salesperson_id to Firebase UID
+      const usersSnapshot = await db.collection('users').get();
+      const usersByZohoId = new Map();
+      
+      usersSnapshot.forEach(doc => {
+        const userData = doc.data();
+        if (userData.zohospID) {
+          usersByZohoId.set(userData.zohospID, {
+            uid: doc.id,
+            ...userData
+          });
+        }
+      });
+      
+      // Process invoices
+      const normalizedInvoices = invoices.map(invoice => {
+        // Map salesperson_id to Firebase UID
+        let salesAgentUid = null;
+        if (invoice.salesperson_id && usersByZohoId.has(invoice.salesperson_id)) {
+          salesAgentUid = usersByZohoId.get(invoice.salesperson_id).uid;
+        }
+        
+        // Calculate days overdue
+        let daysOverdue = 0;
+        if (invoice.status !== 'paid' && invoice.due_date) {
+          const dueDate = new Date(invoice.due_date);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          dueDate.setHours(0, 0, 0, 0);
+          
+          if (dueDate < today) {
+            daysOverdue = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
+          }
+        }
+        
+        return {
+          // Core invoice fields
+          invoice_id: invoice.invoice_id,
+          invoice_number: invoice.invoice_number,
+          
+          // Financial fields
+          balance: parseFloat(invoice.balance || 0),
+          total: parseFloat(invoice.total || 0),
+          
+          // Customer fields
+          customer_id: invoice.customer_id,
+          customer_name: invoice.customer_name,
+          company_name: invoice.company_name || invoice.customer_name,
+          email: invoice.email || invoice.customer_email || '',
+          cf_vat_number_unformatted: invoice.cf_vat_number_unformatted || '',
+          
+          // Status and dates
+          status: invoice.status,
+          due_date: invoice.due_date,
+          daysOverdue: daysOverdue,
+          last_payment_date: invoice.last_payment_date || null,
+          last_reminder_sent_date: invoice.last_reminder_sent_date || null,
+          
+          // Communication status
+          is_emailed: invoice.is_emailed || false,
+          is_viewed_by_client: invoice.is_viewed_by_client || false,
+          
+          // Salesperson info
+          salesperson_id: invoice.salesperson_id || null,
+          salesAgent_uid: salesAgentUid,
+          
+          // Additional fields
+          invoice_url: invoice.invoice_url || '',
+          date: invoice.date || invoice.invoice_date,
+          
+          // Metadata
+          _source: 'zoho_api',
+          _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+          _normalized_at: admin.firestore.FieldValue.serverTimestamp()
+        };
+      });
+      
+      // Write to normalized_invoices collection
+      await this._batchWrite(db, 'normalized_invoices', normalizedInvoices, 'invoice_id');
+      
+      // Also write to regular invoices collection for backward compatibility
+      await this._batchWrite(db, 'invoices', invoices, 'invoice_id');
+      
+      console.log(`✅ Normalized ${normalizedInvoices.length} invoices`);
+      return { success: true, count: normalizedInvoices.length };
+      
+    } catch (error) {
+      console.error('❌ Invoice normalization failed:', error);
+      return { success: false, error: error.message };
+    }
+  }
+  
+  /**
+   * ONE-OFF: Sync all data going back 2 years
+   */
+  async syncTwoYearsData() {
+    const jobType = 'two-years-sync';
+    
+    if (this.isRunning.get(jobType)) {
+      console.log('⚠️ Two years sync already running, skipping...');
+      return { success: false, message: 'Job already running' };
+    }
+
+    this.isRunning.set(jobType, true);
+    const startTime = Date.now();
+    const db = admin.firestore();
+
+    try {
+      console.log('🔄 Starting 2-year historical data sync...');
+      console.log('⚠️  This may take a while, please be patient...');
+      
+      // First sync all products
+      console.log('📦 Syncing all products...');
+      const productSyncResult = await syncInventory(true);
+      
+      // Get 2 years of sales orders
+      console.log('📊 Fetching 2 years of sales orders...');
+      const orders2Years = await zohoReportsService.getSalesOrders('2_years');
+      console.log(`Found ${orders2Years.length} orders`);
+      
+      if (orders2Years.length > 0) {
+        await this._batchWrite(db, 'orders', orders2Years, 'salesorder_id');
+      }
+      
+      // Get 2 years of invoices
+      console.log('📄 Fetching 2 years of invoices...');
+      const invoices2Years = await zohoReportsService.getInvoices('2_years');
+      const allInvoices = [
+        ...invoices2Years.all,
+        ...invoices2Years.outstanding,
+        ...invoices2Years.overdue,
+        ...invoices2Years.paid
+      ];
+      
+      // Remove duplicates
+      const uniqueInvoices = Array.from(
+        new Map(allInvoices.map(inv => [inv.invoice_id, inv])).values()
+      );
+      console.log(`Found ${uniqueInvoices.length} unique invoices`);
+      
+      // Sync and normalize invoices
+      await this.syncAndNormalizeInvoices(uniqueInvoices);
+      
+      // Get 2 years of purchase orders
+      console.log('📋 Fetching 2 years of purchase orders...');
+      const purchaseOrders2Years = await zohoReportsService.getPurchaseOrders('2_years');
+      console.log(`Found ${purchaseOrders2Years.length} purchase orders`);
+      
+      if (purchaseOrders2Years.length > 0) {
+        await this._batchWrite(db, 'purchase_orders', purchaseOrders2Years, 'purchaseorder_id');
+      }
+      
+      // Sync 2 years of transactions
+      console.log('💰 Syncing 2 years of sales transactions...');
+      const transactionSyncResult = await this.syncSalesTransactions('2_years');
+      
+      // Get all customers
+      console.log('👥 Fetching all customers...');
+      const customers = await zohoReportsService.getCustomerAnalytics('2_years');
+      if (customers.customers && customers.customers.length > 0) {
+        const customerData = customers.customers.map(customer => ({
+          customer_id: customer.id,
+          name: customer.name,
+          email: customer.email,
+          totalSpent: customer.totalSpent,
+          orderCount: customer.orderCount,
+          lastOrderDate: customer.lastOrderDate,
+          firstOrderDate: customer.firstOrderDate,
+          segment: customer.segment,
+          agentId: customer.agentId,
+          last_modified: admin.firestore.FieldValue.serverTimestamp()
+        }));
+        
+        await this._batchWrite(db, 'customers', customerData, 'customer_id');
+      }
+      
+      // Sync customer ID mappings
+      console.log('🔗 Syncing customer ID mappings...');
+      const customerIdSyncResult = await syncInventoryCustomerIds();
+      
+      // Run full normalization
+      console.log('🔄 Running data normalization...');
+      await this.runNormalization();
+      
+      // Update sync metadata
+      await db.collection('sync_metadata').doc('two_years_sync').set({
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        completedAt: new Date().toISOString(),
+        orders: orders2Years.length,
+        invoices: uniqueInvoices.length,
+        purchaseOrders: purchaseOrders2Years.length,
+        transactions: transactionSyncResult.count,
+        customers: customers.customers?.length || 0,
+        normalized: true,
+        duration: Date.now() - startTime
+      });
+      
+      const duration = Date.now() - startTime;
+      const durationMinutes = Math.floor(duration / 60000);
+      const durationSeconds = Math.floor((duration % 60000) / 1000);
+      
+      console.log(`✅ Two years sync completed in ${durationMinutes}m ${durationSeconds}s`);
+      return { 
+        success: true, 
+        duration,
+        recordsProcessed: {
+          products: productSyncResult.stats,
+          orders: orders2Years.length,
+          invoices: uniqueInvoices.length,
+          purchaseOrders: purchaseOrders2Years.length,
+          transactions: transactionSyncResult.count,
+          customers: customers.customers?.length || 0,
+          customerIdsMapped: customerIdSyncResult.processed
+        },
+        normalized: true
+      };
+      
+    } catch (error) {
+      console.error('❌ Two years sync failed:', error);
+      return { success: false, error: error.message };
+    } finally {
+      this.isRunning.set(jobType, false);
+    }
+  }
+  
+  /**
    * Sync sales transactions (line items) to sales_transactions collection
    */
   async syncSalesTransactions(dateRange = '30_days') {
@@ -192,7 +425,7 @@ class CronDataSyncService {
       );
       
       if (uniqueInvoices.length > 0) {
-        await this._batchWrite(db, 'invoices', uniqueInvoices, 'invoice_id');
+        await this.syncAndNormalizeInvoices(uniqueInvoices);
       }
       
       // Sync today's transactions
@@ -265,7 +498,7 @@ class CronDataSyncService {
       );
       
       if (uniqueInvoices.length > 0) {
-        await this._batchWrite(db, 'invoices', uniqueInvoices, 'invoice_id');
+        await this.syncAndNormalizeInvoices(uniqueInvoices);
       }
       
       // Sync recent customer updates
@@ -353,8 +586,12 @@ class CronDataSyncService {
         await this._batchWrite(db, 'orders', orders30Days, 'salesorder_id');
       }
       
-      if (invoices30Days.all.length > 0) {
-        await this._batchWrite(db, 'invoices', invoices30Days.all, 'invoice_id');
+      const uniqueInvoices = Array.from(
+        new Map(invoices30Days.all.map(inv => [inv.invoice_id, inv])).values()
+      );
+      
+      if (uniqueInvoices.length > 0) {
+        await this.syncAndNormalizeInvoices(uniqueInvoices);
       }
       
       if (purchaseOrders30Days.length > 0) {
@@ -375,7 +612,7 @@ class CronDataSyncService {
       await db.collection('sync_metadata').doc('last_daily_sync').set({
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
         orders: orders30Days.length,
-        invoices: invoices30Days.all.length,
+        invoices: uniqueInvoices.length,
         purchaseOrders: purchaseOrders30Days.length,
         transactions: transactionSyncResult.count,
         normalized: true,
@@ -392,7 +629,7 @@ class CronDataSyncService {
         recordsProcessed: {
           products: productSyncResult.stats,
           orders: orders30Days.length,
-          invoices: invoices30Days.all.length,
+          invoices: uniqueInvoices.length,
           purchaseOrders: purchaseOrders30Days.length,
           transactions: transactionSyncResult.count,
           customerIdsMapped: customerIdSyncResult.processed
@@ -440,8 +677,12 @@ class CronDataSyncService {
         await this._batchWrite(db, 'orders', ordersQuarter, 'salesorder_id');
       }
       
-      if (invoicesQuarter.all.length > 0) {
-        await this._batchWrite(db, 'invoices', invoicesQuarter.all, 'invoice_id');
+      const uniqueInvoices = Array.from(
+        new Map(invoicesQuarter.all.map(inv => [inv.invoice_id, inv])).values()
+      );
+      
+      if (uniqueInvoices.length > 0) {
+        await this.syncAndNormalizeInvoices(uniqueInvoices);
       }
       
       if (purchaseOrdersQuarter.length > 0) {
@@ -459,7 +700,7 @@ class CronDataSyncService {
         duration,
         recordsProcessed: {
           orders: ordersQuarter.length,
-          invoices: invoicesQuarter.all.length,
+          invoices: uniqueInvoices.length,
           purchaseOrders: purchaseOrdersQuarter.length
         }
       };
@@ -509,7 +750,12 @@ class CronDataSyncService {
       const db = admin.firestore();
       
       await this._batchWrite(db, 'orders', orders, 'salesorder_id');
-      await this._batchWrite(db, 'invoices', invoices.all, 'invoice_id');
+      
+      const uniqueInvoices = Array.from(
+        new Map(invoices.all.map(inv => [inv.invoice_id, inv])).values()
+      );
+      
+      await this.syncAndNormalizeInvoices(uniqueInvoices);
       await this._batchWrite(db, 'purchase_orders', purchaseOrders, 'purchaseorder_id');
       
       await this.syncSalesTransactions(dateRange);
@@ -519,7 +765,7 @@ class CronDataSyncService {
         success: true,
         recordsProcessed: {
           orders: orders.length,
-          invoices: invoices.all.length,
+          invoices: uniqueInvoices.length,
           purchaseOrders: purchaseOrders.length
         }
       };
