@@ -137,6 +137,7 @@ router.get('/health', (req, res) => {
       requestsPerHour: AI_REQUEST_LIMIT,
       windowMinutes: AI_WINDOW_MS / 1000 / 60
     },
+    
 endpoints: [
   'GET /api/ai-insights/health',
   'POST /api/ai-insights/card-insights',
@@ -150,7 +151,6 @@ endpoints: [
   'POST /api/ai-insights/validate-adjustments',        // NEW
   'GET /api/ai-insights/usage-stats'
 ],
-    ],
     timestamp: new Date().toISOString()
   });
 });
