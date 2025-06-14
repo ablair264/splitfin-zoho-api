@@ -2,6 +2,7 @@
 import axios from 'axios';
 import admin from 'firebase-admin';
 import { getAccessToken } from '../api/zoho.js';
+import zohoInventoryService from './zohoInventoryService.js';
 
 const ZOHO_CONFIG = {
   baseUrls: {
@@ -18,8 +19,6 @@ const ZOHO_CONFIG = {
 
 class ZohoReportsService {
   constructor() {
-    this.cache = new Map();
-    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes
   }
 
   /**
@@ -481,50 +480,8 @@ salesOrders.forEach(order => {
   /**
    * Get sales orders from Zoho Inventory
    */
-  async getSalesOrders(dateRange = '30_days', customDateRange = null, agentId = null) {
-    try {
-      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-      
-      const params = {
-        organization_id: ZOHO_CONFIG.orgId,
-        date_start: startDate.toISOString().split('T')[0],
-        date_end: endDate.toISOString().split('T')[0]
-      };
-
-      if (agentId) {
-        params.salesperson_id = agentId;
-      }
-
-      // Fetch the list of orders first
-      const salesOrderList = await this.fetchPaginatedData(
-        `${ZOHO_CONFIG.baseUrls.inventory}/salesorders`,
-        params,
-        'salesorders'
-      );
-      
-      if (!salesOrderList || salesOrderList.length === 0) {
-        return [];
-      }
-
-      console.log(`Found ${salesOrderList.length} orders. Fetching details...`);
-
-      // Fetch full details for each order
-      const detailedOrders = [];
-      for (const orderHeader of salesOrderList) {
-        const orderDetail = await this.getSalesOrderDetail(orderHeader.salesorder_id);
-        if (orderDetail) {
-          detailedOrders.push(orderDetail);
-        }
-        await new Promise(resolve => setTimeout(resolve, 50)); 
-      }
-
-      console.log(`✅ Successfully fetched details for ${detailedOrders.length} orders.`);
-      return detailedOrders;
-
-    } catch (error) {
-      console.error('❌ Error fetching sales orders:', error);
-      throw error;
-    }
+   async getSalesOrders(dateRange, customDateRange, agentId) {
+    return zohoInventoryService.getSalesOrders(dateRange, customDateRange, agentId);
   }
   
   /**
@@ -701,48 +658,9 @@ salesOrders.forEach(order => {
     }
   }
 
-async getPurchaseOrders(dateRange = '30_days', customDateRange = null) {
-  try {
-    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-    
-    const params = {
-      organization_id: ZOHO_CONFIG.orgId,
-      date_start: startDate.toISOString().split('T')[0],
-      date_end: endDate.toISOString().split('T')[0]
-    };
-
-    // Fetch the list of purchase orders first
-    const purchaseOrderList = await this.fetchPaginatedData(
-      `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders`, 
-      params,
-      'purchaseorders'
-    );
-
-    if (!purchaseOrderList || purchaseOrderList.length === 0) {
-      return [];
-    }
-
-    console.log(`Found ${purchaseOrderList.length} purchase orders. Fetching details...`);
-
-    // Fetch full details for each purchase order
-    const detailedPurchaseOrders = [];
-    for (const poHeader of purchaseOrderList) {
-      const poDetail = await this.getPurchaseOrderDetail(poHeader.purchaseorder_id);
-      if (poDetail) {
-        detailedPurchaseOrders.push(poDetail);
-      }
-      await new Promise(resolve => setTimeout(resolve, 50)); // Rate limiting
-    }
-
-    console.log(`✅ Successfully fetched details for ${detailedPurchaseOrders.length} purchase orders.`);
-    return detailedPurchaseOrders;
-
-  } catch (error) {
-    console.error('❌ Error fetching purchase orders:', error);
-    throw error;
+ async getPurchaseOrders(dateRange, customDateRange) {
+    return zohoInventoryService.getPurchaseOrders(dateRange, customDateRange);
   }
-}
-
 /**
  * Get purchase order detail with line items
  */
