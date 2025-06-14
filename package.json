@@ -25,6 +25,7 @@
     "express": "^5.1.0",
     "firebase-admin": "^13.4.0",
     "google-ads-api": "^20.0.1",
+    "google-trends-api": "^4.9.2",
     "node-cache": "^5.1.2",
     "node-cron": "^4.0.7",
     "p-limit": "^6.2.0",
