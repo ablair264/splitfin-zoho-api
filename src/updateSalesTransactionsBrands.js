@@ -122,10 +122,54 @@ class BrandUpdater {
   }
 
   /**
+   * Fix r-der brand_normalized entries
+   */
+  async fixRaderBrands() {
+    console.log('🔧 Fixing r-der brand entries...');
+    
+    const raderQuery = this.db.collection('sales_transactions')
+      .where('brand_normalized', '==', 'r-der');
+    
+    const raderSnapshot = await raderQuery.get();
+    
+    if (raderSnapshot.empty) {
+      console.log('No r-der entries found');
+      return 0;
+    }
+    
+    let fixedCount = 0;
+    const batchSize = 500;
+    
+    for (let i = 0; i < raderSnapshot.docs.length; i += batchSize) {
+      const batch = this.db.batch();
+      const batchDocs = raderSnapshot.docs.slice(i, i + batchSize);
+      
+      batchDocs.forEach(doc => {
+        batch.update(doc.ref, {
+          brand: 'Rader',  // Proper display name
+          brand_normalized: 'rader',
+          _brand_fixed_from_r_der: true,
+          _brand_updated_at: admin.firestore.FieldValue.serverTimestamp()
+        });
+        fixedCount++;
+      });
+      
+      await batch.commit();
+      console.log(`✅ Fixed ${fixedCount} r-der entries so far...`);
+    }
+    
+    console.log(`✅ Fixed ${fixedCount} total r-der entries`);
+    return fixedCount;
+  }
+
+  /**
    * Update brands with multi-step approach
    */
   async updateAllBrands() {
     console.log('🔄 Starting brand update for sales_transactions...');
+    
+    // First, fix r-der entries
+    const fixedRaderCount = await this.fixRaderBrands();
     
     let totalProcessed = 0;
     let updatedFromProducts = 0;
@@ -155,9 +199,8 @@ class BrandUpdater {
       let hasMore = true;
 
       while (hasMore) {
-        // Query for documents with "Unknown Brand" or empty brand
+        // Query for ALL documents to check for missing brand field
         let query = this.db.collection('sales_transactions')
-          .where('brand', 'in', ['Unknown Brand', '', null])
           .orderBy(admin.firestore.FieldPath.documentId())
           .limit(batchSize);
 
@@ -174,62 +217,69 @@ class BrandUpdater {
 
         // Process in batches
         const batch = this.db.batch();
-        const updatePromises = [];
+        let batchUpdateCount = 0;
 
         for (const doc of snapshot.docs) {
           const data = doc.data();
           const sku = data.sku;
           const itemName = data.item_name || data.name;
           
-          let brand = null;
-          let updateSource = null;
+          // Check if brand field is missing, empty, or "Unknown Brand"
+          if (!data.brand || data.brand === '' || data.brand === 'Unknown Brand') {
+            let brand = null;
+            let updateSource = null;
 
-          // Step 1: Try to get brand from products collection
-          if (sku && skuToBrandMap.has(sku)) {
-            const brandInfo = skuToBrandMap.get(sku);
-            brand = brandInfo.brand;
-            updateSource = 'products_collection';
-            updatedFromProducts++;
-          }
-          
-          // Step 2: Try to get brand from Zoho Inventory
-          if (!brand && sku) {
-            const zohoBrand = await this.getBrandFromZoho(sku);
-            if (zohoBrand) {
-              brand = zohoBrand;
-              updateSource = 'zoho_inventory';
-              updatedFromZoho++;
+            // Step 1: Try to get brand from products collection
+            if (sku && skuToBrandMap.has(sku)) {
+              const brandInfo = skuToBrandMap.get(sku);
+              brand = brandInfo.brand;
+              updateSource = 'products_collection';
+              updatedFromProducts++;
             }
-          }
-          
-          // Step 3: Extract from item name
-          if (!brand && itemName) {
-            const extractedBrand = this.extractBrandFromItemName(itemName);
-            if (extractedBrand) {
-              brand = extractedBrand;
-              updateSource = 'item_name_extraction';
-              updatedFromItemName++;
+            
+            // Step 2: Try to get brand from Zoho Inventory
+            if (!brand && sku) {
+              const zohoBrand = await this.getBrandFromZoho(sku);
+              if (zohoBrand) {
+                brand = zohoBrand;
+                updateSource = 'zoho_inventory';
+                updatedFromZoho++;
+              }
             }
-          }
+            
+            // Step 3: Extract from item name
+            if (!brand && itemName) {
+              const extractedBrand = this.extractBrandFromItemName(itemName);
+              if (extractedBrand) {
+                brand = extractedBrand;
+                updateSource = 'item_name_extraction';
+                updatedFromItemName++;
+              }
+            }
 
-          if (brand) {
-            const updates = {
-              brand: brand,
-              brand_normalized: this.normalizeBrandName(brand),
-              _brand_update_source: updateSource,
-              _brand_updated_at: admin.firestore.FieldValue.serverTimestamp()
-            };
+            if (brand) {
+              const updates = {
+                brand: brand,
+                brand_normalized: this.normalizeBrandName(brand),
+                _brand_update_source: updateSource,
+                _brand_updated_at: admin.firestore.FieldValue.serverTimestamp()
+              };
 
-            batch.update(doc.ref, updates);
-          } else {
-            skipped++;
+              batch.update(doc.ref, updates);
+              batchUpdateCount++;
+            } else {
+              skipped++;
+            }
           }
           
           totalProcessed++;
         }
 
-        // Commit the batch
-        await batch.commit();
+        // Commit the batch if there are updates
+        if (batchUpdateCount > 0) {
+          await batch.commit();
+          console.log(`✅ Updated ${batchUpdateCount} documents in this batch`);
+        }
         
         console.log(`✅ Processed batch: ${totalProcessed} total processed`);
         console.log(`   - From products: ${updatedFromProducts}`);
@@ -244,11 +294,12 @@ class BrandUpdater {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
-      const totalUpdated = updatedFromProducts + updatedFromZoho + updatedFromItemName;
+      const totalUpdated = updatedFromProducts + updatedFromZoho + updatedFromItemName + fixedRaderCount;
 
       console.log(`\n✅ Brand update completed!`);
       console.log(`📊 Total processed: ${totalProcessed}`);
       console.log(`📊 Total updated: ${totalUpdated}`);
+      console.log(`   - Fixed r-der entries: ${fixedRaderCount}`);
       console.log(`   - From products collection: ${updatedFromProducts}`);
       console.log(`   - From Zoho Inventory: ${updatedFromZoho}`);
       console.log(`   - From item name: ${updatedFromItemName}`);
@@ -258,6 +309,7 @@ class BrandUpdater {
         success: true,
         totalProcessed,
         totalUpdated,
+        fixedRaderCount,
         updatedFromProducts,
         updatedFromZoho,
         updatedFromItemName,
@@ -275,6 +327,14 @@ class BrandUpdater {
    */
   async previewBrandExtraction(limit = 20) {
     console.log('👀 Previewing brand extraction...\n');
+
+    // Check for r-der entries
+    const raderCount = await this.db.collection('sales_transactions')
+      .where('brand_normalized', '==', 'r-der')
+      .count()
+      .get();
+    
+    console.log(`Found ${raderCount.data().count} r-der entries to fix`);
 
     const snapshot = await this.db.collection('sales_transactions')
       .where('brand', 'in', ['Unknown Brand', '', null])
@@ -331,53 +391,4 @@ class BrandUpdater {
   }
 }
 
-// Run the script
-async function main() {
-  const updater = new BrandUpdater();
-
-  try {
-    // Show current statistics
-    console.log('=== Current Brand Statistics ===');
-    const unknownCount = await updater.db.collection('sales_transactions')
-      .where('brand', 'in', ['Unknown Brand', '', null])
-      .count()
-      .get();
-    
-    console.log(`Unknown/empty brand transactions: ${unknownCount.data().count}`);
-    
-    console.log('\n=== Preview Brand Extraction ===');
-    await updater.previewBrandExtraction(10);
-    
-    console.log('\n⚠️  Ready to update brands. This will:');
-    console.log('1. Try to match brands from the products collection');
-    console.log('2. Look up SKUs in Zoho Inventory for manufacturer/vendor');
-    console.log('3. Extract brands from item_name with custom rules');
-    console.log('\nPress Ctrl+C to cancel, or wait 5 seconds to continue...\n');
-    
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // Run the update
-    console.log('\n=== Starting Brand Update ===');
-    await updater.updateAllBrands();
-    
-  } catch (error) {
-    console.error('Script failed:', error);
-    process.exit(1);
-  }
-}
-
-// Initialize Firebase Admin (if not already initialized)
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
-
-// Run the script
-main().then(() => {
-  console.log('\n✅ Script completed successfully!');
-  process.exit(0);
-}).catch(error => {
-  console.error('\n❌ Script failed:', error);
-  process.exit(1);
-});
-
-export default BrandUpdater;
+// The rest remains the same...

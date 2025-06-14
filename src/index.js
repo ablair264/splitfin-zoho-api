@@ -122,15 +122,15 @@ app.get('/', (req, res) => {
 
 app.post('/api/admin/update-brands-once', async (req, res) => {
   try {
-    // Check if already run
+    // Check if already run - use a new document ID for this updated version
     const runFlag = await admin.firestore()
       .collection('_admin')
-      .doc('brand-update-2024')
+      .doc('brand-update-rader-fix-2024')  // Changed to new ID
       .get();
     
     if (runFlag.exists) {
       return res.status(400).json({ 
-        error: 'Brand update already completed' 
+        error: 'Brand update with rader fix already completed' 
       });
     }
     
@@ -141,7 +141,7 @@ app.post('/api/admin/update-brands-once', async (req, res) => {
     // Mark as completed
     await admin.firestore()
       .collection('_admin')
-      .doc('brand-update-2024')
+      .doc('brand-update-rader-fix-2024')  // Changed to new ID
       .set({
         completed: true,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
