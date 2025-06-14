@@ -517,6 +517,112 @@ export async function generateCustomerInsights(customer, orderHistory, userRole,
   }
 }
 
+export async function generatePurchaseOrderInsights(
+  brand,
+  suggestions,
+  historicalSales,
+  marketData
+) {
+  const prompt = `
+    ${DM_BRANDS_CONTEXT}
+    
+    **PURCHASE ORDER ANALYSIS FOR ${brand.toUpperCase()}**
+    
+    **Current AI Suggestions (${suggestions.length} products):**
+    ${JSON.stringify(suggestions.slice(0, 10), null, 2)}
+    
+    **Real-Time Search Trends:**
+    - Brand Search Volume: ${marketData.searchTrends[0]?.volume || 'Unknown'}
+    - Trend Direction: ${marketData.searchTrends[0]?.trend || 'Unknown'}
+    - Recent Change: ${marketData.searchTrends[0]?.percentageChange || 0}%
+    - Related Searches: ${marketData.searchTrends[0]?.relatedQueries?.join(', ') || 'None'}
+    
+    **Historical Performance:**
+    - Total Revenue (6 months): £${historicalSales.totalRevenue?.toFixed(2) || 0}
+    - Seasonal Patterns: ${JSON.stringify(historicalSales.seasonalPattern, null, 2)}
+    
+    **Current Date:** ${new Date().toLocaleDateString()}
+    **UK Market Context:** Focus on British retail seasonality and consumer trends
+    
+    **TASK:** Generate strategic insights considering the REAL search trend data:
+    
+    1. **"executiveSummary"**: How do current search trends support or challenge this purchase order?
+    2. **"marketTiming"**: Based on the ${marketData.searchTrends[0]?.trend} trend (${marketData.searchTrends[0]?.percentageChange}% change), is this good timing?
+    3. **"trendBasedRecommendations"**: Specific actions based on the search trend data
+    4. **"riskAssessment"**: Risks considering current search interest levels
+    5. **"categoryOptimization"**: Which product categories align with trending searches?
+    6. **"confidenceAssessment"**: Confidence level considering real market signals
+    
+    Respond with ONLY clean JSON - no formatting.
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    const jsonResponse = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    return JSON.parse(jsonResponse);
+  } catch (error) {
+    console.error("❌ Error generating purchase order insights:", error);
+    return {
+      executiveSummary: "AI analysis unavailable",
+      marketTiming: "Unable to assess",
+      riskAssessment: "Analysis pending",
+      categoryOptimization: [],
+      cashFlowImpact: "Unknown",
+      alternativeStrategies: [],
+      confidenceAssessment: "Low confidence due to analysis error"
+    };
+  }
+}
+
+export async function generateProductPurchaseInsights(
+  product,
+  suggestion,
+  competitorData,
+  searchTrends
+) {
+  const prompt = `
+    ${DM_BRANDS_CONTEXT}
+    
+    **PRODUCT PURCHASE DECISION ANALYSIS**
+    
+    **Product Details:**
+    ${JSON.stringify(product, null, 2)}
+    
+    **AI Suggestion:**
+    ${JSON.stringify(suggestion, null, 2)}
+    
+    **Competitor Intelligence:**
+    ${JSON.stringify(competitorData, null, 2)}
+    
+    **Search Trends:**
+    ${JSON.stringify(searchTrends, null, 2)}
+    
+    **TASK:** Provide detailed purchase justification as JSON:
+    
+    1. **"purchaseRationale"**: Detailed explanation of why to stock this quantity
+    2. **"seasonalConsiderations"**: How seasonality affects this recommendation
+    3. **"competitiveAdvantage"**: How this product positions against competitors
+    4. **"targetCustomers"**: Which customer segments will be interested
+    5. **"pricingStrategy"**: Recommended pricing approach
+    6. **"displaySuggestions"**: How to merchandise this product effectively
+    
+    Respond with ONLY clean JSON - no formatting.
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+  } catch (error) {
+    console.error("❌ Error generating product insights:", error);
+    return null;
+  }
+}
 /**
  * Generate seasonal insights for planning
  */
