@@ -428,6 +428,7 @@ class CronDataSyncService {
       return { success: false, error: error.message };
     }
   }
+}
   
  async function syncInventory(fullSync = false) {
   console.log('📦 Starting inventory sync...');
