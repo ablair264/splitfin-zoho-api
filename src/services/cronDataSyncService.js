@@ -430,27 +430,6 @@ class CronDataSyncService {
   }
 }
   
- async function syncInventory(fullSync = false) {
-  console.log('📦 Starting inventory sync...');
-  
-  try {
-    const result = await productSyncService.syncProductsToFirebase();
-    
-    return {
-      success: true,
-      stats: {
-        products: result.count
-      }
-    };
-  } catch (error) {
-    console.error('Inventory sync error:', error);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
-}
-  
   /**
    * Helper function to write data in batches
    */
