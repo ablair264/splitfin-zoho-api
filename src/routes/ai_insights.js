@@ -137,14 +137,19 @@ router.get('/health', (req, res) => {
       requestsPerHour: AI_REQUEST_LIMIT,
       windowMinutes: AI_WINDOW_MS / 1000 / 60
     },
-    endpoints: [
-      'GET /api/ai-insights/health',
-      'POST /api/ai-insights/card-insights',
-      'POST /api/ai-insights/dashboard-insights',
-      'POST /api/ai-insights/drill-down-insights',
-      'POST /api/ai-insights/comparative-insights',
-      'POST /api/ai-insights/seasonal-insights',
-      'GET /api/ai-insights/usage-stats'
+endpoints: [
+  'GET /api/ai-insights/health',
+  'POST /api/ai-insights/card-insights',
+  'POST /api/ai-insights/dashboard-insights',
+  'POST /api/ai-insights/drill-down-insights',
+  'POST /api/ai-insights/comparative-insights',
+  'POST /api/ai-insights/seasonal-insights',
+  'POST /api/ai-insights/customer-insights',
+  'POST /api/ai-insights/purchase-order-insights',     // NEW
+  'POST /api/ai-insights/product-purchase-insights',   // NEW
+  'POST /api/ai-insights/validate-adjustments',        // NEW
+  'GET /api/ai-insights/usage-stats'
+],
     ],
     timestamp: new Date().toISOString()
   });
@@ -450,6 +455,159 @@ router.post('/customer-insights', async (req, res) => {
       success: false,
       message: 'Failed to generate customer insights',
       error: error.message
+    });
+  }
+});
+
+router.post('/purchase-order-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { brand, suggestions, historicalSales, marketData } = req.body;
+    
+    if (!brand || !suggestions) {
+      return res.status(400).json({
+        success: false,
+        error: 'Brand and suggestions are required for purchase order analysis'
+      });
+    }
+    
+    console.log(`🤖 Generating purchase order insights for ${brand} (User: ${req.userContext?.name})`);
+    
+    // Import generatePurchaseOrderInsights from your AI service
+    const { generatePurchaseOrderInsights } = await import('../services/aiAnalyticsService.js');
+    
+    const insights = await generatePurchaseOrderInsights(
+      brand,
+      suggestions,
+      historicalSales || {},
+      marketData || {}
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      analysisType: 'purchase_order_intelligence',
+      businessContext: 'dm_brands_inventory_optimization',
+      brand,
+      suggestionsAnalyzed: suggestions.length,
+      generatedAt: new Date().toISOString(),
+      userRole: req.userContext?.role
+    });
+    
+  } catch (error) {
+    console.error('❌ Error generating purchase order insights:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Purchase order analysis temporarily unavailable',
+      fallback: {
+        executiveSummary: "AI analysis temporarily unavailable",
+        marketTiming: "Unable to assess",
+        riskAssessment: "Analysis pending",
+        categoryOptimization: "Review manually",
+        cashFlowImpact: "Unknown",
+        alternativeStrategies: ["Consider phased ordering"],
+        confidenceAssessment: "Low confidence due to error"
+      }
+    });
+  }
+});
+
+/**
+ * Product-specific purchase insights
+ */
+router.post('/product-purchase-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { product, suggestion, competitorData, searchTrends } = req.body;
+    
+    if (!product || !suggestion) {
+      return res.status(400).json({
+        success: false,
+        error: 'Product and suggestion data are required'
+      });
+    }
+    
+    console.log(`🤖 Generating product insights for ${product.sku} - ${product.name}`);
+    
+    // Import generateProductPurchaseInsights from your AI service
+    const { generateProductPurchaseInsights } = await import('../services/aiAnalyticsService.js');
+    
+    const insights = await generateProductPurchaseInsights(
+      product,
+      suggestion,
+      competitorData || {},
+      searchTrends || {}
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      productSku: product.sku,
+      analysisType: 'product_purchase_intelligence',
+      generatedAt: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error generating product insights for ${req.body?.product?.sku}:`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Product analysis temporarily unavailable',
+      fallback: {
+        purchaseRationale: "Analysis pending - review manually",
+        seasonalConsiderations: "Consider seasonal demand patterns",
+        competitiveAdvantage: "Unique product positioning",
+        targetCustomers: "Premium UK retailers",
+        pricingStrategy: "Competitive luxury pricing",
+        displaySuggestions: "Premium display recommended"
+      }
+    });
+  }
+});
+
+/**
+ * Validate purchase order adjustments
+ */
+router.post('/validate-adjustments', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { originalSuggestions, userAdjustments, brand } = req.body;
+    
+    if (!originalSuggestions || !userAdjustments || !brand) {
+      return res.status(400).json({
+        success: false,
+        error: 'Original suggestions, adjustments, and brand are required'
+      });
+    }
+    
+    console.log(`🤖 Validating ${userAdjustments.length} adjustments for ${brand}`);
+    
+    // Import validatePurchaseAdjustments from your AI service
+    const { validatePurchaseAdjustments } = await import('../services/aiAnalyticsService.js');
+    
+    const validation = await validatePurchaseAdjustments(
+      originalSuggestions,
+      userAdjustments,
+      brand
+    );
+    
+    res.json({
+      success: true,
+      data: validation,
+      brand,
+      adjustmentsCount: userAdjustments.length,
+      analysisType: 'purchase_adjustment_validation',
+      generatedAt: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error validating purchase adjustments:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Adjustment validation temporarily unavailable',
+      fallback: {
+        adjustmentAssessment: "Unable to validate adjustments",
+        potentialRisks: ["Review adjustments manually"],
+        improvements: ["User expertise applied"],
+        alternativeSuggestions: [],
+        confidenceInAdjustments: 50
+      }
     });
   }
 });

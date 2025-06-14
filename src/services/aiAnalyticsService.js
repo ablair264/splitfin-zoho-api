@@ -429,6 +429,62 @@ export async function generateComparativeInsights(currentData, previousData, com
   }
 }
 
+export async function validatePurchaseAdjustments(
+  originalSuggestions,
+  userAdjustments,
+  brand
+) {
+  const prompt = `
+    ${DM_BRANDS_CONTEXT}
+    
+    **PURCHASE ORDER ADJUSTMENT VALIDATION**
+    
+    **Brand:** ${brand}
+    
+    **Original AI Suggestions:**
+    ${JSON.stringify(originalSuggestions.filter(s => 
+      userAdjustments.some(a => a.sku === s.sku)
+    ).map(s => ({
+      sku: s.sku,
+      name: s.product_name,
+      recommended: s.recommendedQuantity,
+      confidence: s.confidence
+    })), null, 2)}
+    
+    **User Adjustments:**
+    ${JSON.stringify(userAdjustments, null, 2)}
+    
+    **TASK:** Analyze the user's quantity adjustments and provide feedback as JSON:
+    
+    1. **"adjustmentAssessment"**: Overall assessment of the changes
+    2. **"potentialRisks"**: Any risks introduced by the adjustments
+    3. **"improvements"**: Positive aspects of the adjustments
+    4. **"alternativeSuggestions"**: Better ways to achieve the user's apparent goals
+    5. **"confidenceInAdjustments"**: Confidence score (0-100) in the adjusted order
+    
+    Consider DM Brands' cash flow, storage capacity, and B2B sales model.
+    
+    Respond with ONLY clean JSON - no formatting.
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+  } catch (error) {
+    console.error("❌ Error validating adjustments:", error);
+    return {
+      adjustmentAssessment: "Unable to validate adjustments",
+      potentialRisks: ["Review adjustments manually"],
+      improvements: ["User expertise applied"],
+      alternativeSuggestions: [],
+      confidenceInAdjustments: 50
+    };
+  }
+}
+
 export async function generateCustomerInsights(customer, orderHistory, userRole, agentId) {
   // Determine which context to use based on role
   const baseContext = userRole === 'salesAgent' ? SALES_AGENT_CONTEXT : DM_BRANDS_CONTEXT;
