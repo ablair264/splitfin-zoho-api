@@ -701,29 +701,90 @@ salesOrders.forEach(order => {
     }
   }
 
-  async getPurchaseOrders(dateRange = '30_days', customDateRange = null) {
-    try {
-      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-      
-      const params = {
-        organization_id: ZOHO_CONFIG.orgId,
-        date_start: startDate.toISOString().split('T')[0],
-        date_end: endDate.toISOString().split('T')[0]
-      };
+async getPurchaseOrders(dateRange = '30_days', customDateRange = null) {
+  try {
+    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+    
+    const params = {
+      organization_id: ZOHO_CONFIG.orgId,
+      date_start: startDate.toISOString().split('T')[0],
+      date_end: endDate.toISOString().split('T')[0]
+    };
 
-      const purchaseOrders = await this.fetchPaginatedData(
-        `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders`, 
-        params,
-        'purchaseorders'
-      );
+    // Fetch the list of purchase orders first
+    const purchaseOrderList = await this.fetchPaginatedData(
+      `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders`, 
+      params,
+      'purchaseorders'
+    );
 
-      return purchaseOrders;
-
-    } catch (error) {
-      console.error('❌ Error fetching purchase orders:', error);
-      throw error;
+    if (!purchaseOrderList || purchaseOrderList.length === 0) {
+      return [];
     }
+
+    console.log(`Found ${purchaseOrderList.length} purchase orders. Fetching details...`);
+
+    // Fetch full details for each purchase order
+    const detailedPurchaseOrders = [];
+    for (const poHeader of purchaseOrderList) {
+      const poDetail = await this.getPurchaseOrderDetail(poHeader.purchaseorder_id);
+      if (poDetail) {
+        detailedPurchaseOrders.push(poDetail);
+      }
+      await new Promise(resolve => setTimeout(resolve, 50)); // Rate limiting
+    }
+
+    console.log(`✅ Successfully fetched details for ${detailedPurchaseOrders.length} purchase orders.`);
+    return detailedPurchaseOrders;
+
+  } catch (error) {
+    console.error('❌ Error fetching purchase orders:', error);
+    throw error;
   }
+}
+
+/**
+ * Get purchase order detail with line items
+ */
+async getPurchaseOrderDetail(purchaseorder_id) {
+  try {
+    const url = `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders/${purchaseorder_id}`;
+    const token = await getAccessToken();
+    
+    const response = await axios.get(url, {
+      params: { organization_id: ZOHO_CONFIG.orgId },
+      headers: { Authorization: `Zoho-oauthtoken ${token}` }
+    });
+
+    const purchaseOrder = response.data?.purchaseorder;
+    
+    if (purchaseOrder) {
+      // Ensure vendor name is included
+      if (!purchaseOrder.vendor_name && purchaseOrder.vendor_id) {
+        purchaseOrder.vendor_name = `Vendor ${purchaseOrder.vendor_id}`;
+      }
+      
+      // Process line items if they exist
+      if (purchaseOrder.line_items && Array.isArray(purchaseOrder.line_items)) {
+        // Enhance line items with additional info if needed
+        purchaseOrder.line_items = purchaseOrder.line_items.map(item => ({
+          ...item,
+          item_id: item.item_id,
+          item_name: item.name || item.item_name,
+          quantity: item.quantity || 0,
+          rate: item.rate || 0,
+          total: item.item_total || (item.quantity * item.rate) || 0
+        }));
+      }
+    }
+    
+    return purchaseOrder;
+
+  } catch (error) {
+    console.error(`❌ Error fetching details for purchase order ${purchaseorder_id}:`, error.message);
+    return null;
+  }
+}
 
   /**
    * FIXED: Get sales order detail with brand information
