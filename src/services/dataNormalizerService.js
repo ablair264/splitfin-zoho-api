@@ -2,6 +2,7 @@
 // This service normalizes raw data from Zoho into simplified Firebase collections
 
 import admin from 'firebase-admin';
+import geocodingService from './geocodingService.js';
 
 class DataNormalizerService {
   constructor() {
@@ -325,171 +326,203 @@ class DataNormalizerService {
    * Normalize customers collection
    */
   async normalizeCustomers() {
-    console.log('👥 Normalizing customers...');
+  console.log('👥 Normalizing customers...');
+  
+  const customersSnapshot = await this.db.collection('customers').get();
+  const ordersSnapshot = await this.db.collection('normalized_orders').get();
+  const usersSnapshot = await this.db.collection('users').get();
+  
+  // Create agent lookup maps
+  const usersByAgentId = new Map();
+  usersSnapshot.forEach(doc => {
+    const user = { id: doc.id, ...doc.data() };
+    const agentId = this.safeString(user.agentID);
+    if (agentId) {
+      usersByAgentId.set(agentId, user);
+    }
+  });
+  
+  // Calculate customer metrics from normalized orders
+  const customerMetrics = new Map();
+  ordersSnapshot.forEach(doc => {
+    const order = doc.data();
+    const customerId = this.safeString(order.customer_id);
     
-    const customersSnapshot = await this.db.collection('customers').get();
-    const ordersSnapshot = await this.db.collection('normalized_orders').get();
-    const usersSnapshot = await this.db.collection('users').get();
+    if (!customerId) return;
     
-    // Create agent lookup maps
-    const usersByAgentId = new Map();
-    usersSnapshot.forEach(doc => {
-      const user = { id: doc.id, ...doc.data() };
-      const agentId = this.safeString(user.agentID);
-      if (agentId) {
-        usersByAgentId.set(agentId, user);
-      }
-    });
-    
-    // Calculate customer metrics from normalized orders
-    const customerMetrics = new Map();
-    ordersSnapshot.forEach(doc => {
-      const order = doc.data();
-      const customerId = this.safeString(order.customer_id);
-      
-      if (!customerId) return;
-      
-      if (!customerMetrics.has(customerId)) {
-        customerMetrics.set(customerId, {
-          total_spent: 0,
-          order_count: 0,
-          last_order_date: null,
-          first_order_date: null,
-          agents: new Set()
-        });
-      }
-      
-      const metrics = customerMetrics.get(customerId);
-      metrics.total_spent += this.safeNumber(order.total_amount);
-      metrics.order_count += 1;
-      
-      const orderDateStr = this.safeString(order.created_time);
-      if (orderDateStr) {
-        const orderDate = new Date(orderDateStr);
-        if (!isNaN(orderDate.getTime())) {
-          if (!metrics.last_order_date || orderDate > metrics.last_order_date) {
-            metrics.last_order_date = orderDate;
-          }
-          if (!metrics.first_order_date || orderDate < metrics.first_order_date) {
-            metrics.first_order_date = orderDate;
-          }
-        }
-      }
-      
-      const salespersonUid = this.safeString(order.salesperson_uid);
-      if (salespersonUid) {
-        metrics.agents.add(salespersonUid);
-      }
-    });
-    
-    let batch = this.db.batch();
-    let count = 0;
-    
-    for (const doc of customersSnapshot.docs) {
-      const customer = doc.data();
-      const customerId = this.safeString(customer.customer_id || doc.id);
-      
-      if (!customerId) {
-        console.log('⚠️ Skipping customer with no ID');
-        continue;
-      }
-      
-      const metrics = customerMetrics.get(customerId) || {
+    if (!customerMetrics.has(customerId)) {
+      customerMetrics.set(customerId, {
         total_spent: 0,
         order_count: 0,
         last_order_date: null,
         first_order_date: null,
         agents: new Set()
-      };
-      
-      // Safe agent lookup
-      const agentId = this.safeGet(customer, 'Agent.id');
-      let assignedAgentUid = null;
-      if (agentId && usersByAgentId.has(agentId)) {
-        assignedAgentUid = usersByAgentId.get(agentId).id;
-      }
-      
-      // Determine customer segment
-      let segment = 'Low';
-      if (metrics.total_spent >= 10000) segment = 'VIP';
-      else if (metrics.total_spent >= 5000) segment = 'High';
-      else if (metrics.total_spent >= 1000) segment = 'Medium';
-      
-      // Build customer name with safe access
-      const customerName = this.safeString(
-        customer.Name || 
-        customer.Account_Name ||
-        `${this.safeString(customer.Primary_First_Name)} ${this.safeString(customer.Primary_Last_Name)}`.trim() ||
-        'Unknown Customer'
-      );
-      
-      const normalizedCustomer = {
-        // Core fields
-        customer_id: customerId,
-        customer_name: customerName,
-        company_name: this.safeString(customer.company_name || customer.Account_Name || customerName),
-        
-        // Contact info with safe defaults
-        email: this.safeString(customer.Primary_Email || customer.email || customer.Email),
-        phone: this.safeString(customer.Phone || customer.phone),
-        primary_contact: `${this.safeString(customer.Primary_First_Name)} ${this.safeString(customer.Primary_Last_Name)}`.trim(),
-        
-        // Address with safe access
-        city: this.safeString(customer.Billing_City),
-        postcode: this.safeString(customer.Billing_Code),
-        county: this.safeString(customer.Billing_State),
-        address: this.safeString(customer.Billing_Street),
-        
-        // Metrics
-        total_spent: metrics.total_spent,
-        order_count: metrics.order_count,
-        average_order_value: metrics.order_count > 0 ? metrics.total_spent / metrics.order_count : 0,
-        
-        // Dates
-        first_order_date: metrics.first_order_date?.toISOString() || null,
-        last_order_date: metrics.last_order_date?.toISOString() || null,
-        created_date: this.safeDate(customer.created_time || customer.Created_Time),
-        
-        // Segmentation
-        segment: segment,
-        status: this.safeString(customer.status || 'active'),
-        
-        // Agent assignment with UID
-        assigned_agent_id: agentId,
-        assigned_agent_name: this.safeGet(customer, 'Agent.name'),
-        assigned_agent_uid: assignedAgentUid,
-        all_agent_uids: Array.from(metrics.agents),
-        
-        // Metadata
-        _source: 'zoho_crm',
-        _normalized_at: admin.firestore.FieldValue.serverTimestamp(),
-        _original_id: customerId
-      };
-      
-      // Clean and save
-      const cleanedCustomer = this.cleanObject(normalizedCustomer);
-      
-      if (Object.keys(cleanedCustomer).length > 3) { // Must have more than just metadata
-        const docRef = this.db.collection('normalized_customers').doc(customerId);
-        batch.set(docRef, cleanedCustomer, { merge: true });
-        count++;
-        
-        if (count % 400 === 0) {
-          await batch.commit();
-          console.log(`  Committed ${count} customers...`);
-          batch = this.db.batch();
+      });
+    }
+    
+    const metrics = customerMetrics.get(customerId);
+    metrics.total_spent += this.safeNumber(order.total_amount);
+    metrics.order_count += 1;
+    
+    const orderDateStr = this.safeString(order.created_time);
+    if (orderDateStr) {
+      const orderDate = new Date(orderDateStr);
+      if (!isNaN(orderDate.getTime())) {
+        if (!metrics.last_order_date || orderDate > metrics.last_order_date) {
+          metrics.last_order_date = orderDate;
         }
-      } else {
-        console.log(`⚠️ Skipping customer ${customerId} - insufficient data`);
+        if (!metrics.first_order_date || orderDate < metrics.first_order_date) {
+          metrics.first_order_date = orderDate;
+        }
       }
     }
     
-    // Commit remaining
-    if (count % 400 !== 0) {
-      await batch.commit();
+    const salespersonUid = this.safeString(order.salesperson_uid);
+    if (salespersonUid) {
+      metrics.agents.add(salespersonUid);
     }
-    console.log(`✅ Normalized ${count} customers`);
+  });
+  
+  let batch = this.db.batch();
+  let count = 0;
+  let geocodedCount = 0;
+  
+  for (const doc of customersSnapshot.docs) {
+    const customer = doc.data();
+    const customerId = this.safeString(customer.customer_id || doc.id);
+    
+    if (!customerId) {
+      console.log('⚠️ Skipping customer with no ID');
+      continue;
+    }
+    
+    const metrics = customerMetrics.get(customerId) || {
+      total_spent: 0,
+      order_count: 0,
+      last_order_date: null,
+      first_order_date: null,
+      agents: new Set()
+    };
+    
+    // Safe agent lookup
+    const agentId = this.safeGet(customer, 'Agent.id');
+    let assignedAgentUid = null;
+    if (agentId && usersByAgentId.has(agentId)) {
+      assignedAgentUid = usersByAgentId.get(agentId).id;
+    }
+    
+    // Determine customer segment
+    let segment = 'Low';
+    if (metrics.total_spent >= 10000) segment = 'VIP';
+    else if (metrics.total_spent >= 5000) segment = 'High';
+    else if (metrics.total_spent >= 1000) segment = 'Medium';
+    
+    // Build customer name with safe access
+    const customerName = this.safeString(
+      customer.Name || 
+      customer.Account_Name ||
+      `${this.safeString(customer.Primary_First_Name)} ${this.safeString(customer.Primary_Last_Name)}`.trim() ||
+      'Unknown Customer'
+    );
+    
+    // Extract postcode
+    const postcode = this.safeString(customer.Billing_Code || customer.postcode || customer.postal_code);
+    
+    const normalizedCustomer = {
+      // Core fields
+      customer_id: customerId,
+      customer_name: customerName,
+      company_name: this.safeString(customer.company_name || customer.Account_Name || customerName),
+      
+      // Contact info with safe defaults
+      email: this.safeString(customer.Primary_Email || customer.email || customer.Email),
+      phone: this.safeString(customer.Phone || customer.phone),
+      primary_contact: `${this.safeString(customer.Primary_First_Name)} ${this.safeString(customer.Primary_Last_Name)}`.trim(),
+      
+      // Address with safe access
+      city: this.safeString(customer.Billing_City),
+      postcode: postcode,
+      county: this.safeString(customer.Billing_State),
+      address: this.safeString(customer.Billing_Street),
+      
+      // Metrics
+      total_spent: metrics.total_spent,
+      order_count: metrics.order_count,
+      average_order_value: metrics.order_count > 0 ? metrics.total_spent / metrics.order_count : 0,
+      
+      // Dates
+      first_order_date: metrics.first_order_date?.toISOString() || null,
+      last_order_date: metrics.last_order_date?.toISOString() || null,
+      created_date: this.safeDate(customer.created_time || customer.Created_Time),
+      
+      // Segmentation
+      segment: segment,
+      status: this.safeString(customer.status || 'active'),
+      
+      // Agent assignment with UID
+      assigned_agent_id: agentId,
+      assigned_agent_name: this.safeGet(customer, 'Agent.name'),
+      assigned_agent_uid: assignedAgentUid,
+      all_agent_uids: Array.from(metrics.agents),
+      
+      // Metadata
+      _source: 'zoho_crm',
+      _normalized_at: admin.firestore.FieldValue.serverTimestamp(),
+      _original_id: customerId
+    };
+    
+    // Geocode the customer if they have a postcode
+    if (postcode) {
+      try {
+        const locationData = await geocodingService.getCoordinatesFromPostcode(postcode);
+        if (locationData) {
+          normalizedCustomer.coordinates = {
+            latitude: locationData.latitude,
+            longitude: locationData.longitude
+          };
+          normalizedCustomer.location_region = geocodingService.determineUKRegion(locationData);
+          normalizedCustomer.location_country = locationData.country;
+          normalizedCustomer.location_district = locationData.admin_district;
+          normalizedCustomer.location_updated = new Date().toISOString();
+          geocodedCount++;
+        } else {
+          normalizedCustomer.location_region = 'Unknown';
+        }
+      } catch (error) {
+        console.log(`⚠️ Could not geocode postcode ${postcode} for customer ${customerName}`);
+        normalizedCustomer.location_region = 'Unknown';
+      }
+    } else {
+      normalizedCustomer.location_region = 'Unknown';
+    }
+    
+    // Clean and save
+    const cleanedCustomer = this.cleanObject(normalizedCustomer);
+    
+    if (Object.keys(cleanedCustomer).length > 3) { // Must have more than just metadata
+      const docRef = this.db.collection('normalized_customers').doc(customerId);
+      batch.set(docRef, cleanedCustomer, { merge: true });
+      count++;
+      
+      if (count % 400 === 0) {
+        await batch.commit();
+        console.log(`  Committed ${count} customers (${geocodedCount} geocoded)...`);
+        batch = this.db.batch();
+        
+        // Add a small delay to respect geocoding API rate limits
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } else {
+      console.log(`⚠️ Skipping customer ${customerId} - insufficient data`);
+    }
   }
+  
+  // Commit remaining
+  if (count % 400 !== 0) {
+    await batch.commit();
+  }
+  console.log(`✅ Normalized ${count} customers (${geocodedCount} successfully geocoded)`);
+}
 
   /**
    * Normalize products collection
