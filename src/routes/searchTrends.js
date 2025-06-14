@@ -1,4 +1,7 @@
 // server/src/routes/searchTrends.js
+
+import express from 'express';
+import NodeCache from 'node-cache';
 import googleTrends from 'google-trends-api';
 
 const router = express.Router();
