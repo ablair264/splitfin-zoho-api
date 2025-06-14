@@ -16,6 +16,7 @@ import aiInsightsRoutes from './routes/ai_insights.js';
 import productsRoutes from './routes/products.js';
 import normalizationRoutes from './routes/normalization.js';
 import authRoutes from './routes/auth.js';
+import purchaseAnalysisRoutes from './routes/purchaseAnalysis.js';
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
@@ -71,6 +72,7 @@ app.use('/api/ai-insights', aiInsightsRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/api/normalization', normalizationRoutes);
 app.use('/oauth', authRoutes);
+app.use('/api/purchase-analysis', purchaseAnalysisRoutes);
 
 // Legacy webhook route (kept for backward compatibility)
 app.use('/api', webhookRoutes);
