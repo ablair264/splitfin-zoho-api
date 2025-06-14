@@ -3,6 +3,7 @@
 
 import admin from 'firebase-admin';
 import geocodingService from './geocodingService.js';
+import zohoInventoryService from './zohoInventoryService.js';
 
 class DataNormalizerService {
   constructor() {
@@ -798,32 +799,29 @@ class DataNormalizerService {
  * @param {Array<string>} orderIds - Optional array of specific order IDs to process
  */
 async enrichNormalizedOrdersWithLineItems(orderIds = null) {
-  console.log('🔄 Enriching normalized orders with line items...');
+  console.log('🔄 Enriching normalized orders with line items from Zoho...');
   
   try {
-    const db = this.db;
-    let ordersQuery = db.collection('normalized_orders');
-    
-    // If specific orderIds provided, process only those
     if (orderIds && orderIds.length > 0) {
-      // Process in batches due to Firestore 'in' query limitation (max 10)
-      const batches = [];
-      for (let i = 0; i < orderIds.length; i += 10) {
-        const batch = orderIds.slice(i, i + 10);
-        batches.push(batch);
-      }
-      
       let totalEnriched = 0;
-      for (const batch of batches) {
-        const enriched = await this._enrichOrderBatch(batch);
+      
+      // Process in smaller batches to avoid overwhelming Zoho API
+      const BATCH_SIZE = 50;
+      
+      for (let i = 0; i < orderIds.length; i += BATCH_SIZE) {
+        const batch = orderIds.slice(i, i + BATCH_SIZE);
+        const enriched = await this._enrichOrderBatchFromZoho(batch);
         totalEnriched += enriched;
+        
+        if (i + BATCH_SIZE < orderIds.length) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
       }
       
-      console.log(`✅ Enriched ${totalEnriched} orders with line items`);
+      console.log(`✅ Enriched ${totalEnriched} orders with line items from Zoho`);
       return { success: true, count: totalEnriched };
     } else {
-      // Process all orders (for initial run)
-      return await this._enrichAllOrders();
+      return await this._enrichAllOrdersFromZoho();
     }
     
   } catch (error) {
@@ -832,132 +830,71 @@ async enrichNormalizedOrdersWithLineItems(orderIds = null) {
   }
 }
 
-/**
- * Enrich a batch of orders
- */
-async _enrichOrderBatch(orderIds) {
-  const ordersSnapshot = await this.db.collection('normalized_orders')
-    .where('order_id', 'in', orderIds)
-    .get();
-  
-  if (ordersSnapshot.empty) {
-    return 0;
-  }
-  
+async _enrichOrderBatchFromZoho(orderIds) {
   let batch = this.db.batch();
   let count = 0;
+  let successCount = 0;
   
-  for (const orderDoc of ordersSnapshot.docs) {
-    const order = orderDoc.data();
-    const orderId = order.order_id;
-    
-    // Get line items from sales_transactions
-    const transactionsSnapshot = await this.db.collection('sales_transactions')
-      .where('order_id', '==', orderId)
-      .get();
-    
-    if (transactionsSnapshot.empty) {
-      console.log(`⚠️ No line items found for order ${orderId}`);
-      continue;
-    }
-    
-    // Get product details for enrichment
-    const productIds = [...new Set(transactionsSnapshot.docs.map(doc => doc.data().item_id))];
-    const productsMap = await this._getProductsMap(productIds);
-    
-    // Build enriched line items
-    const lineItems = transactionsSnapshot.docs.map(doc => {
-      const trans = doc.data();
-      const product = productsMap.get(trans.item_id);
+  for (const orderId of orderIds) {
+    try {
+      // Use the unified service to fetch order
+      const zohoOrder = await zohoInventoryService.getSalesOrder(orderId);
       
-      return this.cleanObject({
-        item_id: this.safeString(trans.item_id),
-        item_name: this.safeString(trans.item_name || trans.name),
-        sku: this.safeString(trans.sku || product?.sku),
-        brand: this.safeString(trans.brand || product?.brand_normalized || product?.brand || 'Unknown'),
-        quantity: this.safeInt(trans.quantity),
-        price: this.safeNumber(trans.price || trans.rate),
-        total: this.safeNumber(trans.total || trans.item_total),
-        // Additional fields from transaction
-        line_item_id: this.safeString(trans.transaction_id || trans.line_item_id)
+      if (!zohoOrder) {
+        console.log(`⚠️ Order ${orderId} not found in Zoho`);
+        continue;
+      }
+      
+      // Extract line items with safe access
+      const lineItems = this.safeArray(zohoOrder.line_items).map(item => {
+        return this.cleanObject({
+          item_id: this.safeString(item.item_id),
+          item_name: this.safeString(item.name || item.item_name),
+          sku: this.safeString(item.sku),
+          description: this.safeString(item.description),
+          quantity: this.safeInt(item.quantity),
+          price: this.safeNumber(item.rate || item.price),
+          total: this.safeNumber(item.item_total || item.total),
+          tax_percentage: this.safeNumber(item.tax_percentage),
+          discount: this.safeNumber(item.discount),
+          brand: this.safeString(item.brand || item.cf_brand)
+        });
       });
-    });
-    
-    // Update the order with enriched line items
-    batch.update(orderDoc.ref, {
-      line_items: lineItems,
-      line_items_enriched: true,
-      _line_items_enriched_at: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
-    count++;
-    
-    // Commit batch every 400 documents
-    if (count % 400 === 0) {
-      await batch.commit();
-      console.log(`  Enriched ${count} orders...`);
-      batch = this.db.batch();
+      
+      const docRef = this.db.collection('normalized_orders').doc(orderId);
+      batch.update(docRef, {
+        line_items: lineItems,
+        total_amount: this.safeNumber(zohoOrder.total),
+        total_invoiced_amount: this.safeNumber(zohoOrder.invoiced_amount || 0),
+        sub_total: this.safeNumber(zohoOrder.sub_total),
+        tax_total: this.safeNumber(zohoOrder.tax_total),
+        discount_total: this.safeNumber(zohoOrder.discount),
+        _line_items_enriched: true,
+        _line_items_enriched_at: admin.firestore.FieldValue.serverTimestamp(),
+        _enriched_from: 'zoho_direct'
+      });
+      
+      count++;
+      successCount++;
+      
+      if (count % 50 === 0) {
+        await batch.commit();
+        console.log(`  Enriched ${count} orders...`);
+        batch = this.db.batch();
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+    } catch (error) {
+      console.error(`❌ Error enriching order ${orderId}:`, error);
     }
   }
   
-  // Commit remaining
-  if (count % 400 !== 0) {
+  if (count % 50 !== 0) {
     await batch.commit();
   }
   
-  return count;
-}
-
-/**
- * Enrich all orders (for initial run)
- */
-async _enrichAllOrders() {
-  console.log('📋 Enriching ALL normalized orders with line items...');
-  
-  const BATCH_SIZE = 100; // Process 100 orders at a time
-  let lastDoc = null;
-  let totalEnriched = 0;
-  let hasMore = true;
-  
-  while (hasMore) {
-    let query = this.db.collection('normalized_orders')
-      .orderBy('order_id')
-      .limit(BATCH_SIZE);
-    
-    if (lastDoc) {
-      query = query.startAfter(lastDoc);
-    }
-    
-    const snapshot = await query.get();
-    
-    if (snapshot.empty) {
-      hasMore = false;
-      break;
-    }
-    
-    // Extract order IDs from this batch
-    const orderIds = snapshot.docs.map(doc => doc.data().order_id);
-    
-    // Enrich this batch
-    const enriched = await this._enrichOrderBatch(orderIds);
-    totalEnriched += enriched;
-    
-    // Update last document for pagination
-    lastDoc = snapshot.docs[snapshot.docs.length - 1];
-    
-    console.log(`  Progress: Enriched ${totalEnriched} orders so far...`);
-  }
-  
-  console.log(`✅ Completed enriching ${totalEnriched} orders with line items`);
-  
-  // Update metadata
-  await this.db.collection('sync_metadata').doc('line_items_enrichment').set({
-    lastRun: admin.firestore.FieldValue.serverTimestamp(),
-    totalEnriched: totalEnriched,
-    status: 'completed'
-  });
-  
-  return { success: true, count: totalEnriched };
+  return successCount;
 }
 
 /**
