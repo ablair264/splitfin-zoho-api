@@ -429,7 +429,7 @@ class CronDataSyncService {
     }
   }
   
-  export async function syncInventory(fullSync = false) {
+ async function syncInventory(fullSync = false) {
   console.log('📦 Starting inventory sync...');
   
   try {
