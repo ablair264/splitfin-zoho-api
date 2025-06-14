@@ -200,7 +200,7 @@ class CronDataSyncService {
   async enrichNormalizedOrdersWithLineItems(orderIds) {
     console.log('🔄 Enriching normalized orders with line items...');
     try {
-      const result = await dataNormalizationService.enrichNormalizedOrdersWithLineItems(orderIds);
+      const result = await dataNormalizerService.enrichNormalizedOrdersWithLineItems(orderIds);
       return result;
     } catch (error) {
       console.error('❌ Error enriching normalized orders:', error);
@@ -530,7 +530,7 @@ class CronDataSyncService {
   async runNormalization() {
     console.log('🔄 Running data normalization...');
     try {
-      const result = await dataNormalizationService.normalizeAllData();
+      const result = await dataNormalizerService.normalizeAllData();
       console.log('✅ Data normalization completed');
       return result;
     } catch (error) {
