@@ -5,6 +5,8 @@ import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
 import dataNormalizerService from './dataNormalizerService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
+import productSyncService from '../services/productSyncService.js';
+
 
 class CronDataSyncService {
   constructor() {
@@ -426,6 +428,27 @@ class CronDataSyncService {
       return { success: false, error: error.message };
     }
   }
+  
+  export async function syncInventory(fullSync = false) {
+  console.log('📦 Starting inventory sync...');
+  
+  try {
+    const result = await productSyncService.syncProductsToFirebase();
+    
+    return {
+      success: true,
+      stats: {
+        products: result.count
+      }
+    };
+  } catch (error) {
+    console.error('Inventory sync error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
   
   /**
    * Helper function to write data in batches

@@ -18,11 +18,18 @@
   "description": "",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@tensorflow/tfjs-node": "^4.22.0",
     "axios": "^1.9.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "firebase-admin": "^13.4.0",
-    "node-cron": "^4.0.7"
+    "google-ads-api": "^20.0.1",
+    "node-cache": "^5.1.2",
+    "node-cron": "^4.0.7",
+    "p-limit": "^6.2.0",
+    "puppeteer": "^24.10.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
