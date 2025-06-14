@@ -7,6 +7,9 @@ import googleTrends from 'google-trends-api';
 const router = express.Router();
 const cache = new NodeCache({ stdTTL: 3600 }); // Cache for 1 hour to save API credits
 
+const SCRAPINGDOG_API_KEY = process.env.SCRAPINGDOG_API_KEY;
+const SCRAPINGDOG_BASE_URL = 'https://api.scrape.do';
+
 router.get('/brand/:brandName', async (req, res) => {
   try {
     const { brandName } = req.params;
