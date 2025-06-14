@@ -262,66 +262,24 @@ async function processBatch(items) {
  * Optimized syncInventory - now pulls from CRM instead of Inventory
  * Maintains all timestamp logic and incremental updates
  */
-export async function syncInventory(forceFullSync = false) {
-  console.log('🔄 Starting product sync from Inventory...');
+export async function syncInventory(fullSync = false) {
+  console.log('📦 Starting inventory sync...');
+  
   try {
-    const isInitialDone = await isInitialSyncCompleted('inventory');
-    const lastSync = await getLastSyncTimestamp('inventory');
+    const result = await productSyncService.syncProductsToFirebase();
     
-    // For production, only sync items modified after last sync
-    let products;
-    if (!forceFullSync && IS_PRODUCTION && isInitialDone && lastSync) {
-      console.log(`📅 Fetching products modified after ${lastSync.toISOString()}`);
-      // Fetch from Inventory with modifiedAfter parameter
-      products = await fetchProductsFromInventory({ modifiedAfter: lastSync });
-    } else {
-      console.log('📦 Performing full product sync from Inventory...');
-      // Fetch all products from Inventory
-      products = await fetchProductsFromInventory();
-    }
-    
-    if (products.length === 0) {
-      console.log('ℹ️ No products to sync.');
-      return { success: true, stats: { added: 0, updated: 0, unchanged: 0 } };
-    }
-    
-    console.log(`📊 Processing ${products.length} products from Inventory...`);
-    
-    // Process in smaller batches to avoid memory issues
-    let totalAdded = 0, totalUpdated = 0, totalUnchanged = 0;
-    for (let i = 0; i < products.length; i += BATCH_SIZE) {
-      const batchProducts = products.slice(i, i + BATCH_SIZE);
-      const result = await processProductBatch(batchProducts);
-      
-      totalAdded += result.added;
-      totalUpdated += result.updated;
-      totalUnchanged += result.unchanged;
-      
-      console.log(`📦 Processed batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(products.length/BATCH_SIZE)}`);
-      
-      // Add delay between batches in production to avoid overwhelming the system
-      if (IS_PRODUCTION && i + BATCH_SIZE < products.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+    return {
+      success: true,
+      stats: {
+        products: result.count
       }
-    }
-    
-        // Update sync metadata
-    await db.collection('sync_metadata').doc('inventory').set({
-      lastSync: admin.firestore.FieldValue.serverTimestamp(),
-      itemsProcessed: products.length,
-      added: totalAdded,
-      updated: totalUpdated,
-      unchanged: totalUnchanged,
-      initialSyncCompleted: true,
-      dataSource: 'Inventory' // Track that we're using Inventory API
-    }, { merge: true });
-    
-    console.log(`✅ Product sync complete: ${totalAdded} added, ${totalUpdated} updated, ${totalUnchanged} unchanged`);
-    return { success: true, stats: { added: totalAdded, updated: totalUpdated, unchanged: totalUnchanged } };
-    
+    };
   } catch (error) {
-    console.error('❌ Product sync failed:', error);
-    throw error;
+    console.error('Inventory sync error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
   }
 }
 
