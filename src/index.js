@@ -18,6 +18,7 @@ import normalizationRoutes from './routes/normalization.js';
 import authRoutes from './routes/auth.js';
 import purchaseAnalysisRoutes from './routes/purchaseAnalysis.js';
 import searchTrendsRoutes from './routes/searchTrends.js';
+import BrandUpdater from './updateSalesTransactionsBrands.js'
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
@@ -117,6 +118,41 @@ app.get('/', (req, res) => {
     ],
     timestamp: new Date().toISOString()
   });
+});
+
+app.post('/api/admin/update-brands-once', async (req, res) => {
+  try {
+    // Check if already run
+    const runFlag = await admin.firestore()
+      .collection('_admin')
+      .doc('brand-update-2024')
+      .get();
+    
+    if (runFlag.exists) {
+      return res.status(400).json({ 
+        error: 'Brand update already completed' 
+      });
+    }
+    
+    // Run the update
+    const updater = new BrandUpdater();
+    const result = await updater.updateAllBrands();
+    
+    // Mark as completed
+    await admin.firestore()
+      .collection('_admin')
+      .doc('brand-update-2024')
+      .set({
+        completed: true,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        result
+      });
+    
+    res.json({ success: true, result });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get('/health', async (req, res) => {
