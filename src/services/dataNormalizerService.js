@@ -638,93 +638,105 @@ class DataNormalizerService {
    * Normalize purchase orders collection
    */
   async normalizePurchaseOrders() {
-    console.log('📋 Normalizing purchase orders...');
+  console.log('📋 Normalizing purchase orders...');
+  
+  const poSnapshot = await this.db.collection('purchase_orders').get();
+  
+  let batch = this.db.batch();
+  let count = 0;
+  
+  for (const doc of poSnapshot.docs) {
+    const po = doc.data();
+    const poId = this.safeString(po.purchaseorder_id || doc.id);
     
-    const poSnapshot = await this.db.collection('purchase_orders').get();
+    if (!poId) {
+      console.log('⚠️ Skipping purchase order with no ID');
+      continue;
+    }
     
-    let batch = this.db.batch();
-    let count = 0;
-    
-    for (const doc of poSnapshot.docs) {
-      const po = doc.data();
-      const poId = this.safeString(po.purchaseorder_id || doc.id);
+    // Process line items with safe access
+    const lineItems = this.safeArray(po.line_items);
+    const normalizedLineItems = lineItems.map(item => {
+      const quantity = this.safeInt(item.quantity);
+      const rate = this.safeNumber(item.rate);
+      const total = this.safeNumber(item.item_total || item.total) || (quantity * rate);
       
-      if (!poId) {
-        console.log('⚠️ Skipping purchase order with no ID');
-        continue;
-      }
-      
-      // Process line items with safe access
-      const lineItems = this.safeArray(po.line_items);
-      const normalizedLineItems = lineItems.map(item => {
-        const quantity = this.safeInt(item.quantity);
-        const rate = this.safeNumber(item.rate);
-        const total = this.safeNumber(item.item_total || item.total) || (quantity * rate);
-        
-        return this.cleanObject({
-          item_id: this.safeString(item.item_id),
-          item_name: this.safeString(item.name || item.item_name),
-          quantity: quantity,
-          rate: rate,
-          total: total
-        });
+      return this.cleanObject({
+        item_id: this.safeString(item.item_id),
+        item_name: this.safeString(item.name || item.item_name),
+        sku: this.safeString(item.sku),
+        description: this.safeString(item.description),
+        quantity: quantity,
+        rate: rate,
+        total: total,
+        // Add any other fields from line items
+        unit: this.safeString(item.unit),
+        tax_percentage: this.safeNumber(item.tax_percentage)
       });
-      
-      // Calculate total safely
-      const poTotal = this.safeNumber(po.total);
-      const totalAmount = poTotal || normalizedLineItems.reduce((sum, item) => sum + item.total, 0);
-      
-      const normalizedPO = {
-        // Core fields
-        purchase_order_id: poId,
-        purchase_order_number: this.safeString(po.purchaseorder_number),
-        
-        // Vendor info
-        vendor_id: this.safeString(po.vendor_id),
-        vendor_name: this.safeString(po.vendor_name || 'Unknown Vendor'),
-        
-        // Dates
-        order_date: this.safeDate(po.date || po.purchaseorder_date),
-        expected_delivery_date: this.safeDate(po.delivery_date),
-        
-        // Status
-        order_status: this.safeString(po.order_status || po.status || 'pending'),
-        
-        // Financial
-        total_amount: totalAmount,
-        
-        // Line items
-        line_items: normalizedLineItems,
-        
-        // Metadata
-        _source: 'zoho_inventory',
-        _normalized_at: admin.firestore.FieldValue.serverTimestamp(),
-        _original_id: poId
-      };
-      
-      const cleanedPO = this.cleanObject(normalizedPO);
-      
-      if (Object.keys(cleanedPO).length > 3) { // Must have more than just metadata
-        const docRef = this.db.collection('normalized_purchase_orders').doc(poId);
-        batch.set(docRef, cleanedPO, { merge: true });
-        count++;
-        
-        if (count % 400 === 0) {
-          await batch.commit();
-          console.log(`  Committed ${count} purchase orders...`);
-          batch = this.db.batch();
-        }
-      } else {
-        console.log(`⚠️ Skipping purchase order ${poId} - insufficient data`);
-      }
-    }
+    });
     
-    // Commit remaining
-    if (count % 400 !== 0) {
-      await batch.commit();
+    // Calculate total safely
+    const poTotal = this.safeNumber(po.total);
+    const totalAmount = poTotal || normalizedLineItems.reduce((sum, item) => sum + item.total, 0);
+    
+    const normalizedPO = {
+      // Core fields
+      purchase_order_id: poId,
+      purchase_order_number: this.safeString(po.purchaseorder_number),
+      
+      // Vendor info
+      vendor_id: this.safeString(po.vendor_id),
+      vendor_name: this.safeString(po.vendor_name || 'Unknown Vendor'),
+      
+      // Dates
+      order_date: this.safeDate(po.date || po.purchaseorder_date),
+      expected_delivery_date: this.safeDate(po.delivery_date),
+      
+      // Status
+      order_status: this.safeString(po.order_status || po.status || 'pending'),
+      
+      // Financial
+      total_amount: totalAmount,
+      tax_total: this.safeNumber(po.tax_total),
+      sub_total: this.safeNumber(po.sub_total),
+      
+      // Line items - this is the key part!
+      line_items: normalizedLineItems,
+      line_items_count: normalizedLineItems.length,
+      
+      // Additional fields
+      notes: this.safeString(po.notes),
+      terms: this.safeString(po.terms),
+      
+      // Metadata
+      _source: 'zoho_inventory',
+      _normalized_at: admin.firestore.FieldValue.serverTimestamp(),
+      _original_id: poId
+    };
+    
+    const cleanedPO = this.cleanObject(normalizedPO);
+    
+    if (Object.keys(cleanedPO).length > 3) { // Must have more than just metadata
+      const docRef = this.db.collection('normalized_purchase_orders').doc(poId);
+      batch.set(docRef, cleanedPO, { merge: true });
+      count++;
+      
+      if (count % 400 === 0) {
+        await batch.commit();
+        console.log(`  Committed ${count} purchase orders...`);
+        batch = this.db.batch();
+      }
+    } else {
+      console.log(`⚠️ Skipping purchase order ${poId} - insufficient data`);
     }
-    console.log(`✅ Normalized ${count} purchase orders`);
   }
+  
+  // Commit remaining
+  if (count % 400 !== 0) {
+    await batch.commit();
+  }
+  console.log(`✅ Normalized ${count} purchase orders with line items`);
+}
   
   /**
    * Normalize dashboard data for consistent frontend consumption
