@@ -7,17 +7,17 @@ const router = express.Router();
 // Analyze brand for purchase suggestions
 router.post('/analyze-brand', async (req, res) => {
   try {
-    const { brandId, userId, limit = 100 } = req.body;
+    const { brandId, limit = 100 } = req.body;
     
-    if (!brandId || !userId) {
+    if (!brandId) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Missing brandId or userId' 
+        error: 'Missing brandId' 
       });
     }
 
     // Check for recent analysis first (cache for 24 hours)
-    const latestAnalysis = await purchaseAnalysisService.getLatestAnalysis(brandId, userId);
+    const latestAnalysis = await purchaseAnalysisService.getLatestAnalysis(brandId);
     
     if (latestAnalysis && latestAnalysis.age < 86400000) { // 24 hours
       console.log('Using cached analysis');
@@ -29,14 +29,13 @@ router.post('/analyze-brand', async (req, res) => {
     }
 
     // Run new analysis
-    const result = await purchaseAnalysisService.analyzeBrand(brandId, userId, limit);
+    const result = await purchaseAnalysisService.analyzeBrand(brandId, limit);
     
     res.json({
       success: true,
       data: result,
       cached: false
     });
-
   } catch (error) {
     console.error('Analysis error:', error);
     res.status(500).json({ 
@@ -50,27 +49,29 @@ router.post('/analyze-brand', async (req, res) => {
 router.get('/:brandId/latest', async (req, res) => {
   try {
     const { brandId } = req.params;
-    const { userId } = req.query;
     
-    if (!userId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Missing userId' 
+    console.log(`Fetching latest analysis for brand: ${brandId}`);
+    
+    const analysis = await purchaseAnalysisService.getLatestAnalysis(brandId);
+    
+    if (!analysis) {
+      return res.json({
+        success: true,
+        data: null,
+        message: 'No analysis found - will need to generate new one'
       });
     }
-
-    const analysis = await purchaseAnalysisService.getLatestAnalysis(brandId, userId);
     
     res.json({
       success: true,
       data: analysis
     });
-
+    
   } catch (error) {
     console.error('Fetch error:', error);
     res.status(500).json({ 
       success: false, 
-      error: error.message 
+      error: error.message || 'Failed to fetch analysis'
     });
   }
 });
