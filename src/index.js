@@ -18,7 +18,6 @@ import normalizationRoutes from './routes/normalization.js';
 import authRoutes from './routes/auth.js';
 import purchaseAnalysisRoutes from './routes/purchaseAnalysis.js';
 import searchTrendsRoutes from './routes/searchTrends.js';
-import BrandUpdater from './updateSalesTransactionsBrands.js'
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
