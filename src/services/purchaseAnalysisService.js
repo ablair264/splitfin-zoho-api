@@ -324,7 +324,7 @@ class PurchaseAnalysisService {
     console.log(`💾 Saved ${results.length} competitor data points`);
   }
 
-async analyzeBrand(brandId, limit = 100) {
+  async analyzeBrand(brandId, limit = 100) {
   console.log(`🔄 Analyzing brand ${brandId}`);
   
   try {
@@ -756,6 +756,7 @@ async analyzeBrand(brandId, limit = 100) {
     console.error('Error getting latest analysis:', error);
     return null;
   }
-}
+ }
+} //
 
 export default new PurchaseAnalysisService();
