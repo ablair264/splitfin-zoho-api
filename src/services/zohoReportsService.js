@@ -19,21 +19,24 @@ const ZOHO_CONFIG = {
 
 class ZohoReportsService {
   constructor() {
+    this.cache = new Map(); // Make sure this is here
+    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes
   }
 
   /**
    * Generic function for paginated Zoho requests with caching - FIXED VERSION
    */
-  async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
-    const cacheKey = `${url}_${JSON.stringify(params)}`;
-    
-    if (useCache && this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      if (Date.now() - cached.timestamp < this.cacheTimeout) {
-        console.log(`📄 Using cached data for ${url}`);
-        return cached.data;
-      }
+async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
+  const cacheKey = `${url}_${JSON.stringify(params)}`;
+  
+  // Add null check
+  if (useCache && this.cache && this.cache.has(cacheKey)) {
+    const cached = this.cache.get(cacheKey);
+    if (Date.now() - cached.timestamp < this.cacheTimeout) {
+      console.log(`📄 Using cached data for ${url}`);
+      return cached.data;
     }
+  }
 
     const allData = [];
     let page = 1;
