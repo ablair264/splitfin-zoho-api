@@ -282,39 +282,24 @@ salesOrders.forEach(order => {
    */
 async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   try {
-    console.log(`🏷️  Fetching brand performance for ${dateRange} using sales_transactions...`);
     const db = admin.firestore();
-    
-    // Get the date range
     const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
     
-    // Query the sales_transactions collection for the period
+    // Query sales_transactions which has correct brand data
     const transactionsSnapshot = await db.collection('sales_transactions')
-      .where('order_date', '>=', startDate.toISOString())
-      .where('order_date', '<=', endDate.toISOString())
+      .where('order_date', '>=', startDate.toISOString().split('T')[0])
+      .where('order_date', '<=', endDate.toISOString().split('T')[0])
       .get();
-      
-    if (transactionsSnapshot.empty) {
-      console.log('📊 No transactions found for brand performance calculation in this period.');
-      return {
-        brands: [],
-        summary: { totalBrands: 0, totalRevenue: 0, topBrand: null },
-        period: dateRange
-      };
-    }
     
-    const transactions = transactionsSnapshot.docs.map(doc => doc.data());
-    
-    // Aggregate the transactions by brand_normalized
     const brandStats = new Map();
     
-    transactions.forEach(transaction => {
-      // Use brand_normalized directly from the transaction
-      const brand = transaction.brand_normalized || transaction.brand || 'Unknown';
+    transactionsSnapshot.forEach(doc => {
+      const transaction = doc.data();
+      const brand = transaction.brand || 'Unknown';
       
       if (!brandStats.has(brand)) {
         brandStats.set(brand, {
-          name: brand, // Changed from 'brand' to 'name' to match your Dashboard component
+          name: brand,
           revenue: 0,
           quantity: 0,
           orders: new Set(),
@@ -323,159 +308,90 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
       }
       
       const stats = brandStats.get(brand);
-      stats.revenue += parseFloat(transaction.total || 0);
-      stats.quantity += parseInt(transaction.quantity || 0);
+      stats.revenue += transaction.total || 0;
+      stats.quantity += transaction.quantity || 0;
       stats.orders.add(transaction.order_id);
-      
-      // If you still want to track unique products
       if (transaction.item_id) {
         stats.products.add(transaction.item_id);
       }
     });
     
-    // Convert to array and calculate additional metrics
+    // Convert to array
     const brands = Array.from(brandStats.values()).map(stats => ({
-      name: stats.name, // IMPORTANT: Changed from 'brand' to 'name' to match Dashboard component
+      name: stats.name,
       revenue: stats.revenue,
       quantity: stats.quantity,
       orderCount: stats.orders.size,
       productCount: stats.products.size,
-      averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0,
-      market_share: 0 // Changed to snake_case to match Dashboard component
+      market_share: 0
     })).sort((a, b) => b.revenue - a.revenue);
     
-    // Calculate total revenue and market share
+    // Calculate market share
     const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
     brands.forEach(brand => {
       brand.market_share = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
     });
-    
-    console.log(`✅ Brand performance calculated: ${brands.length} brands, total revenue: £${totalRevenue.toFixed(2)}`);
     
     return {
       brands,
       summary: {
         totalBrands: brands.length,
         totalRevenue,
-        topBrand: brands[0] || null,
-        averageRevenuePerBrand: brands.length > 0 ? totalRevenue / brands.length : 0
-      },
-      period: dateRange
+        topBrand: brands[0] || null
+      }
     };
     
   } catch (error) {
     console.error('❌ Error fetching brand performance:', error);
-    return {
-      brands: [],
-      summary: { totalBrands: 0, totalRevenue: 0, topBrand: null, averageRevenuePerBrand: 0 },
-      period: dateRange,
-      error: error.message
-    };
+    throw error;
   }
 }
 
   /**
    * FIXED: Get customer analytics with agent filtering
    */
-  async getCustomerAnalytics(dateRange = '30_days', customDateRange = null, agentId = null) {
-    try {
-      const db = admin.firestore();
-      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-      
-      // Get sales orders (filtered by agent if provided)
-      const salesOrders = await this.getSalesOrders(dateRange, customDateRange, agentId);
-      
-      // Calculate customer performance from sales orders
-      const customerStats = new Map();
-      
-      salesOrders.forEach(order => {
-        const customerId = order.customer_id;
-        const customerName = order.customer_name || 'Unknown Customer';
-        
-        if (!customerStats.has(customerId)) {
-          customerStats.set(customerId, {
-            id: customerId,
-            name: customerName,
-            totalSpent: 0,
-            orderCount: 0,
-            lastOrderDate: null,
-            firstOrderDate: null,
-            agentId: order.salesperson_id
-          });
-        }
-        
-        const stats = customerStats.get(customerId);
-        stats.totalSpent += parseFloat(order.total || 0);
-        stats.orderCount++;
-        
-        const orderDate = new Date(order.date);
-        if (!stats.lastOrderDate || orderDate > stats.lastOrderDate) {
-          stats.lastOrderDate = orderDate;
-        }
-        if (!stats.firstOrderDate || orderDate < stats.firstOrderDate) {
-          stats.firstOrderDate = orderDate;
-        }
-      });
-
-      // Convert to array
-      let customers = Array.from(customerStats.values());
-      
-      // If agent filtering is requested, filter customers
-      if (agentId) {
-        customers = customers.filter(customer => customer.agentId === agentId);
-      }
-
-      // Segment customers
-      const segments = {
-        vip: customers.filter(c => c.totalSpent >= 10000),
-        high: customers.filter(c => c.totalSpent >= 5000 && c.totalSpent < 10000),
-        medium: customers.filter(c => c.totalSpent >= 1000 && c.totalSpent < 5000),
-        low: customers.filter(c => c.totalSpent < 1000)
-      };
-
-      // Add segment info to customers
-      customers.forEach(customer => {
-        if (customer.totalSpent >= 10000) customer.segment = 'VIP';
-        else if (customer.totalSpent >= 5000) customer.segment = 'High';
-        else if (customer.totalSpent >= 1000) customer.segment = 'Medium';
-        else customer.segment = 'Low';
-      });
-
-      const totalRevenue = customers.reduce((sum, c) => sum + c.totalSpent, 0);
-
-      return {
-        customers: customers.sort((a, b) => b.totalSpent - a.totalSpent),
-        segments: {
-          vip: segments.vip.length,
-          vipRevenue: segments.vip.reduce((sum, c) => sum + c.totalSpent, 0),
-          vipPercentage: totalRevenue > 0 ? (segments.vip.reduce((sum, c) => sum + c.totalSpent, 0) / totalRevenue) * 100 : 0,
-          high: segments.high.length,
-          highRevenue: segments.high.reduce((sum, c) => sum + c.totalSpent, 0),
-          highPercentage: totalRevenue > 0 ? (segments.high.reduce((sum, c) => sum + c.totalSpent, 0) / totalRevenue) * 100 : 0,
-          medium: segments.medium.length,
-          mediumRevenue: segments.medium.reduce((sum, c) => sum + c.totalSpent, 0),
-          mediumPercentage: totalRevenue > 0 ? (segments.medium.reduce((sum, c) => sum + c.totalSpent, 0) / totalRevenue) * 100 : 0,
-          low: segments.low.length,
-          lowRevenue: segments.low.reduce((sum, c) => sum + c.totalSpent, 0),
-          lowPercentage: totalRevenue > 0 ? (segments.low.reduce((sum, c) => sum + c.totalSpent, 0) / totalRevenue) * 100 : 0
-        },
-        summary: {
-          totalCustomers: customers.length,
-          activeCustomers: customers.filter(c => {
-            const daysSinceLastOrder = (Date.now() - c.lastOrderDate?.getTime()) / (1000 * 60 * 60 * 24);
-            return daysSinceLastOrder <= 90;
-          }).length,
-          averageCustomerValue: customers.length > 0 ? totalRevenue / customers.length : 0,
-          totalRevenue
-        },
-        period: dateRange
-      };
-
-    } catch (error) {
-      console.error('❌ Error fetching customer analytics:', error);
-      throw error;
-    }
+async getCustomerAnalytics(dateRange = '30_days', customDateRange = null) {
+  try {
+    const db = admin.firestore();
+    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+    
+    // Use normalized_customers which already has calculated metrics
+    const customersSnapshot = await db.collection('normalized_customers')
+      .where('last_order_date', '>=', startDate.toISOString())
+      .where('last_order_date', '<=', endDate.toISOString())
+      .get();
+    
+    const customers = customersSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    // Calculate segments
+    const segments = {
+      vip: customers.filter(c => c.segment === 'VIP'),
+      high: customers.filter(c => c.segment === 'High'),
+      medium: customers.filter(c => c.segment === 'Medium'),
+      low: customers.filter(c => c.segment === 'Low')
+    };
+    
+    return {
+      totalCustomers: customers.length,
+      newCustomers: customers.filter(c => 
+        new Date(c.first_order_date) >= startDate
+      ).length,
+      repeatCustomers: customers.filter(c => c.order_count > 1).length,
+      segments,
+      topCustomers: customers
+        .sort((a, b) => b.total_spent - a.total_spent)
+        .slice(0, 10),
+      averageOrderValue: customers.reduce((sum, c) => sum + c.average_order_value, 0) / customers.length || 0
+    };
+    
+  } catch (error) {
+    console.error('❌ Error getting customer analytics:', error);
+    throw error;
   }
+}
 
   /**
    * Get sales orders from Zoho Inventory
@@ -615,48 +531,97 @@ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   /**
    * Get revenue analysis
    */
-  async getRevenueAnalysis(dateRange = '30_days', customDateRange = null) {
-    try {
-      const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
-      const invoices = await this.getInvoices(dateRange, customDateRange);
-      
-      const grossRevenue = salesOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
-      const paidRevenue = invoices.paid.reduce((sum, inv) => sum + parseFloat(inv.total || 0), 0);
-      const outstandingRevenue = invoices.outstanding.reduce((sum, inv) => sum + parseFloat(inv.balance || 0), 0);
-      
-      // Calculate tax amount (assuming 20% VAT)
-      const taxAmount = grossRevenue * 0.2 / 1.2;
-      const netRevenue = grossRevenue - taxAmount;
-      
-      return {
-        grossRevenue,
-        netRevenue,
-        taxAmount,
-        paidRevenue,
-        outstandingRevenue,
-        profitMargin: netRevenue > 0 ? ((netRevenue - (netRevenue * 0.7)) / netRevenue) * 100 : 0,
-        period: dateRange
-      };
-
-    } catch (error) {
-      console.error('❌ Error calculating revenue analysis:', error);
-      throw error;
-    }
+async getRevenueAnalysis(dateRange = '30_days', customDateRange = null) {
+  try {
+    console.log(`📊 Calculating revenue analysis from Firestore for ${dateRange}...`);
+    const db = admin.firestore();
+    
+    // Get date range
+    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+    
+    // 1. Get gross revenue from sales_transactions (most efficient)
+    const transactionsSnapshot = await db.collection('sales_transactions')
+      .where('order_date', '>=', startDate.toISOString().split('T')[0])
+      .where('order_date', '<=', endDate.toISOString().split('T')[0])
+      .get();
+    
+    let grossRevenue = 0;
+    let totalQuantity = 0;
+    
+    transactionsSnapshot.forEach(doc => {
+      const transaction = doc.data();
+      grossRevenue += transaction.total || 0;
+      totalQuantity += transaction.quantity || 0;
+    });
+    
+    // 2. Get invoice data from normalized_invoices (already calculated)
+    const invoicesSnapshot = await db.collection('normalized_invoices')
+      .where('date', '>=', startDate.toISOString().split('T')[0])
+      .where('date', '<=', endDate.toISOString().split('T')[0])
+      .get();
+    
+    let paidRevenue = 0;
+    let outstandingRevenue = 0;
+    let overdueRevenue = 0;
+    
+    invoicesSnapshot.forEach(doc => {
+      const invoice = doc.data();
+      if (invoice.status === 'paid') {
+        paidRevenue += invoice.total || 0;
+      } else {
+        outstandingRevenue += invoice.balance || 0;
+        if (invoice.days_overdue > 0) {
+          overdueRevenue += invoice.balance || 0;
+        }
+      }
+    });
+    
+    // 3. Calculate tax more accurately
+    // UK VAT is 20%, but calculate net amount properly
+    const netRevenue = grossRevenue / 1.2; // Remove VAT
+    const taxAmount = grossRevenue - netRevenue;
+    
+    // 4. Get cost data from purchase orders for margin calculation
+    const purchaseOrdersSnapshot = await db.collection('normalized_purchase_orders')
+      .where('order_date', '>=', startDate.toISOString())
+      .where('order_date', '<=', endDate.toISOString())
+      .get();
+    
+    let totalCost = 0;
+    purchaseOrdersSnapshot.forEach(doc => {
+      totalCost += doc.data().total_amount || 0;
+    });
+    
+    // Calculate actual profit margin if we have cost data
+    const profitMargin = grossRevenue > 0 && totalCost > 0 
+      ? ((grossRevenue - totalCost) / grossRevenue) * 100 
+      : 30; // Default 30% if no cost data
+    
+    return {
+      grossRevenue,
+      netRevenue,
+      taxAmount,
+      paidRevenue,
+      outstandingRevenue,
+      overdueRevenue,
+      totalCost,
+      grossProfit: grossRevenue - totalCost,
+      profitMargin,
+      averageOrderValue: transactionsSnapshot.size > 0 ? grossRevenue / transactionsSnapshot.size : 0,
+      totalTransactions: transactionsSnapshot.size,
+      totalQuantitySold: totalQuantity,
+      period: dateRange,
+      dateRange: {
+        start: startDate.toISOString().split('T')[0],
+        end: endDate.toISOString().split('T')[0]
+      }
+    };
+    
+  } catch (error) {
+    console.error('❌ Error calculating revenue analysis:', error);
+    throw error;
   }
-  
-  async getItems() {
-    try {
-      const items = await this.fetchPaginatedData(
-        `${ZOHO_CONFIG.baseUrls.inventory}/items`, 
-        { organization_id: ZOHO_CONFIG.orgId },
-        'items'
-      );
-      return items;
-    } catch (error) {
-      console.error('❌ Error fetching items:', error);
-      throw error;
-    }
-  }
+}
 
  async getPurchaseOrders(dateRange, customDateRange) {
     return zohoInventoryService.getPurchaseOrders(dateRange, customDateRange);
