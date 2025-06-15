@@ -280,102 +280,99 @@ salesOrders.forEach(order => {
   /**
    * Get brand performance data - using existing implementation
    */
-  async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
-    try {
-      console.log(`🏷️  Fetching brand performance for ${dateRange} using analytics collections...`);
-      const db = admin.firestore();
-
-      // Get all products from Firebase to get brand information
-      const productsSnapshot = await db.collection('products').get();
-      const productBrandMap = new Map();
-      productsSnapshot.forEach(doc => {
-        const product = doc.data();
-        if (product.zohoCRMId && product.brand_normalized) {
-          productBrandMap.set(product.zohoCRMId.toString(), product.brand_normalized);
-        }
-      });
-      console.log(`🗺️  Created brand lookup map with ${productBrandMap.size} products.`);
-
-      // Query the sales_transactions collection for the period
-      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
+  try {
+    console.log(`🏷️  Fetching brand performance for ${dateRange} using sales_transactions...`);
+    const db = admin.firestore();
+    
+    // Get the date range
+    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+    
+    // Query the sales_transactions collection for the period
+    const transactionsSnapshot = await db.collection('sales_transactions')
+      .where('order_date', '>=', startDate.toISOString())
+      .where('order_date', '<=', endDate.toISOString())
+      .get();
       
-      const transactionsSnapshot = await db.collection('sales_transactions')
-        .where('order_date', '>=', startDate.toISOString())
-        .where('order_date', '<=', endDate.toISOString())
-        .get();
-        
-      if (transactionsSnapshot.empty) {
-        console.log('📊 No transactions found for brand performance calculation in this period.');
-        return {
-          brands: [],
-          summary: { totalBrands: 0, totalRevenue: 0, topBrand: null },
-          period: dateRange
-        };
-      }
-      const transactions = transactionsSnapshot.docs.map(doc => doc.data());
-
-      // Aggregate the transactions to calculate brand stats
-      const brandStats = new Map();
-      
-      transactions.forEach(transaction => {
-        const brand = productBrandMap.get(transaction.item_id?.toString()) || 'Unknown';
-        
-        if (!brandStats.has(brand)) {
-          brandStats.set(brand, {
-            brand,
-            revenue: 0,
-            quantity: 0,
-            orders: new Set(),
-            products: new Set()
-          });
-        }
-        
-        const stats = brandStats.get(brand);
-        stats.revenue += parseFloat(transaction.total || 0);
-        stats.quantity += parseInt(transaction.quantity || 0);
-        stats.orders.add(transaction.order_id);
-        stats.products.add(transaction.item_id);
-      });
-
-      // Convert to array and calculate additional metrics
-      const brands = Array.from(brandStats.values()).map(stats => ({
-        brand: stats.brand,
-        revenue: stats.revenue,
-        quantity: stats.quantity,
-        orderCount: stats.orders.size,
-        productCount: stats.products.size,
-        averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0,
-        marketShare: 0
-      })).sort((a, b) => b.revenue - a.revenue);
-
-      const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
-      brands.forEach(brand => {
-        brand.marketShare = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
-      });
-
-      console.log(`✅ Brand performance calculated: ${brands.length} brands, total revenue: £${totalRevenue.toFixed(2)}`);
-
-      return {
-        brands,
-        summary: {
-          totalBrands: brands.length,
-          totalRevenue,
-          topBrand: brands[0] || null,
-          averageRevenuePerBrand: brands.length > 0 ? totalRevenue / brands.length : 0
-        },
-        period: dateRange
-      };
-
-    } catch (error) {
-      console.error('❌ Error fetching brand performance:', error);
+    if (transactionsSnapshot.empty) {
+      console.log('📊 No transactions found for brand performance calculation in this period.');
       return {
         brands: [],
-        summary: { totalBrands: 0, totalRevenue: 0, topBrand: null, averageRevenuePerBrand: 0 },
-        period: dateRange,
-        error: error.message
+        summary: { totalBrands: 0, totalRevenue: 0, topBrand: null },
+        period: dateRange
       };
     }
+    
+    const transactions = transactionsSnapshot.docs.map(doc => doc.data());
+    
+    // Aggregate the transactions by brand_normalized
+    const brandStats = new Map();
+    
+    transactions.forEach(transaction => {
+      // Use brand_normalized directly from the transaction
+      const brand = transaction.brand_normalized || transaction.brand || 'Unknown';
+      
+      if (!brandStats.has(brand)) {
+        brandStats.set(brand, {
+          name: brand, // Changed from 'brand' to 'name' to match your Dashboard component
+          revenue: 0,
+          quantity: 0,
+          orders: new Set(),
+          products: new Set()
+        });
+      }
+      
+      const stats = brandStats.get(brand);
+      stats.revenue += parseFloat(transaction.total || 0);
+      stats.quantity += parseInt(transaction.quantity || 0);
+      stats.orders.add(transaction.order_id);
+      
+      // If you still want to track unique products
+      if (transaction.item_id) {
+        stats.products.add(transaction.item_id);
+      }
+    });
+    
+    // Convert to array and calculate additional metrics
+    const brands = Array.from(brandStats.values()).map(stats => ({
+      name: stats.name, // IMPORTANT: Changed from 'brand' to 'name' to match Dashboard component
+      revenue: stats.revenue,
+      quantity: stats.quantity,
+      orderCount: stats.orders.size,
+      productCount: stats.products.size,
+      averageOrderValue: stats.orders.size > 0 ? stats.revenue / stats.orders.size : 0,
+      market_share: 0 // Changed to snake_case to match Dashboard component
+    })).sort((a, b) => b.revenue - a.revenue);
+    
+    // Calculate total revenue and market share
+    const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
+    brands.forEach(brand => {
+      brand.market_share = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
+    });
+    
+    console.log(`✅ Brand performance calculated: ${brands.length} brands, total revenue: £${totalRevenue.toFixed(2)}`);
+    
+    return {
+      brands,
+      summary: {
+        totalBrands: brands.length,
+        totalRevenue,
+        topBrand: brands[0] || null,
+        averageRevenuePerBrand: brands.length > 0 ? totalRevenue / brands.length : 0
+      },
+      period: dateRange
+    };
+    
+  } catch (error) {
+    console.error('❌ Error fetching brand performance:', error);
+    return {
+      brands: [],
+      summary: { totalBrands: 0, totalRevenue: 0, topBrand: null, averageRevenuePerBrand: 0 },
+      period: dateRange,
+      error: error.message
+    };
   }
+}
 
   /**
    * FIXED: Get customer analytics with agent filtering
