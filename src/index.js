@@ -213,7 +213,7 @@ app.use((err, req, res, next) => {
 });
 
 // ── Server Startup ──────────────────────────────────────────────────
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║           Splitfin Zoho Integration API                    ║');
   console.log('╠════════════════════════════════════════════════════════════╣');
