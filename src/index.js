@@ -120,41 +120,6 @@ app.get('/', (req, res) => {
   });
 });
 
-app.post('/api/admin/update-brands-once', async (req, res) => {
-  try {
-    // Check if already run - use a new document ID for this updated version
-    const runFlag = await admin.firestore()
-      .collection('_admin')
-      .doc('brand-update-rader-fix-2024')  // Changed to new ID
-      .get();
-    
-    if (runFlag.exists) {
-      return res.status(400).json({ 
-        error: 'Brand update with rader fix already completed' 
-      });
-    }
-    
-    // Run the update
-    const updater = new BrandUpdater();
-    const result = await updater.updateAllBrands();
-    
-    // Mark as completed
-    await admin.firestore()
-      .collection('_admin')
-      .doc('brand-update-rader-fix-2024')  // Changed to new ID
-      .set({
-        completed: true,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        result
-      });
-    
-    res.json({ success: true, result });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 app.get('/health', async (req, res) => {
   try {
     // Basic health check
