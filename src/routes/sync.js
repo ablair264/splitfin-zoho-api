@@ -3,6 +3,7 @@ import express from 'express';
 import admin from 'firebase-admin';
 import firestoreSyncService from '../firestoreSyncService.js';
 import { syncInventory, syncCustomersFromCRM } from '../syncInventory.js';
+import ZohoFullDataSync from '../fullZohoDataSync.js';
 
 const router = express.Router();
 
@@ -81,12 +82,6 @@ router.get('/status', (req, res) => {
     timestamp: Date.now()
   });
 });
-
-// src/routes/sync.js
-import express from 'express';
-import ZohoFullDataSync from '../fullZohoDataSync.js';
-
-const router = express.Router();
 
 // Sync endpoint with authentication
 router.post('/sync/full-zoho-data', async (req, res) => {
