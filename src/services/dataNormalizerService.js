@@ -433,11 +433,12 @@ class DataNormalizerService {
     
     // Build customer name with safe access
     const customerName = this.safeString(
-      customer.Name || 
-      customer.Account_Name ||
-      `${this.safeString(customer.Primary_First_Name)} ${this.safeString(customer.Primary_Last_Name)}`.trim() ||
-      'Unknown Customer'
-    );
+  customer.name ||                    // Add lowercase check
+  customer.customer_name ||           // Add field from Python script
+  customer.company_name ||            // Add field from Python script
+  `${this.safeString(customer.Primary_First_Name)} ${this.safeString(customer.Primary_Last_Name)}`.trim() ||
+  'Unknown Customer'
+);
     
     // Extract postcode
     const postcode = this.safeString(customer.Billing_Code || customer.postcode || customer.postal_code);
