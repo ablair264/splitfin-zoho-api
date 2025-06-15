@@ -37,6 +37,8 @@ router.get('/changes', async (req, res) => {
   }
 });
 
+
+
 /**
  * Mark specific changes as processed by the client
  */
@@ -79,6 +81,67 @@ router.get('/status', (req, res) => {
     timestamp: Date.now()
   });
 });
+
+// src/routes/sync.js
+import express from 'express';
+import ZohoFullDataSync from '../fullZohoDataSync.js';
+
+const router = express.Router();
+
+// Sync endpoint with authentication
+router.post('/sync/full-zoho-data', async (req, res) => {
+  try {
+    // Add authentication check here
+    const authHeader = req.headers.authorization;
+    const expectedToken = process.env.SYNC_SECRET_TOKEN; // Set this in Render
+    
+    if (!authHeader || authHeader !== `Bearer ${expectedToken}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    
+    // Check for clear parameter
+    const clearFirst = req.body.clearFirst || false;
+    
+    // Run sync asynchronously
+    res.json({ 
+      message: 'Full sync started', 
+      clearFirst,
+      timestamp: new Date().toISOString() 
+    });
+    
+    // Run the sync in background
+    const sync = new ZohoFullDataSync();
+    sync.runFullSync(clearFirst)
+      .then(result => {
+        console.log('Full sync completed:', result);
+      })
+      .catch(error => {
+        console.error('Full sync failed:', error);
+      });
+    
+  } catch (error) {
+    console.error('Sync endpoint error:', error);
+    res.status(500).json({ error: 'Failed to start sync' });
+  }
+});
+
+// Check sync status
+router.get('/sync/status', async (req, res) => {
+  try {
+    const db = admin.firestore();
+    const syncDoc = await db.collection('sync_metadata').doc('full_sync').get();
+    
+    if (syncDoc.exists) {
+      res.json(syncDoc.data());
+    } else {
+      res.json({ message: 'No sync data available' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+export default router;
 
 /**
  * Manually trigger cleanup of old sync changes

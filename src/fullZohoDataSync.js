@@ -1,7 +1,7 @@
 // fullZohoDataSync.js
 import admin from 'firebase-admin';
 import axios from 'axios';
-import { getAccessToken } from './src/api/zoho.js'; // Adjust path as needed
+import { getAccessToken } from './api/zoho.js'; // Adjust path as needed
 
 // Initialize Firebase Admin if not already initialized
 if (!admin.apps.length) {
