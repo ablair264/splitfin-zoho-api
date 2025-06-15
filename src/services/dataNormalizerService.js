@@ -799,29 +799,25 @@ class DataNormalizerService {
  * @param {Array<string>} orderIds - Optional array of specific order IDs to process
  */
 async enrichNormalizedOrdersWithLineItems(orderIds = null) {
-  console.log('🔄 Enriching normalized orders with line items from Zoho...');
+  console.log('🔄 Enriching normalized orders with line items from Firebase...');
   
   try {
     if (orderIds && orderIds.length > 0) {
       let totalEnriched = 0;
       
-      // Process in smaller batches to avoid overwhelming Zoho API
+      // Process in smaller batches for better performance
       const BATCH_SIZE = 50;
       
       for (let i = 0; i < orderIds.length; i += BATCH_SIZE) {
         const batch = orderIds.slice(i, i + BATCH_SIZE);
-        const enriched = await this._enrichOrderBatchFromZoho(batch);
+        const enriched = await this._enrichOrderBatchFromFirebase(batch);
         totalEnriched += enriched;
-        
-        if (i + BATCH_SIZE < orderIds.length) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
       }
       
-      console.log(`✅ Enriched ${totalEnriched} orders with line items from Zoho`);
+      console.log(`✅ Enriched ${totalEnriched} orders with line items from Firebase`);
       return { success: true, count: totalEnriched };
     } else {
-      return await this._enrichAllOrdersFromZoho();
+      return await this._enrichAllOrdersFromFirebase();
     }
     
   } catch (error) {
@@ -830,71 +826,152 @@ async enrichNormalizedOrdersWithLineItems(orderIds = null) {
   }
 }
 
-async _enrichOrderBatchFromZoho(orderIds) {
+async _enrichOrderBatchFromFirebase(orderIds) {
   let batch = this.db.batch();
   let count = 0;
   let successCount = 0;
   
   for (const orderId of orderIds) {
     try {
-      // Use the unified service to fetch order
-      const zohoOrder = await zohoInventoryService.getSalesOrder(orderId);
+      // Query the orders collection to find matching salesorder_id
+      const ordersSnapshot = await this.db.collection('orders')
+        .where('salesorder_id', '==', orderId)
+        .limit(1)
+        .get();
       
-      if (!zohoOrder) {
-        console.log(`⚠️ Order ${orderId} not found in Zoho`);
+      if (ordersSnapshot.empty) {
+        console.log(`⚠️ Order ${orderId} not found in orders collection`);
         continue;
       }
       
-      // Extract line items with safe access
-      const lineItems = this.safeArray(zohoOrder.line_items).map(item => {
-        return this.cleanObject({
-          item_id: this.safeString(item.item_id),
-          item_name: this.safeString(item.name || item.item_name),
-          sku: this.safeString(item.sku),
-          description: this.safeString(item.description),
-          quantity: this.safeInt(item.quantity),
-          price: this.safeNumber(item.rate || item.price),
-          total: this.safeNumber(item.item_total || item.total),
-          tax_percentage: this.safeNumber(item.tax_percentage),
-          discount: this.safeNumber(item.discount),
-          brand: this.safeString(item.brand || item.cf_brand)
-        });
-      });
+      const orderDoc = ordersSnapshot.docs[0];
+      const orderData = orderDoc.data();
       
+      // Extract and transform line items with field mappings
+      const lineItems = await Promise.all(
+        this.safeArray(orderData.line_items).map(async (item) => {
+          // Get brand_normalized from normalized_products collection
+          let brandNormalized = null;
+          
+          if (item.sku) {
+            const productSnapshot = await this.db.collection('normalized_products')
+              .where('sku', '==', item.sku)
+              .limit(1)
+              .get();
+            
+            if (!productSnapshot.empty) {
+              brandNormalized = productSnapshot.docs[0].data().brand_normalized || null;
+            }
+          }
+          
+          return this.cleanObject({
+            item_id: this.safeString(item.item_id),
+            item_name: this.safeString(item.description), // description -> item_name
+            sku: this.safeString(item.sku),
+            description: this.safeString(item.description),
+            quantity: this.safeInt(item.quantity),
+            price: this.safeNumber(item.rate), // rate -> price
+            total: this.safeNumber(item.total),
+            tax_percentage: this.safeNumber(item.tax_percentage),
+            discount: this.safeNumber(item.discount),
+            brand: this.safeString(item.brand || item.cf_brand),
+            brand_normalized: brandNormalized
+          });
+        })
+      );
+      
+      // Update the normalized_orders document
       const docRef = this.db.collection('normalized_orders').doc(orderId);
       batch.update(docRef, {
         line_items: lineItems,
-        total_amount: this.safeNumber(zohoOrder.total),
-        total_invoiced_amount: this.safeNumber(zohoOrder.invoiced_amount || 0),
-        sub_total: this.safeNumber(zohoOrder.sub_total),
-        tax_total: this.safeNumber(zohoOrder.tax_total),
-        discount_total: this.safeNumber(zohoOrder.discount),
-        _line_items_enriched: true,
-        _line_items_enriched_at: admin.firestore.FieldValue.serverTimestamp(),
-        _enriched_from: 'zoho_direct'
+        total_amount: this.safeNumber(orderData.total),
+        total_invoiced_amount: this.safeNumber(orderData.invoiced_amount || 0),
+        sub_total: this.safeNumber(orderData.sub_total),
+        tax_total: this.safeNumber(orderData.tax_total),
+        discount_total: this.safeNumber(orderData.discount),
+        line_items_enriched: true,
+        line_items_enriched_at: admin.firestore.FieldValue.serverTimestamp(),
+        enriched_from: 'firebase'
       });
       
       count++;
       successCount++;
       
+      // Commit batch every 50 updates
       if (count % 50 === 0) {
         await batch.commit();
         console.log(`  Enriched ${count} orders...`);
         batch = this.db.batch();
       }
       
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
     } catch (error) {
       console.error(`❌ Error enriching order ${orderId}:`, error);
     }
   }
   
+  // Commit any remaining updates
   if (count % 50 !== 0) {
     await batch.commit();
   }
   
   return successCount;
+}
+
+async _enrichAllOrdersFromFirebase() {
+  console.log('📋 Enriching all orders from Firebase...');
+  
+  try {
+    // Get all normalized orders that need enrichment
+    const normalizedOrdersSnapshot = await this.db.collection('normalized_orders')
+      .where('line_items_enriched', '!=', true)
+      .get();
+    
+    const orderIds = normalizedOrdersSnapshot.docs.map(doc => doc.id);
+    
+    if (orderIds.length === 0) {
+      console.log('✅ All orders already enriched');
+      return { success: true, count: 0 };
+    }
+    
+    console.log(`Found ${orderIds.length} orders to enrich`);
+    
+    // Process in batches
+    let totalEnriched = 0;
+    const BATCH_SIZE = 50;
+    
+    for (let i = 0; i < orderIds.length; i += BATCH_SIZE) {
+      const batch = orderIds.slice(i, i + BATCH_SIZE);
+      const enriched = await this._enrichOrderBatchFromFirebase(batch);
+      totalEnriched += enriched;
+    }
+    
+    console.log(`✅ Enriched ${totalEnriched} orders with line items from Firebase`);
+    return { success: true, count: totalEnriched };
+    
+  } catch (error) {
+    console.error('❌ Error enriching all orders:', error);
+    throw error;
+  }
+}
+
+// Helper method to optimize SKU lookups if processing many orders
+async _buildSkuToBrandMap() {
+  console.log('🔍 Building SKU to brand mapping...');
+  const skuMap = new Map();
+  
+  const productsSnapshot = await this.db.collection('normalized_products')
+    .select('sku', 'brand_normalized')
+    .get();
+  
+  productsSnapshot.forEach(doc => {
+    const data = doc.data();
+    if (data.sku && data.brand_normalized) {
+      skuMap.set(data.sku, data.brand_normalized);
+    }
+  });
+  
+  console.log(`✅ Built mapping for ${skuMap.size} SKUs`);
+  return skuMap;
 }
 
 /**
