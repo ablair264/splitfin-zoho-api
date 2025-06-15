@@ -391,4 +391,56 @@ class BrandUpdater {
   }
 }
 
-// The rest remains the same...
+// Run the script
+async function main() {
+  const updater = new BrandUpdater();
+
+  try {
+    // Show current statistics
+    console.log('=== Current Brand Statistics ===');
+    const unknownCount = await updater.db.collection('sales_transactions')
+      .where('brand', 'in', ['Unknown Brand', '', null])
+      .count()
+      .get();
+    
+    console.log(`Unknown/empty brand transactions: ${unknownCount.data().count}`);
+    
+    console.log('\n=== Preview Brand Extraction ===');
+    await updater.previewBrandExtraction(10);
+    
+    console.log('\n⚠️  Ready to update brands. This will:');
+    console.log('1. Try to match brands from the products collection');
+    console.log('2. Look up SKUs in Zoho Inventory for manufacturer/vendor');
+    console.log('3. Extract brands from item_name with custom rules');
+    console.log('\nPress Ctrl+C to cancel, or wait 5 seconds to continue...\n');
+    
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Run the update
+    console.log('\n=== Starting Brand Update ===');
+    await updater.updateAllBrands();
+    
+  } catch (error) {
+    console.error('Script failed:', error);
+    process.exit(1);
+  }
+}
+
+// Initialize Firebase Admin (if not already initialized)
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
+
+// Run the script
+main().then(() => {
+  console.log('\n✅ Script completed successfully!');
+  process.exit(0);
+}).catch(error => {
+  console.error('\n❌ Script failed:', error);
+  process.exit(1);
+});
+
+export default BrandUpdater;
+
+
+
