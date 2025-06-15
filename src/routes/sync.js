@@ -3,7 +3,6 @@ import express from 'express';
 import admin from 'firebase-admin';
 import firestoreSyncService from '../firestoreSyncService.js';
 import { syncInventory, syncCustomersFromCRM } from '../syncInventory.js';
-import ZohoFullDataSync from '../fullZohoDataSync.js';
 
 const router = express.Router();
 
@@ -34,78 +33,6 @@ router.get('/changes', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message
-    });
-  }
-});
-
-// At the top of server/src/routes/sync.js, add the import:
-import ZohoFullDataSync from '../fullZohoDataSync.js';
-
-// Then add these routes:
-
-/**
- * Trigger full Zoho data sync
- * POST /api/sync/full-zoho-data
- * Body: { clearFirst: boolean }
- */
-router.post('/full-zoho-data', async (req, res) => {
-  try {
-    const { clearFirst = false } = req.body;
-    
-    // Return immediately with acceptance response
-    res.json({ 
-      success: true,
-      message: 'Full Zoho sync started in background', 
-      clearFirst,
-      timestamp: new Date().toISOString() 
-    });
-    
-    // Run sync in background
-    const sync = new ZohoFullDataSync();
-    sync.runFullSync(clearFirst)
-      .then(result => {
-        console.log('✅ Full Zoho sync completed:', result);
-      })
-      .catch(error => {
-        console.error('❌ Full Zoho sync failed:', error);
-      });
-    
-  } catch (error) {
-    console.error('Error starting full sync:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to start sync' 
-    });
-  }
-});
-
-/**
- * Get full sync status from metadata
- * GET /api/sync/full-zoho-status
- */
-router.get('/full-zoho-status', async (req, res) => {
-  try {
-    const db = admin.firestore();
-    const syncDoc = await db.collection('sync_metadata').doc('full_sync').get();
-    
-    if (syncDoc.exists) {
-      const data = syncDoc.data();
-      res.json({
-        success: true,
-        ...data,
-        exists: true
-      });
-    } else {
-      res.json({ 
-        success: true,
-        exists: false,
-        message: 'No full sync has been run yet' 
-      });
-    }
-  } catch (error) {
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
     });
   }
 });
@@ -152,24 +79,6 @@ router.get('/status', (req, res) => {
     timestamp: Date.now()
   });
 });
-
-// Check sync status
-router.get('/sync/status', async (req, res) => {
-  try {
-    const db = admin.firestore();
-    const syncDoc = await db.collection('sync_metadata').doc('full_sync').get();
-    
-    if (syncDoc.exists) {
-      res.json(syncDoc.data());
-    } else {
-      res.json({ message: 'No sync data available' });
-    }
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-export default router;
 
 /**
  * Manually trigger cleanup of old sync changes
