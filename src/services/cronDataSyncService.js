@@ -5,7 +5,7 @@ import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
 import dataNormalizerService from './dataNormalizerService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
-import productSyncService from '../services/productSyncService.js';
+import productSyncService from './productSyncService.js';
 
 
 class CronDataSyncService {
@@ -428,7 +428,7 @@ class CronDataSyncService {
       return { success: false, error: error.message };
     }
   }
-
+}
   
   /**
    * Helper function to write data in batches
