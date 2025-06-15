@@ -324,7 +324,7 @@ class PurchaseAnalysisService {
     console.log(`💾 Saved ${results.length} competitor data points`);
   }
 
-aasync analyzeBrand(brandId, limit = 100) {
+async analyzeBrand(brandId, limit = 100) {
   console.log(`🔄 Analyzing brand ${brandId}`);
   
   try {
