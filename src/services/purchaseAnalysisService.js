@@ -7,6 +7,7 @@ import * as tf from '@tensorflow/tfjs-node';
 import NodeCache from 'node-cache';
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
+import axios from 'axios';
 
 puppeteer.use(StealthPlugin());
 
@@ -323,32 +324,65 @@ class PurchaseAnalysisService {
     console.log(`💾 Saved ${results.length} competitor data points`);
   }
 
-  async analyzeBrand(brandId, userId, limit = 100) {
-    console.log(`🔄 Analyzing brand ${brandId} for user ${userId}`);
+aasync analyzeBrand(brandId, limit = 100) {
+  console.log(`🔄 Analyzing brand ${brandId}`);
+  
+  try {
+    const db = admin.firestore();
     
-    try {
-      const db = admin.firestore();
-      
-      // 1. Get products for this brand
-      const productsSnapshot = await db.collection('products')
-        .where('brand_normalized', '==', brandId)
+    // 1. Get products for this brand - try both normalized and display name
+    let productsSnapshot = await db.collection('products')
+      .where('brand_normalized', '==', brandId)
+      .limit(limit)
+      .get();
+    
+    // If no products found with normalized, try with display name
+    if (productsSnapshot.empty) {
+      console.log(`No products found with brand_normalized: ${brandId}, trying brand field...`);
+      productsSnapshot = await db.collection('products')
+        .where('brand', '==', brandId)
         .limit(limit)
         .get();
+    }
+    
+    // If still empty, try case-insensitive match
+    if (productsSnapshot.empty) {
+      console.log(`No products found with brand: ${brandId}, trying case variations...`);
+      // Try common variations
+      const variations = [
+        brandId,
+        brandId.charAt(0).toUpperCase() + brandId.slice(1).toLowerCase(), // Capitalize first letter
+        brandId.toUpperCase(),
+        brandId.toLowerCase()
+      ];
       
-      if (productsSnapshot.empty) {
-        console.log(`No products found for brand ${brandId}`);
-        return {
-          predictions: [],
-          message: 'No products found for this brand'
-        };
+      for (const variant of variations) {
+        productsSnapshot = await db.collection('products')
+          .where('brand', '==', variant)
+          .limit(limit)
+          .get();
+        
+        if (!productsSnapshot.empty) {
+          console.log(`Found products with brand variant: ${variant}`);
+          break;
+        }
       }
-      
-      const products = productsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      
-      console.log(`Found ${products.length} products for brand ${brandId}`);
+    }
+    
+    if (productsSnapshot.empty) {
+      console.log(`No products found for any variation of brand ${brandId}`);
+      return {
+        predictions: [],
+        message: `No products found for brand: ${brandId}`
+      };
+    }
+    
+    const products = productsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    console.log(`Found ${products.length} products for brand ${brandId}`);
       
       // 2. Get sales history from sales_transactions
       const salesHistory = await this.getSalesHistory(products.map(p => p.sku));
@@ -409,24 +443,24 @@ class PurchaseAnalysisService {
       );
       
       // 6. Save analysis results
-      const analysisId = `${brandId}_${Date.now()}`;
-      await db.collection('purchase_analyses').doc(analysisId).set({
-        brandId,
-        userId,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        predictions: predictions.filter(p => p.recommendedQuantity > 0),
-        searchData,
-        competitorDataSummary: competitorData.length,
-        productsAnalyzed: products.length
-      });
+       const analysisId = `${brandId}_${Date.now()}`;
+    await db.collection('purchase_analyses').doc(analysisId).set({
+      brandId,
+      // userId removed
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      predictions: predictions.filter(p => p.recommendedQuantity > 0),
+      searchData,
+      competitorDataSummary: competitorData.length,
+      productsAnalyzed: products.length
+    });
       
       return {
-        analysisId,
-        predictions: predictions
-          .filter(p => p.recommendedQuantity > 0)
-          .sort((a, b) => b.confidence - a.confidence)
-          .slice(0, 50)
-      };
+      analysisId,
+      predictions: predictions
+        .filter(p => p.recommendedQuantity > 0)
+        .sort((a, b) => b.confidence - a.confidence)
+        .slice(0, 50)
+    };
       
     } catch (error) {
       console.error('Brand analysis error:', error);
@@ -696,32 +730,31 @@ class PurchaseAnalysisService {
     return reasons.join('. ') || 'Based on current market conditions';
   }
 
-  async getLatestAnalysis(brandId, userId) {
-    const db = admin.firestore();
+  async getLatestAnalysis(brandId) {
+  const db = admin.firestore();
+  
+  try {
+    const snapshot = await db.collection('purchase_analyses')
+      .where('brandId', '==', brandId)
+      // userId filter removed
+      .orderBy('timestamp', 'desc')
+      .limit(1)
+      .get();
     
-    try {
-      const snapshot = await db.collection('purchase_analyses')
-        .where('brandId', '==', brandId)
-        .where('userId', '==', userId)
-        .orderBy('timestamp', 'desc')
-        .limit(1)
-        .get();
-      
-      if (snapshot.empty) {
-        return null;
-      }
-      
-      const data = snapshot.docs[0].data();
-      const timestamp = data.timestamp?.toDate?.() || new Date(data.timestamp);
-      
-      return {
-        ...data,
-        age: Date.now() - timestamp.getTime()
-      };
-    } catch (error) {
-      console.error('Error getting latest analysis:', error);
+    if (snapshot.empty) {
       return null;
     }
+    
+    const data = snapshot.docs[0].data();
+    const timestamp = data.timestamp?.toDate?.() || new Date(data.timestamp);
+    
+    return {
+      ...data,
+      age: Date.now() - timestamp.getTime()
+    };
+  } catch (error) {
+    console.error('Error getting latest analysis:', error);
+    return null;
   }
 }
 
