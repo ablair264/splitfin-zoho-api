@@ -86,14 +86,6 @@ router.get('/status', (req, res) => {
 // Sync endpoint with authentication
 router.post('/sync/full-zoho-data', async (req, res) => {
   try {
-    // Add authentication check here
-    const authHeader = req.headers.authorization;
-    const expectedToken = process.env.SYNC_SECRET_TOKEN; // Set this in Render
-    
-    if (!authHeader || authHeader !== `Bearer ${expectedToken}`) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    
     // Check for clear parameter
     const clearFirst = req.body.clearFirst || false;
     
