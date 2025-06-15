@@ -428,7 +428,7 @@ class CronDataSyncService {
       return { success: false, error: error.message };
     }
   }
-}
+
   
   /**
    * Helper function to write data in batches
