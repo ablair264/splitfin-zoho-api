@@ -38,16 +38,6 @@ router.get('/changes', async (req, res) => {
   }
 });
 
-// At the top of server/src/routes/sync.js, add the import:
-import ZohoFullDataSync from '../fullZohoDataSync.js';
-
-// Then add these routes:
-
-/**
- * Trigger full Zoho data sync
- * POST /api/sync/full-zoho-data
- * Body: { clearFirst: boolean }
- */
 router.post('/full-zoho-data', async (req, res) => {
   try {
     const { clearFirst = false } = req.body;
