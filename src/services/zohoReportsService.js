@@ -19,24 +19,23 @@ const ZOHO_CONFIG = {
 
 class ZohoReportsService {
   constructor() {
-    this.cache = new Map(); // Make sure this is here
+    this.cache = new Map();
     this.cacheTimeout = 5 * 60 * 1000; // 5 minutes
   }
 
   /**
-   * Generic function for paginated Zoho requests with caching - FIXED VERSION
+   * Generic function for paginated Zoho requests with caching
    */
-async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
-  const cacheKey = `${url}_${JSON.stringify(params)}`;
-  
-  // Add null check
-  if (useCache && this.cache && this.cache.has(cacheKey)) {
-    const cached = this.cache.get(cacheKey);
-    if (Date.now() - cached.timestamp < this.cacheTimeout) {
-      console.log(`📄 Using cached data for ${url}`);
-      return cached.data;
+  async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
+    const cacheKey = `${url}_${JSON.stringify(params)}`;
+    
+    if (useCache && this.cache && this.cache.has(cacheKey)) {
+      const cached = this.cache.get(cacheKey);
+      if (Date.now() - cached.timestamp < this.cacheTimeout) {
+        console.log(`📄 Using cached data for ${url}`);
+        return cached.data;
+      }
     }
-  }
 
     const allData = [];
     let page = 1;
@@ -169,7 +168,7 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
   }
 
   /**
-   * FIXED: Get agent performance data from Zoho Inventory Sales Orders
+   * Get agent performance data from Zoho Inventory Sales Orders
    */
   async getAgentPerformance(dateRange = '30_days', customDateRange = null) {
     try {
@@ -183,40 +182,40 @@ async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
         .where('role', '==', 'salesAgent')
         .get();
       
-const userMap = new Map();
-usersSnapshot.forEach(doc => {
-  const userData = doc.data();
-  const uid = doc.id; // Use the document ID which is the Firebase UID
-  if (userData.zohospID) {
-    userMap.set(userData.zohospID, {
-      id: uid, // Store Firebase UID
-      zohospID: userData.zohospID,
-      name: userData.name || 'Unknown Agent',
-      email: userData.email
-    });
-  }
-});
+      const userMap = new Map();
+      usersSnapshot.forEach(doc => {
+        const userData = doc.data();
+        const uid = doc.id; // Firebase UID
+        if (userData.zohospID) {
+          userMap.set(userData.zohospID, {
+            id: uid,
+            zohospID: userData.zohospID,
+            name: userData.name || 'Unknown Agent',
+            email: userData.email
+          });
+        }
+      });
 
       // Process agent performance from sales orders
-const agentStats = new Map();
+      const agentStats = new Map();
 
-salesOrders.forEach(order => {
-  if (order.salesperson_id) {
-    const agentId = order.salesperson_id;
-    const agentInfo = userMap.get(agentId) || { name: order.salesperson_name || 'Unknown' };
-    
-    if (!agentStats.has(agentId)) {
-      agentStats.set(agentId, {
-        agentId,
-        agentUid: agentInfo.id, // Add Firebase UID
-        agentName: agentInfo.name,
-        agentEmail: agentInfo.email || '',
-        totalRevenue: 0,
-        totalOrders: 0,
-        customers: new Set(),
-        items: new Map()
-      });
-    }
+      salesOrders.forEach(order => {
+        if (order.salesperson_id) {
+          const agentId = order.salesperson_id;
+          const agentInfo = userMap.get(agentId) || { name: order.salesperson_name || 'Unknown' };
+          
+          if (!agentStats.has(agentId)) {
+            agentStats.set(agentId, {
+              agentId,
+              agentUid: agentInfo.id,
+              agentName: agentInfo.name,
+              agentEmail: agentInfo.email || '',
+              totalRevenue: 0,
+              totalOrders: 0,
+              customers: new Set(),
+              items: new Map()
+            });
+          }
           
           const stats = agentStats.get(agentId);
           stats.totalRevenue += parseFloat(order.total || 0);
@@ -278,130 +277,206 @@ salesOrders.forEach(order => {
   }
 
   /**
-   * Get brand performance data - using existing implementation
+   * Get brand performance data - UPDATED to use actual collections
    */
-async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
-  try {
-    const db = admin.firestore();
-    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-    
-    // Query sales_transactions which has correct brand data
-    const transactionsSnapshot = await db.collection('sales_transactions')
-      .where('order_date', '>=', startDate.toISOString().split('T')[0])
-      .where('order_date', '<=', endDate.toISOString().split('T')[0])
-      .get();
-    
-    const brandStats = new Map();
-    
-    transactionsSnapshot.forEach(doc => {
-      const transaction = doc.data();
-      const brand = transaction.brand || 'Unknown';
+  async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
+    try {
+      const db = admin.firestore();
+      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
       
-      if (!brandStats.has(brand)) {
-        brandStats.set(brand, {
-          name: brand,
-          revenue: 0,
-          quantity: 0,
-          orders: new Set(),
-          products: new Set()
+      // Get sales orders with line items
+      const ordersSnapshot = await db.collection('salesorders')
+        .where('date', '>=', startDate.toISOString().split('T')[0])
+        .where('date', '<=', endDate.toISOString().split('T')[0])
+        .get();
+      
+      // Get products for brand mapping
+      const productsSnapshot = await db.collection('products').get();
+      const productMap = new Map();
+      productsSnapshot.docs.forEach(doc => {
+        const product = doc.data();
+        productMap.set(doc.id, {
+          brand: product.brand || 'Unknown',
+          name: product.name || product.item_name
         });
-      }
+      });
       
-      const stats = brandStats.get(brand);
-      stats.revenue += transaction.total || 0;
-      stats.quantity += transaction.quantity || 0;
-      stats.orders.add(transaction.order_id);
-      if (transaction.item_id) {
-        stats.products.add(transaction.item_id);
-      }
-    });
-    
-    // Convert to array
-    const brands = Array.from(brandStats.values()).map(stats => ({
-      name: stats.name,
-      revenue: stats.revenue,
-      quantity: stats.quantity,
-      orderCount: stats.orders.size,
-      productCount: stats.products.size,
-      market_share: 0
-    })).sort((a, b) => b.revenue - a.revenue);
-    
-    // Calculate market share
-    const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
-    brands.forEach(brand => {
-      brand.market_share = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
-    });
-    
-    return {
-      brands,
-      summary: {
-        totalBrands: brands.length,
-        totalRevenue,
-        topBrand: brands[0] || null
-      }
-    };
-    
-  } catch (error) {
-    console.error('❌ Error fetching brand performance:', error);
-    throw error;
+      const brandStats = new Map();
+      
+      ordersSnapshot.forEach(doc => {
+        const order = doc.data();
+        
+        if (order.line_items && Array.isArray(order.line_items)) {
+          order.line_items.forEach(item => {
+            const productInfo = productMap.get(item.item_id) || {};
+            const brand = productInfo.brand || 'Unknown';
+            
+            if (!brandStats.has(brand)) {
+              brandStats.set(brand, {
+                name: brand,
+                revenue: 0,
+                quantity: 0,
+                orders: new Set(),
+                products: new Set()
+              });
+            }
+            
+            const stats = brandStats.get(brand);
+            stats.revenue += parseFloat(item.item_total || 0);
+            stats.quantity += parseInt(item.quantity || 0);
+            stats.orders.add(order.salesorder_number);
+            if (item.item_id) {
+              stats.products.add(item.item_id);
+            }
+          });
+        }
+      });
+      
+      // Convert to array
+      const brands = Array.from(brandStats.values()).map(stats => ({
+        name: stats.name,
+        revenue: stats.revenue,
+        quantity: stats.quantity,
+        orderCount: stats.orders.size,
+        productCount: stats.products.size,
+        market_share: 0
+      })).sort((a, b) => b.revenue - a.revenue);
+      
+      // Calculate market share
+      const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
+      brands.forEach(brand => {
+        brand.market_share = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
+      });
+      
+      return {
+        brands,
+        summary: {
+          totalBrands: brands.length,
+          totalRevenue,
+          topBrand: brands[0] || null
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Error fetching brand performance:', error);
+      throw error;
+    }
   }
-}
 
   /**
-   * FIXED: Get customer analytics with agent filtering
+   * Get customer analytics - UPDATED to use actual customers collection
    */
-async getCustomerAnalytics(dateRange = '30_days', customDateRange = null) {
-  try {
-    const db = admin.firestore();
-    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-    
-    // Use normalized_customers which already has calculated metrics
-    const customersSnapshot = await db.collection('normalized_customers')
-      .where('last_order_date', '>=', startDate.toISOString())
-      .where('last_order_date', '<=', endDate.toISOString())
-      .get();
-    
-    const customers = customersSnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
-    
-    // Calculate segments
-    const segments = {
-      vip: customers.filter(c => c.segment === 'VIP'),
-      high: customers.filter(c => c.segment === 'High'),
-      medium: customers.filter(c => c.segment === 'Medium'),
-      low: customers.filter(c => c.segment === 'Low')
-    };
-    
-    return {
-      totalCustomers: customers.length,
-      newCustomers: customers.filter(c => 
-        new Date(c.first_order_date) >= startDate
-      ).length,
-      repeatCustomers: customers.filter(c => c.order_count > 1).length,
-      segments,
-      topCustomers: customers
-        .sort((a, b) => b.total_spent - a.total_spent)
-        .slice(0, 10),
-      averageOrderValue: customers.reduce((sum, c) => sum + c.average_order_value, 0) / customers.length || 0
-    };
-    
-  } catch (error) {
-    console.error('❌ Error getting customer analytics:', error);
-    throw error;
+  async getCustomerAnalytics(dateRange = '30_days', customDateRange = null, agentId = null) {
+    try {
+      const db = admin.firestore();
+      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+      
+      // Get customers that have ordered in the date range
+      const customersSnapshot = await db.collection('customers').get();
+      
+      // Filter customers based on last order date
+      const customers = customersSnapshot.docs
+        .map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }))
+        .filter(customer => {
+          if (!customer.last_order_date) return false;
+          const lastOrderDate = new Date(customer.last_order_date);
+          return lastOrderDate >= startDate && lastOrderDate <= endDate;
+        });
+      
+      // If agent filtering is needed, get agent's customers from orders
+      let filteredCustomers = customers;
+      if (agentId) {
+        const ordersSnapshot = await db.collection('salesorders')
+          .where('salesperson_id', '==', agentId)
+          .where('date', '>=', startDate.toISOString().split('T')[0])
+          .where('date', '<=', endDate.toISOString().split('T')[0])
+          .get();
+        
+        const agentCustomerIds = new Set();
+        ordersSnapshot.forEach(doc => {
+          const order = doc.data();
+          if (order.customer_id) {
+            agentCustomerIds.add(order.customer_id);
+          }
+        });
+        
+        filteredCustomers = customers.filter(c => agentCustomerIds.has(c.customer_id));
+      }
+      
+      // Calculate segments
+      const segments = {
+        vip: filteredCustomers.filter(c => c.segment === 'VIP'),
+        high: filteredCustomers.filter(c => c.segment === 'High'),
+        medium: filteredCustomers.filter(c => c.segment === 'Medium'),
+        low: filteredCustomers.filter(c => c.segment === 'Low')
+      };
+      
+      // Calculate new customers
+      const newCustomers = filteredCustomers.filter(c => {
+        if (!c.first_order_date) return false;
+        const firstOrderDate = new Date(c.first_order_date);
+        return firstOrderDate >= startDate;
+      });
+      
+      return {
+        totalCustomers: filteredCustomers.length,
+        newCustomers: newCustomers.length,
+        repeatCustomers: filteredCustomers.filter(c => c.order_count > 1).length,
+        segments,
+        topCustomers: filteredCustomers
+          .sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0))
+          .slice(0, 10),
+        averageOrderValue: filteredCustomers.length > 0 
+          ? filteredCustomers.reduce((sum, c) => sum + (c.average_order_value || 0), 0) / filteredCustomers.length 
+          : 0,
+        customers: filteredCustomers, // Include full customer list
+        summary: {
+          totalCustomers: filteredCustomers.length,
+          activeCustomers: filteredCustomers.filter(c => c.status === 'active').length,
+          segments: segments
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Error getting customer analytics:', error);
+      throw error;
+    }
   }
-}
 
   /**
    * Get sales orders from Zoho Inventory
    */
-   async getSalesOrders(dateRange, customDateRange, agentId) {
+  async getSalesOrders(dateRange, customDateRange, agentId) {
     return zohoInventoryService.getSalesOrders(dateRange, customDateRange, agentId);
+  }
+
+  /**
+   * Get items/products
+   */
+  async getItems() {
+    try {
+      const params = {
+        organization_id: ZOHO_CONFIG.orgId
+      };
+
+      const items = await this.fetchPaginatedData(
+        `${ZOHO_CONFIG.baseUrls.inventory}/items`,
+        params,
+        'items'
+      );
+
+      return items;
+    } catch (error) {
+      console.error('❌ Error fetching items:', error);
+      throw error;
+    }
   }
   
   /**
-   * FIXED: Get invoices from Zoho Inventory with proper categorization
+   * Get invoices from Zoho Inventory with proper categorization
    */
   async getInvoices(dateRange = '30_days', customDateRange = null) {
     try {
@@ -477,7 +552,7 @@ async getCustomerAnalytics(dateRange = '30_days', customDateRange = null) {
   }
 
   /**
-   * FIXED: Get agent-specific invoices with customer filtering
+   * Get agent-specific invoices with customer filtering
    */
   async getAgentInvoices(agentId, dateRange = '30_days', customDateRange = null) {
     try {
@@ -529,148 +604,161 @@ async getCustomerAnalytics(dateRange = '30_days', customDateRange = null) {
   }
 
   /**
-   * Get revenue analysis
+   * Get revenue analysis - UPDATED to use actual collections
    */
-async getRevenueAnalysis(dateRange = '30_days', customDateRange = null) {
-  try {
-    console.log(`📊 Calculating revenue analysis from Firestore for ${dateRange}...`);
-    const db = admin.firestore();
-    
-    // Get date range
-    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-    
-    // 1. Get gross revenue from sales_transactions (most efficient)
-    const transactionsSnapshot = await db.collection('sales_transactions')
-      .where('order_date', '>=', startDate.toISOString().split('T')[0])
-      .where('order_date', '<=', endDate.toISOString().split('T')[0])
-      .get();
-    
-    let grossRevenue = 0;
-    let totalQuantity = 0;
-    
-    transactionsSnapshot.forEach(doc => {
-      const transaction = doc.data();
-      grossRevenue += transaction.total || 0;
-      totalQuantity += transaction.quantity || 0;
-    });
-    
-    // 2. Get invoice data from normalized_invoices (already calculated)
-    const invoicesSnapshot = await db.collection('normalized_invoices')
-      .where('date', '>=', startDate.toISOString().split('T')[0])
-      .where('date', '<=', endDate.toISOString().split('T')[0])
-      .get();
-    
-    let paidRevenue = 0;
-    let outstandingRevenue = 0;
-    let overdueRevenue = 0;
-    
-    invoicesSnapshot.forEach(doc => {
-      const invoice = doc.data();
-      if (invoice.status === 'paid') {
-        paidRevenue += invoice.total || 0;
-      } else {
-        outstandingRevenue += invoice.balance || 0;
-        if (invoice.days_overdue > 0) {
-          overdueRevenue += invoice.balance || 0;
+  async getRevenueAnalysis(dateRange = '30_days', customDateRange = null) {
+    try {
+      console.log(`📊 Calculating revenue analysis from Firestore for ${dateRange}...`);
+      const db = admin.firestore();
+      
+      // Get date range
+      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+      
+      // 1. Get gross revenue from sales orders
+      const ordersSnapshot = await db.collection('salesorders')
+        .where('date', '>=', startDate.toISOString().split('T')[0])
+        .where('date', '<=', endDate.toISOString().split('T')[0])
+        .get();
+      
+      let grossRevenue = 0;
+      let totalQuantity = 0;
+      let orderCount = 0;
+      
+      ordersSnapshot.forEach(doc => {
+        const order = doc.data();
+        grossRevenue += parseFloat(order.total || 0);
+        orderCount++;
+        
+        // Count items from line items
+        if (order.line_items && Array.isArray(order.line_items)) {
+          order.line_items.forEach(item => {
+            totalQuantity += parseInt(item.quantity || 0);
+          });
         }
-      }
-    });
-    
-    // 3. Calculate tax more accurately
-    // UK VAT is 20%, but calculate net amount properly
-    const netRevenue = grossRevenue / 1.2; // Remove VAT
-    const taxAmount = grossRevenue - netRevenue;
-    
-    // 4. Get cost data from purchase orders for margin calculation
-    const purchaseOrdersSnapshot = await db.collection('normalized_purchase_orders')
-      .where('order_date', '>=', startDate.toISOString())
-      .where('order_date', '<=', endDate.toISOString())
-      .get();
-    
-    let totalCost = 0;
-    purchaseOrdersSnapshot.forEach(doc => {
-      totalCost += doc.data().total_amount || 0;
-    });
-    
-    // Calculate actual profit margin if we have cost data
-    const profitMargin = grossRevenue > 0 && totalCost > 0 
-      ? ((grossRevenue - totalCost) / grossRevenue) * 100 
-      : 30; // Default 30% if no cost data
-    
-    return {
-      grossRevenue,
-      netRevenue,
-      taxAmount,
-      paidRevenue,
-      outstandingRevenue,
-      overdueRevenue,
-      totalCost,
-      grossProfit: grossRevenue - totalCost,
-      profitMargin,
-      averageOrderValue: transactionsSnapshot.size > 0 ? grossRevenue / transactionsSnapshot.size : 0,
-      totalTransactions: transactionsSnapshot.size,
-      totalQuantitySold: totalQuantity,
-      period: dateRange,
-      dateRange: {
-        start: startDate.toISOString().split('T')[0],
-        end: endDate.toISOString().split('T')[0]
-      }
-    };
-    
-  } catch (error) {
-    console.error('❌ Error calculating revenue analysis:', error);
-    throw error;
+      });
+      
+      // 2. Get invoice data
+      const invoicesSnapshot = await db.collection('invoices')
+        .where('date', '>=', startDate.toISOString().split('T')[0])
+        .where('date', '<=', endDate.toISOString().split('T')[0])
+        .get();
+      
+      let paidRevenue = 0;
+      let outstandingRevenue = 0;
+      let overdueRevenue = 0;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      invoicesSnapshot.forEach(doc => {
+        const invoice = doc.data();
+        if (invoice.status === 'paid') {
+          paidRevenue += parseFloat(invoice.total || 0);
+        } else {
+          outstandingRevenue += parseFloat(invoice.balance || 0);
+          
+          // Check if overdue
+          const dueDate = new Date(invoice.due_date);
+          if (dueDate < today) {
+            overdueRevenue += parseFloat(invoice.balance || 0);
+          }
+        }
+      });
+      
+      // 3. Calculate tax
+      const netRevenue = grossRevenue / 1.2; // Remove VAT
+      const taxAmount = grossRevenue - netRevenue;
+      
+      // 4. Get cost data from purchase orders
+      const purchaseOrdersSnapshot = await db.collection('purchase_orders')
+        .where('date', '>=', startDate.toISOString().split('T')[0])
+        .where('date', '<=', endDate.toISOString().split('T')[0])
+        .get();
+      
+      let totalCost = 0;
+      purchaseOrdersSnapshot.forEach(doc => {
+        const po = doc.data();
+        totalCost += parseFloat(po.total || 0);
+      });
+      
+      // Calculate profit margin
+      const profitMargin = grossRevenue > 0 && totalCost > 0 
+        ? ((grossRevenue - totalCost) / grossRevenue) * 100 
+        : 30; // Default 30% if no cost data
+      
+      return {
+        grossRevenue,
+        netRevenue,
+        taxAmount,
+        paidRevenue,
+        outstandingRevenue,
+        overdueRevenue,
+        totalCost,
+        grossProfit: grossRevenue - totalCost,
+        profitMargin,
+        averageOrderValue: orderCount > 0 ? grossRevenue / orderCount : 0,
+        totalTransactions: orderCount,
+        totalQuantitySold: totalQuantity,
+        period: dateRange,
+        dateRange: {
+          start: startDate.toISOString().split('T')[0],
+          end: endDate.toISOString().split('T')[0]
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Error calculating revenue analysis:', error);
+      throw error;
+    }
   }
-}
 
- async getPurchaseOrders(dateRange, customDateRange) {
+  async getPurchaseOrders(dateRange, customDateRange) {
     return zohoInventoryService.getPurchaseOrders(dateRange, customDateRange);
   }
-/**
- * Get purchase order detail with line items
- */
-async getPurchaseOrderDetail(purchaseorder_id) {
-  try {
-    const url = `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders/${purchaseorder_id}`;
-    const token = await getAccessToken();
-    
-    const response = await axios.get(url, {
-      params: { organization_id: ZOHO_CONFIG.orgId },
-      headers: { Authorization: `Zoho-oauthtoken ${token}` }
-    });
-
-    const purchaseOrder = response.data?.purchaseorder;
-    
-    if (purchaseOrder) {
-      // Ensure vendor name is included
-      if (!purchaseOrder.vendor_name && purchaseOrder.vendor_id) {
-        purchaseOrder.vendor_name = `Vendor ${purchaseOrder.vendor_id}`;
-      }
-      
-      // Process line items if they exist
-      if (purchaseOrder.line_items && Array.isArray(purchaseOrder.line_items)) {
-        // Enhance line items with additional info if needed
-        purchaseOrder.line_items = purchaseOrder.line_items.map(item => ({
-          ...item,
-          item_id: item.item_id,
-          item_name: item.name || item.item_name,
-          quantity: item.quantity || 0,
-          rate: item.rate || 0,
-          total: item.item_total || (item.quantity * item.rate) || 0
-        }));
-      }
-    }
-    
-    return purchaseOrder;
-
-  } catch (error) {
-    console.error(`❌ Error fetching details for purchase order ${purchaseorder_id}:`, error.message);
-    return null;
-  }
-}
 
   /**
-   * FIXED: Get sales order detail with brand information
+   * Get purchase order detail with line items
+   */
+  async getPurchaseOrderDetail(purchaseorder_id) {
+    try {
+      const url = `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders/${purchaseorder_id}`;
+      const token = await getAccessToken();
+      
+      const response = await axios.get(url, {
+        params: { organization_id: ZOHO_CONFIG.orgId },
+        headers: { Authorization: `Zoho-oauthtoken ${token}` }
+      });
+
+      const purchaseOrder = response.data?.purchaseorder;
+      
+      if (purchaseOrder) {
+        // Ensure vendor name is included
+        if (!purchaseOrder.vendor_name && purchaseOrder.vendor_id) {
+          purchaseOrder.vendor_name = `Vendor ${purchaseOrder.vendor_id}`;
+        }
+        
+        // Process line items if they exist
+        if (purchaseOrder.line_items && Array.isArray(purchaseOrder.line_items)) {
+          purchaseOrder.line_items = purchaseOrder.line_items.map(item => ({
+            ...item,
+            item_id: item.item_id,
+            item_name: item.name || item.item_name,
+            quantity: item.quantity || 0,
+            rate: item.rate || 0,
+            total: item.item_total || (item.quantity * item.rate) || 0
+          }));
+        }
+      }
+      
+      return purchaseOrder;
+
+    } catch (error) {
+      console.error(`❌ Error fetching details for purchase order ${purchaseorder_id}:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Get sales order detail with brand information
    */
   async getSalesOrderDetail(salesorder_id) {
     try {
@@ -704,7 +792,7 @@ async getPurchaseOrderDetail(purchaseorder_id) {
             if (doc.exists) {
               const data = doc.data();
               productMap.set(doc.id, {
-                brand: data.brand || data.brand_normalized || 'Unknown Brand',
+                brand: data.brand || 'Unknown Brand',
                 sku: data.sku
               });
             }
@@ -741,10 +829,10 @@ async getPurchaseOrderDetail(purchaseorder_id) {
         throw new Error('User not found');
       }
       
-const userData = userDoc.data();
-const isAgent = userData.role === 'salesAgent';
-const agentId = userData.zohospID; // Keep for Zoho API filtering
-const userUid = userId; // This is the Firebase UID
+      const userData = userDoc.data();
+      const isAgent = userData.role === 'salesAgent';
+      const agentId = userData.zohospID; // For Zoho API filtering
+      const userUid = userId; // Firebase UID
       
       // Fetch data based on role
       const [
@@ -781,14 +869,11 @@ const userUid = userId; // This is the Firebase UID
         },
         topItems: this.calculateTopItems(salesOrders),
         customers: {
-          totalCustomers: customerAnalytics.summary.totalCustomers,
-          newCustomers: customerAnalytics.customers.filter(c => {
-            const daysSinceFirst = (Date.now() - c.firstOrderDate?.getTime()) / (1000 * 60 * 60 * 24);
-            return daysSinceFirst <= 30;
-          }).length,
-          topCustomers: customerAnalytics.customers.slice(0, 5),
+          totalCustomers: customerAnalytics.totalCustomers,
+          newCustomers: customerAnalytics.newCustomers,
+          topCustomers: customerAnalytics.topCustomers.slice(0, 5),
           averageOrdersPerCustomer: customerAnalytics.customers.length > 0 ? 
-            customerAnalytics.customers.reduce((sum, c) => sum + c.orderCount, 0) / customerAnalytics.customers.length : 0
+            customerAnalytics.customers.reduce((sum, c) => sum + (c.order_count || 0), 0) / customerAnalytics.customers.length : 0
         }
       };
 
@@ -848,7 +933,7 @@ const userUid = userId; // This is the Firebase UID
   }
 
   /**
-   * FIXED: Calculate top selling items from sales orders with line items
+   * Calculate top selling items from sales orders with line items
    */
   calculateTopItems(salesOrders) {
     if (!salesOrders || salesOrders.length === 0) {
