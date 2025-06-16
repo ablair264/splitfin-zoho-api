@@ -153,40 +153,40 @@ class CollectionDashboardService {
     console.log(`🔍 Building manager dashboard`);
 
     // Fetch all data for the period
-    const [
-      ordersSnapshot,
-      customersSnapshot,
-      invoicesSnapshot,
-      agentsSnapshot,
-      productsSnapshot
-    ] = await Promise.all([
-      // Get sales orders - filter by date
-      this.db.collection('salesorders')
-        .where('date', '>=', startISO.split('T')[0])
-        .where('date', '<=', endISO.split('T')[0])
-        .orderBy('date', 'desc')
-        .get(),
+  // Fetch all data for the period
+const [
+  ordersSnapshot,
+  customersSnapshot,
+  invoicesSnapshot,
+  agentsSnapshot,
+  productsSnapshot  // This now fetches from 'items' collection
+] = await Promise.all([
+  // Get sales orders - filter by date
+  this.db.collection('salesorders')
+    .where('date', '>=', startISO.split('T')[0])
+    .where('date', '<=', endISO.split('T')[0])
+    .orderBy('date', 'desc')
+    .get(),
 
-      // Get all customers
-      this.db.collection('customers').get(),
+  // Get all customers
+  this.db.collection('customers').get(),
 
-      // Get invoices for the period
-      this.db.collection('invoices')
-        .where('date', '>=', startISO.split('T')[0])
-        .where('date', '<=', endISO.split('T')[0])
-        .get(),
+  // Get invoices for the period
+  this.db.collection('invoices')
+    .where('date', '>=', startISO.split('T')[0])
+    .where('date', '<=', endISO.split('T')[0])
+    .get(),
 
-      // Get all agents
-      this.db.collection('users')
-        .where('role', '==', 'salesAgent')
-        .get(),
+  // Get all agents
+  this.db.collection('users')
+    .where('role', '==', 'salesAgent')
+    .get(),
 
-      // Get products for brand info
-      this.db.collection('products').get()
-    ]);
+  // Get products for brand info - CHANGED TO 'items' COLLECTION
+  this.db.collection('items').get()  // Changed from 'products' to 'items'
+]);
 
-    // Create product map for brand lookups
-const productsSnapshot = await db.collection('items').get();
+// Create product map for brand lookups
 const productMap = new Map();
 productsSnapshot.docs.forEach(doc => {
   const product = doc.data();
@@ -370,39 +370,39 @@ const orders = ordersSnapshot.docs.map(doc => {
     console.log(`🔍 Building agent dashboard for UID: ${userUid}, Zoho ID: ${zohospID}`);
 
     // Fetch data specific to this agent
-    const [
-      ordersSnapshot,
-      invoicesSnapshot,
-      productsSnapshot
-    ] = await Promise.all([
-      // Get orders for this specific agent using salesperson_id
-      this.db.collection('salesorders')
-        .where('salesperson_id', '==', zohospID)
-        .where('date', '>=', startISO.split('T')[0])
-        .where('date', '<=', endISO.split('T')[0])
-        .orderBy('date', 'desc')
-        .get(),
+  const [
+  ordersSnapshot,
+  invoicesSnapshot,
+  productsSnapshot
+] = await Promise.all([
+  // Get orders for this specific agent using salesperson_id
+  this.db.collection('salesorders')
+    .where('salesperson_id', '==', zohospID)
+    .where('date', '>=', startISO.split('T')[0])
+    .where('date', '<=', endISO.split('T')[0])
+    .orderBy('date', 'desc')
+    .get(),
 
-      // Get all invoices (we'll filter by customer later)
-      this.db.collection('invoices')
-        .where('date', '>=', startISO.split('T')[0])
-        .where('date', '<=', endISO.split('T')[0])
-        .get(),
+  // Get all invoices (we'll filter by customer later)
+  this.db.collection('invoices')
+    .where('date', '>=', startISO.split('T')[0])
+    .where('date', '<=', endISO.split('T')[0])
+    .get(),
 
-      // Get products for brand info
-      this.db.collection('products').get()
-    ]);
+  // Get products for brand info - CHANGED TO 'items' COLLECTION
+  this.db.collection('items').get()  // Changed from 'products' to 'items'
+]);
 
-    // Create product map
-    const productMap = new Map();
-    productsSnapshot.docs.forEach(doc => {
-      const product = doc.data();
-      productMap.set(doc.id, {
-        brand: product.brand || 'Unknown',
-        name: product.name || product.item_name,
-        sku: product.sku
-      });
-    });
+// Create product map
+const productMap = new Map();
+productsSnapshot.docs.forEach(doc => {
+  const product = doc.data();
+  productMap.set(doc.id, {
+    brand: product.Manufacturer || product.manufacturer || 'Unknown',
+    name: product.name || product.item_name,
+    sku: product.sku
+  });
+});
 
     // Process orders with enhanced line items
     const orders = ordersSnapshot.docs.map(doc => {
