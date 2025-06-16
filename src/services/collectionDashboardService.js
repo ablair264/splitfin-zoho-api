@@ -186,48 +186,49 @@ class CollectionDashboardService {
     ]);
 
     // Create product map for brand lookups
-    const productMap = new Map();
-    productsSnapshot.docs.forEach(doc => {
-      const product = doc.data();
-      productMap.set(doc.id, {
-        brand: product.brand || 'Unknown',
-        name: product.name || product.item_name,
-        sku: product.sku
-      });
-    });
+const productsSnapshot = await db.collection('items').get();
+const productMap = new Map();
+productsSnapshot.docs.forEach(doc => {
+  const product = doc.data();
+  productMap.set(doc.id, {
+    brand: product.Manufacturer || product.manufacturer || 'Unknown',
+    name: product.name || product.item_name,
+    sku: product.sku
+  });
+});
 
     // Process orders
-    const orders = ordersSnapshot.docs.map(doc => {
-      const data = doc.data();
+const orders = ordersSnapshot.docs.map(doc => {
+  const data = doc.data();
       
       // Enhance line items with brand info
-      let enhancedLineItems = [];
-      if (data.line_items && Array.isArray(data.line_items)) {
-        enhancedLineItems = data.line_items.map(item => {
-          const productInfo = productMap.get(item.item_id) || {};
-          return {
-            ...item,
-            brand: productInfo.brand || 'Unknown',
-            item_name: item.name || productInfo.name || 'Unknown Item'
-          };
-        });
-      }
-      
+  let enhancedLineItems = [];
+  if (data.line_items && Array.isArray(data.line_items)) {
+    enhancedLineItems = data.line_items.map(item => {
+      const productInfo = productMap.get(item.item_id) || {};
       return {
-        id: doc.id,
-        order_number: data.salesorder_number,
-        customer_id: data.customer_id,
-        customer_name: data.customer_name,
-        salesperson_id: data.salesperson_id,
-        salesperson_name: data.salesperson_name,
-        date: data.date,
-        total: parseFloat(data.total || 0),
-        status: data.status,
-        line_items: enhancedLineItems,
-        is_marketplace_order: data.account_identifier ? true : false,
-        marketplace_source: data.account_identifier || null
+        ...item,
+        brand: productInfo.brand || 'Unknown',
+        item_name: item.name || productInfo.name || 'Unknown Item'
       };
     });
+  }
+      
+  return {
+    id: doc.id,
+    order_number: data.salesorder_number,
+    customer_id: data.customer_id,
+    customer_name: data.customer_name,
+    salesperson_id: data.salesperson_id,
+    salesperson_name: data.salesperson_name,
+    date: data.date,
+    total: parseFloat(data.total || 0),
+    status: data.status,
+    line_items: enhancedLineItems,
+    is_marketplace_order: data.account_identifier ? true : false,
+    marketplace_source: data.account_identifier || null
+  };
+});
 
     // Process customers
     const customers = customersSnapshot.docs.map(doc => {
