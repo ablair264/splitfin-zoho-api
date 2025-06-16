@@ -982,7 +982,7 @@ class CollectionDashboardService {
         this.db.collection('salesorders').limit(1).get(),
         this.db.collection('customers').limit(1).get(),
         this.db.collection('products').limit(1).get(),
-        this.db.collection('purchase_orders').limit(1).get(),
+        this.db.collection('purchaseorders').limit(1).get(),
         this.db.collection('invoices').limit(1).get()
       ]);
 
