@@ -990,6 +990,11 @@ async mediumFrequencySync() {
     console.log('📦 Updating brand backorder information...');
     const backorderResult = await this.updateBrandBackorders();
     
+    console.log('🌍 Enriching customer data...');
+const customerEnrichmentService = await import('./customerEnrichmentService.js');
+const enrichmentResult = await customerEnrichmentService.default.enrichMissingCustomers();
+console.log(`✅ Enriched ${enrichmentResult.enriched} customers`);
+    
     // Update customer analytics
     console.log('👥 Updating customer analytics...');
     const customers = await zohoReportsService.getCustomerAnalytics('7_days');
@@ -1045,6 +1050,8 @@ async mediumFrequencySync() {
     this.isRunning.set(jobType, false);
   }
 }
+
+
 
   /**
    * Sync and normalize invoices
