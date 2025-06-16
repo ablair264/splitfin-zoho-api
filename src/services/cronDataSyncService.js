@@ -3,7 +3,6 @@
 
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
-import dataNormalizerService from './dataNormalizerService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 import productSyncService from './productSyncService.js';
 
@@ -32,7 +31,7 @@ class CronDataSyncService {
   }
   
   /**
-   * Get sync metadata for a specific sync type
+   * Get sync metadata for a specific sync type		
    */
   async getSyncMetadata(syncType) {
     try {
@@ -86,59 +85,533 @@ class CronDataSyncService {
   /**
    * Process and enrich sales transactions with proper brand info
    */
-  processSalesTransactions(orders) {
-    const transactions = [];
+ async processSalesTransactions(orders, db) {
+  const transactions = [];
+  
+  // First, collect all unique item IDs to batch fetch
+  const itemIds = new Set();
+  orders.forEach(order => {
+    if (order.line_items && Array.isArray(order.line_items)) {
+      order.line_items.forEach(item => {
+        if (item.item_id) itemIds.add(item.item_id);
+      });
+    }
+  });
+  
+  // Batch fetch items to get Manufacturer field
+  const itemsMap = new Map();
+  const itemIdsArray = Array.from(itemIds);
+  
+  for (let i = 0; i < itemIdsArray.length; i += 10) {
+    const batch = itemIdsArray.slice(i, i + 10);
+    const itemsSnapshot = await db.collection('items')
+      .where('item_id', 'in', batch)
+      .get();
     
-    orders.forEach(order => {
-      if (order.line_items && Array.isArray(order.line_items)) {
-        order.line_items.forEach(item => {
-          // Determine brand from item name if not provided
-          let brandInfo = { display: 'Unknown', normalized: 'unknown' };
-          
-          if (item.brand && item.brand !== 'Unknown') {
-            // Use existing brand but normalize it
-            const brandLower = item.brand.toLowerCase();
-            brandInfo = this.brandMappings[brandLower] || {
-              display: item.brand,
-              normalized: brandLower.replace(/\s+/g, '-')
-            };
-          } else {
-            // Determine from item name
-            brandInfo = this.determineBrand(item.name);
-          }
-          
-          // Calculate total if missing
-          const itemTotal = item.item_total || item.total || 
-                          (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
-          
-          transactions.push({
-            transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
-            item_id: item.item_id,
-            item_name: item.name,
-            sku: item.sku,
-            brand: brandInfo.display,
-            brand_normalized: brandInfo.normalized,
-            quantity: parseInt(item.quantity || 0),
-            price: parseFloat(item.rate || 0),
-            total: itemTotal,
-            order_id: order.salesorder_id,
-            order_number: order.salesorder_number,
-            order_date: order.date,
-            customer_id: order.customer_id,
-            customer_name: order.customer_name,
-            salesperson_id: order.salesperson_id || '',
-            salesperson_name: order.salesperson_name || '',
-            is_marketplace_order: order.is_marketplace_order || false,
-            marketplace_source: order.marketplace_source || null,
-            created_at: order.date,
-            last_modified: admin.firestore.FieldValue.serverTimestamp()
-          });
+    itemsSnapshot.forEach(doc => {
+      const itemData = doc.data();
+      itemsMap.set(itemData.item_id, {
+        manufacturer: itemData.Manufacturer || itemData.manufacturer || 'Unknown',
+        name: itemData.name || itemData.item_name,
+        sku: itemData.sku
+      });
+    });
+  }
+  
+  // Process orders
+  orders.forEach(order => {
+    if (order.line_items && Array.isArray(order.line_items)) {
+      order.line_items.forEach(item => {
+        const itemInfo = itemsMap.get(item.item_id) || {};
+        const manufacturer = itemInfo.manufacturer || 'Unknown';
+        
+        // Check if marketplace order
+        const isMarketplaceOrder = 
+          order.customer_name === 'Amazon UK Limited' ||
+          order.customer_name === 'Amazon UK - Customer' ||
+          order.company_name === 'Amazon UK Limited' ||
+          order.company_name?.toLowerCase().includes('amazon');
+        
+        const itemTotal = item.item_total || item.total || 
+                        (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
+        
+        transactions.push({
+          transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
+          item_id: item.item_id,
+          item_name: item.name || itemInfo.name,
+          sku: item.sku || itemInfo.sku,
+          manufacturer: manufacturer,
+          brand: manufacturer, // Keep for compatibility
+          brand_normalized: manufacturer.toLowerCase().replace(/\s+/g, '-'),
+          quantity: parseInt(item.quantity || 0),
+          price: parseFloat(item.rate || 0),
+          total: itemTotal,
+          order_id: order.salesorder_id,
+          order_number: order.salesorder_number,
+          order_date: order.date,
+          customer_id: order.customer_id,
+          customer_name: order.customer_name,
+          salesperson_id: order.salesperson_id || '',
+          salesperson_name: order.salesperson_name || '',
+          is_marketplace_order: isMarketplaceOrder,
+          marketplace_source: isMarketplaceOrder ? 'Amazon' : null,
+          created_at: order.date,
+          last_modified: admin.firestore.FieldValue.serverTimestamp()
         });
+      });
+    }
+  });
+  
+  return transactions;
+}
+
+/**
+ * Update brand backorder information from purchase orders
+ */
+async updateBrandBackorders() {
+  const db = admin.firestore();
+  
+  try {
+    console.log('📦 Calculating brand backorders from purchase orders...');
+    
+    // Get all purchase orders (not just pending ones, since we need to check received quantities)
+    const poSnapshot = await db.collection('purchaseorders').get();
+    
+    // Calculate backorders by brand
+    const backordersByBrand = new Map();
+    
+    for (const doc of poSnapshot.docs) {
+      const po = doc.data();
+      
+      if (po.line_items && Array.isArray(po.line_items)) {
+        for (const item of po.line_items) {
+          // Calculate actual backorder quantity for this item
+          const quantity = parseInt(item.quantity || 0);
+          const quantityReceived = parseInt(item.quantity_received || 0);
+          const quantityCancelled = parseInt(item.quantity_cancelled || 0);
+          const quantityInTransit = parseInt(item.quantity_intransit || 0);
+          
+          // Backorder = ordered - received - cancelled
+          const backorderQuantity = quantity - quantityReceived - quantityCancelled;
+          
+          // Only process if there's actually a backorder
+          if (backorderQuantity > 0) {
+            // Get item info to find manufacturer
+            const itemDoc = await db.collection('items')
+              .where('item_id', '==', item.item_id)
+              .limit(1)
+              .get();
+            
+            if (!itemDoc.empty) {
+              const itemData = itemDoc.docs[0].data();
+              const brand = itemData.Manufacturer || itemData.manufacturer || 'Unknown';
+              const brandNormalized = brand.toLowerCase().replace(/\s+/g, '-');
+              
+              if (!backordersByBrand.has(brandNormalized)) {
+                backordersByBrand.set(brandNormalized, {
+                  brand_name: brand,
+                  items_on_backorder: 0,
+                  backorder_value: 0,
+                  items_in_transit: 0,
+                  backorder_details: []
+                });
+              }
+              
+              const brandBackorder = backordersByBrand.get(brandNormalized);
+              brandBackorder.items_on_backorder += backorderQuantity;
+              brandBackorder.backorder_value += backorderQuantity * (parseFloat(item.rate) || 0);
+              brandBackorder.items_in_transit += quantityInTransit;
+              
+              brandBackorder.backorder_details.push({
+                item_id: item.item_id,
+                item_name: item.name || item.item_name,
+                sku: item.sku,
+                po_number: po.purchaseorder_number,
+                po_date: po.date,
+                po_status: po.status,
+                vendor_name: po.vendor_name,
+                quantity_ordered: quantity,
+                quantity_received: quantityReceived,
+                quantity_cancelled: quantityCancelled,
+                quantity_in_transit: quantityInTransit,
+                quantity_billed: parseInt(item.quantity_billed || 0),
+                quantity_marked_as_received: parseInt(item.quantity_marked_as_received || 0),
+                backorder_quantity: backorderQuantity,
+                rate: parseFloat(item.rate || 0),
+                backorder_value: backorderQuantity * (parseFloat(item.rate) || 0)
+              });
+            }
+          }
+        }
+      }
+    }
+    
+    // Update brands collection with backorder info
+    const batch = db.batch();
+    let count = 0;
+    
+    // First, reset all brands' backorder info
+    const allBrandsSnapshot = await db.collection('brands').get();
+    allBrandsSnapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        backorder_info: {
+          items_on_backorder: 0,
+          backorder_value: 0,
+          items_in_transit: 0,
+          backorder_details: [],
+          last_updated: admin.firestore.FieldValue.serverTimestamp()
+        }
+      });
+      count++;
+      
+      if (count % 400 === 0) {
+        batch.commit();
+        batch = db.batch();
       }
     });
     
-    return transactions;
+    // Now update brands that have backorders
+    for (const [brandNormalized, backorderInfo] of backordersByBrand) {
+      const docRef = db.collection('brands').doc(brandNormalized);
+      
+      // Sort backorder details by value (highest first)
+      backorderInfo.backorder_details.sort((a, b) => b.backorder_value - a.backorder_value);
+      
+      // Keep only top 20 items for storage efficiency
+      const topBackorders = backorderInfo.backorder_details.slice(0, 20);
+      
+      batch.set(docRef, {
+        brand_name: backorderInfo.brand_name,
+        brand_normalized: brandNormalized,
+        backorder_info: {
+          items_on_backorder: backorderInfo.items_on_backorder,
+          backorder_value: backorderInfo.backorder_value,
+          items_in_transit: backorderInfo.items_in_transit,
+          backorder_details: topBackorders,
+          total_backorder_items: backorderInfo.backorder_details.length,
+          last_updated: admin.firestore.FieldValue.serverTimestamp()
+        },
+        last_backorder_update: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      
+      count++;
+      
+      if (count % 400 === 0) {
+        await batch.commit();
+        batch = db.batch();
+      }
+    }
+    
+    // Commit remaining
+    if (count % 400 !== 0) {
+      await batch.commit();
+    }
+    
+    // Log summary
+    console.log(`✅ Brand backorder information updated:`);
+    console.log(`   - Brands with backorders: ${backordersByBrand.size}`);
+    
+    let totalBackorderItems = 0;
+    let totalBackorderValue = 0;
+    
+    backordersByBrand.forEach(info => {
+      totalBackorderItems += info.items_on_backorder;
+      totalBackorderValue += info.backorder_value;
+    });
+    
+    console.log(`   - Total items on backorder: ${totalBackorderItems}`);
+    console.log(`   - Total backorder value: £${totalBackorderValue.toFixed(2)}`);
+    
+    return { 
+      success: true, 
+      brandsWithBackorders: backordersByBrand.size,
+      totalBackorderItems,
+      totalBackorderValue
+    };
+    
+  } catch (error) {
+    console.error('❌ Error updating brand backorders:', error);
+    return { success: false, error: error.message };
   }
+}
+
+/**
+ * Get detailed backorder report for a specific brand
+ */
+async getBrandBackorderDetails(brandNormalized) {
+  const db = admin.firestore();
+  
+  try {
+    const brandDoc = await db.collection('brands').doc(brandNormalized).get();
+    
+    if (!brandDoc.exists) {
+      return null;
+    }
+    
+    const brand = brandDoc.data();
+    const backorderInfo = brand.backorder_info || {};
+    
+    // Group backorders by purchase order
+    const backordersByPO = {};
+    
+    if (backorderInfo.backorder_details) {
+      backorderInfo.backorder_details.forEach(item => {
+        if (!backordersByPO[item.po_number]) {
+          backordersByPO[item.po_number] = {
+            po_number: item.po_number,
+            po_date: item.po_date,
+            po_status: item.po_status,
+            vendor_name: item.vendor_name,
+            items: [],
+            total_backorder_value: 0,
+            total_backorder_quantity: 0
+          };
+        }
+        
+        backordersByPO[item.po_number].items.push(item);
+        backordersByPO[item.po_number].total_backorder_value += item.backorder_value;
+        backordersByPO[item.po_number].total_backorder_quantity += item.backorder_quantity;
+      });
+    }
+    
+    return {
+      brand_name: brand.brand_name,
+      summary: {
+        items_on_backorder: backorderInfo.items_on_backorder || 0,
+        backorder_value: backorderInfo.backorder_value || 0,
+        items_in_transit: backorderInfo.items_in_transit || 0,
+        total_backorder_items: backorderInfo.total_backorder_items || 0
+      },
+      backorders_by_po: Object.values(backordersByPO),
+      last_updated: backorderInfo.last_updated
+    };
+    
+  } catch (error) {
+    console.error('❌ Error fetching brand backorder details:', error);
+    return null;
+  }
+}
+
+async updateBrandStatistics(transactions, dateRange = '30_days') {
+  const db = admin.firestore();
+  console.log('📊 Updating brand statistics...');
+  
+  try {
+    // Group transactions by brand
+    const brandStats = new Map();
+    
+    for (const trans of transactions) {
+      const brand = trans.manufacturer || trans.brand || 'Unknown';
+      
+      if (!brandStats.has(brand)) {
+        brandStats.set(brand, {
+          brand_name: brand,
+          brand_normalized: brand.toLowerCase().replace(/\s+/g, '-'),
+          total_quantity: 0,
+          total_revenue: 0,
+          marketplace_orders: new Set(),
+          direct_orders: new Set(),
+          unique_items: new Set(),
+          transactions: []
+        });
+      }
+      
+      const stats = brandStats.get(brand);
+      stats.total_quantity += trans.quantity;
+      stats.total_revenue += trans.total;
+      stats.unique_items.add(trans.item_id);
+      stats.transactions.push({
+        item_id: trans.item_id,
+        item_name: trans.item_name,
+        quantity: trans.quantity,
+        revenue: trans.total,
+        is_marketplace: trans.is_marketplace_order
+      });
+      
+      // Track order types
+      if (trans.is_marketplace_order) {
+        stats.marketplace_orders.add(trans.order_id);
+      } else {
+        stats.direct_orders.add(trans.order_id);
+      }
+    }
+    
+    // Update brands collection
+    const batch = db.batch();
+    let count = 0;
+    
+    for (const [brandName, stats] of brandStats) {
+      // Calculate derived metrics
+      const totalOrders = stats.marketplace_orders.size + stats.direct_orders.size;
+      const avgOrderValue = totalOrders > 0 ? stats.total_revenue / totalOrders : 0;
+      
+      // Get top selling items
+      const itemStats = new Map();
+      stats.transactions.forEach(trans => {
+        if (!itemStats.has(trans.item_id)) {
+          itemStats.set(trans.item_id, {
+            item_id: trans.item_id,
+            item_name: trans.item_name,
+            quantity: 0,
+            revenue: 0
+          });
+        }
+        const item = itemStats.get(trans.item_id);
+        item.quantity += trans.quantity;
+        item.revenue += trans.revenue;
+      });
+      
+      const topSellingItems = Array.from(itemStats.values())
+        .sort((a, b) => b.quantity - a.quantity)
+        .slice(0, 10);
+      
+      const topRevenueItems = Array.from(itemStats.values())
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10);
+      
+      // Prepare brand document
+      const brandDoc = {
+        brand_name: brandName,
+        brand_normalized: stats.brand_normalized,
+        
+        // Metrics for current period
+        [`metrics_${dateRange}`]: {
+          total_quantity: stats.total_quantity,
+          total_revenue: stats.total_revenue,
+          marketplace_orders: stats.marketplace_orders.size,
+          direct_orders: stats.direct_orders.size,
+          total_orders: totalOrders,
+          average_order_value: avgOrderValue,
+          unique_items: stats.unique_items.size,
+          top_selling_items: topSellingItems,
+          top_revenue_items: topRevenueItems,
+          last_updated: admin.firestore.FieldValue.serverTimestamp()
+        },
+        
+        // Overall metrics (accumulative)
+        overall_metrics: admin.firestore.FieldValue.increment({
+          total_quantity: stats.total_quantity,
+          total_revenue: stats.total_revenue
+        }),
+        
+        last_updated: admin.firestore.FieldValue.serverTimestamp()
+      };
+      
+      // Use brand_normalized as document ID
+      const docRef = db.collection('brands').doc(stats.brand_normalized);
+      batch.set(docRef, brandDoc, { merge: true });
+      
+      count++;
+      
+      if (count % 400 === 0) {
+        await batch.commit();
+        batch = db.batch();
+      }
+    }
+    
+    // Commit remaining
+    if (count % 400 !== 0) {
+      await batch.commit();
+    }
+    
+    // Calculate market share
+    await this.calculateMarketShare(dateRange);
+    
+    console.log(`✅ Updated statistics for ${count} brands`);
+    return { success: true, brandsUpdated: count };
+    
+  } catch (error) {
+    console.error('❌ Error updating brand statistics:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+async enrichOrdersWithUIDs(orders) {
+  const db = admin.firestore();
+  
+  // Get user mappings
+  const usersSnapshot = await db.collection('users').get();
+  const usersByZohoId = new Map();
+  
+  usersSnapshot.forEach(doc => {
+    const userData = doc.data();
+    if (userData.zohospID) {
+      usersByZohoId.set(userData.zohospID, {
+        uid: doc.id,
+        name: userData.name,
+        email: userData.email
+      });
+    }
+  });
+  
+  // Enrich orders
+  return orders.map(order => {
+    let salespersonUid = null;
+    
+    // Check if it's a marketplace order
+    const isMarketplaceOrder = 
+      order.customer_name === 'Amazon UK Limited' ||
+      order.customer_name === 'Amazon UK - Customer' ||
+      order.company_name === 'Amazon UK Limited' ||
+      order.company_name?.toLowerCase().includes('amazon');
+    
+    // Map salesperson_id to uid if not marketplace
+    if (!isMarketplaceOrder && order.salesperson_id && usersByZohoId.has(order.salesperson_id)) {
+      salespersonUid = usersByZohoId.get(order.salesperson_id).uid;
+    }
+    
+    return {
+      ...order,
+      salesperson_uid: salespersonUid,
+      is_marketplace_order: isMarketplaceOrder,
+      marketplace_source: isMarketplaceOrder ? 'Amazon' : null
+    };
+  });
+}
+
+
+/**
+ * Calculate market share for all brands
+ */
+async calculateMarketShare(dateRange = '30_days') {
+  const db = admin.firestore();
+  
+  try {
+    // Get all brands
+    const brandsSnapshot = await db.collection('brands').get();
+    
+    // Calculate total revenue across all brands
+    let totalRevenue = 0;
+    const brands = [];
+    
+    brandsSnapshot.forEach(doc => {
+      const brand = doc.data();
+      const metrics = brand[`metrics_${dateRange}`];
+      if (metrics) {
+        totalRevenue += metrics.total_revenue || 0;
+        brands.push({ id: doc.id, revenue: metrics.total_revenue || 0 });
+      }
+    });
+    
+    // Update market share for each brand
+    const batch = db.batch();
+    
+    brands.forEach(brand => {
+      const marketShare = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
+      const docRef = db.collection('brands').doc(brand.id);
+      
+      batch.update(docRef, {
+        [`metrics_${dateRange}.market_share`]: marketShare
+      });
+    });
+    
+    await batch.commit();
+    console.log('✅ Market share calculated for all brands');
+    
+  } catch (error) {
+    console.error('❌ Error calculating market share:', error);
+  }
+}
 
   /**
    * HIGH FREQUENCY SYNC - Every 15 minutes
@@ -177,23 +650,61 @@ class CronDataSyncService {
       let orderCount = 0;
       let transactionCount = 0;
       
-      if (newOrders.length > 0) {
-        console.log(`Found ${newOrders.length} new/modified orders`);
-        
-        // Process orders
-        await this._batchWrite(db, 'orders', newOrders, 'salesorder_id');
-        orderCount = newOrders.length;
-        
-        // Process transactions with proper brand info
-        const transactions = this.processSalesTransactions(newOrders);
-        if (transactions.length > 0) {
-          await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
-          transactionCount = transactions.length;
-        }
-        
-        // Enrich normalized orders
-        await this.enrichNormalizedOrdersWithLineItems(newOrders.map(o => o.salesorder_id));
+       if (newOrders.length > 0) {
+    console.log(`Found ${newOrders.length} new/modified orders`);
+    
+    // Get user mappings before processing orders
+    const usersSnapshot = await db.collection('users').get();
+    const usersByZohoId = new Map();
+    
+    usersSnapshot.forEach(doc => {
+      const userData = doc.data();
+      if (userData.zohospID) {
+        usersByZohoId.set(userData.zohospID, {
+          uid: doc.id,
+          name: userData.name,
+          email: userData.email
+        });
       }
+    });
+    
+    // Enrich orders with salesperson_uid
+    const enrichedOrders = newOrders.map(order => {
+      let salespersonUid = null;
+      
+      // Check if it's a marketplace order
+      const isMarketplaceOrder = 
+        order.customer_name === 'Amazon UK Limited' ||
+        order.customer_name === 'Amazon UK - Customer' ||
+        order.company_name === 'Amazon UK Limited' ||
+        order.company_name?.toLowerCase().includes('amazon');
+      
+      // Map salesperson_id to uid if not marketplace
+      if (!isMarketplaceOrder && order.salesperson_id && usersByZohoId.has(order.salesperson_id)) {
+        salespersonUid = usersByZohoId.get(order.salesperson_id).uid;
+      }
+      
+      return {
+        ...order,
+        salesperson_uid: salespersonUid,
+        is_marketplace_order: isMarketplaceOrder,
+        marketplace_source: isMarketplaceOrder ? 'Amazon' : null
+      };
+    });
+    
+    // Process enriched orders
+    await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+    orderCount = enrichedOrders.length;
+    
+    // Process transactions with manufacturer info from items collection
+    const transactions = await this.processSalesTransactions(newOrders, db);
+    if (transactions.length > 0) {
+      await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
+      transactionCount = transactions.length;
+      
+      // Update brand statistics
+      await this.updateBrandStatistics(transactions, '30_days');
+    }
       
       // Get recent invoices
       const recentInvoices = await zohoReportsService.getInvoices('today');
@@ -212,11 +723,6 @@ class CronDataSyncService {
         console.log(`Found ${newInvoices.length} new/modified invoices`);
         await this.syncAndNormalizeInvoices(newInvoices);
         invoiceCount = newInvoices.length;
-      }
-      
-      // Only run normalization if we have new data
-      if (orderCount > 0 || invoiceCount > 0) {
-        await dataNormalizerService.normalizeRecentData(lastSync);
       }
       
       // Update metadata
@@ -283,10 +789,14 @@ class CronDataSyncService {
         new Map(allOrders.map(order => [order.salesorder_id, order])).values()
       );
       
-      if (uniqueOrders.length > 0) {
-        await this._batchWrite(db, 'orders', uniqueOrders, 'salesorder_id');
+if (uniqueOrders.length > 0) {
+  const enrichedOrders = await this.enrichOrdersWithUIDs(uniqueOrders);
+  await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+  
+  
         
         // Process transactions
+        const transactions = await this.processSalesTransactions(enrichedOrders, db);
         const transactions = this.processSalesTransactions(uniqueOrders);
         if (transactions.length > 0) {
           await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
@@ -370,10 +880,12 @@ class CronDataSyncService {
       ]);
 
       // Process all data
-      if (orders7Days.length > 0) {
-        await this._batchWrite(db, 'orders', orders7Days, 'salesorder_id');
+if (orders7Days.length > 0) {
+  const enrichedOrders = await this.enrichOrdersWithUIDs(orders7Days);
+  await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
         
         // Process transactions with brand enrichment
+        const transactions = await this.processSalesTransactions(enrichedOrders, db);
         const transactions = this.processSalesTransactions(orders7Days);
         if (transactions.length > 0) {
           await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
@@ -403,6 +915,15 @@ class CronDataSyncService {
         await this._batchWrite(db, 'purchase_orders', purchaseOrders7Days, 'purchaseorder_id');
       }
       
+        // After processing purchase orders
+  if (purchaseOrders7Days.length > 0) {
+    await this._batchWrite(db, 'purchaseorders', purchaseOrders7Days, 'purchaseorder_id');
+  }
+  
+  // Update brand backorders
+  console.log('📦 Updating brand backorder information...');
+  const backorderResult = await this.updateBrandBackorders();
+      
       // Update customer analytics
       console.log('👥 Updating customer analytics...');
       const customers = await zohoReportsService.getCustomerAnalytics('7_days');
@@ -425,7 +946,6 @@ class CronDataSyncService {
       
       // Run full normalization
       console.log('🔄 Running weekly data normalization...');
-      await dataNormalizerService.normalizeAllData();
       
       // Update metadata
       await this.updateSyncMetadata('low_frequency', {
@@ -537,22 +1057,6 @@ class CronDataSyncService {
     }
   }
 
-  /**
-   * Enrich normalized orders with line items
-   */
-  async enrichNormalizedOrdersWithLineItems(orderIds) {
-    if (!orderIds || orderIds.length === 0) return { success: true, count: 0 };
-    
-    console.log(`🔄 Enriching ${orderIds.length} orders with line items...`);
-    try {
-      const result = await dataNormalizerService.enrichNormalizedOrdersWithLineItems(orderIds);
-      return result;
-    } catch (error) {
-      console.error('❌ Error enriching orders:', error);
-      return { success: false, error: error.message };
-    }
-  }
-  
   /**
    * Helper function to write data in batches
    */

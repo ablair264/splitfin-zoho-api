@@ -270,7 +270,7 @@ class ZohoInventoryService {
           _synced_at: admin.firestore.FieldValue.serverTimestamp()
         };
         
-        const docRef = this.db.collection('products').doc(zohoProduct.item_id);
+        const docRef = this.db.collection('items').doc(zohoProduct.item_id);
         batch.set(docRef, firebaseProduct, { merge: true });
         count++;
         

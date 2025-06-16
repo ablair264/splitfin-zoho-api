@@ -291,7 +291,7 @@ class ZohoReportsService {
         .get();
       
       // Get products for brand mapping
-      const productsSnapshot = await db.collection('products').get();
+      const productsSnapshot = await db.collection('items').get();
       const productMap = new Map();
       productsSnapshot.docs.forEach(doc => {
         const product = doc.data();
@@ -669,7 +669,7 @@ class ZohoReportsService {
       const taxAmount = grossRevenue - netRevenue;
       
       // 4. Get cost data from purchase orders
-      const purchaseOrdersSnapshot = await db.collection('purchase_orders')
+      const purchaseOrdersSnapshot = await db.collection('purchaseorders')
         .where('date', '>=', startDate.toISOString().split('T')[0])
         .where('date', '<=', endDate.toISOString().split('T')[0])
         .get();
@@ -784,7 +784,7 @@ class ZohoReportsService {
           // Get product info from Firebase to add brand data
           const productIds = order.line_items.map(item => item.item_id);
           const productDocs = await Promise.all(
-            productIds.map(id => db.collection('products').doc(id).get())
+            productIds.map(id => db.collection('sales_transactions').doc(id).get())
           );
           
           const productMap = new Map();
