@@ -617,7 +617,7 @@ async calculateMarketShare(dateRange = '30_days') {
    * HIGH FREQUENCY SYNC - Every 15 minutes
    * Only syncs orders and invoices modified in the last hour
    */
- async highFrequencySync() {
+async highFrequencySync() {
   const jobType = 'high';
   
   if (this.isRunning.get(jobType)) {
@@ -627,119 +627,78 @@ async calculateMarketShare(dateRange = '30_days') {
   
   this.isRunning.set(jobType, true);
   const startTime = Date.now();
+  const db = admin.firestore(); // Add this
   
   try {
     console.log('🚀 Starting high frequency sync...');
     
-    // Initialize counters
+    // Initialize counters - ONLY ONCE
     let orderCount = 0;
     let transactionCount = 0;
     let invoiceCount = 0;
-      
-      // Get metadata from last sync
-      const metadata = await this.getSyncMetadata('high_frequency') || {};
-      const lastSync = metadata.lastSync ? new Date(metadata.lastSync) : new Date(Date.now() - 60 * 60 * 1000);
-      
-      console.log(`Syncing changes since: ${lastSync.toISOString()}`);
-      
-      // Get recently modified orders (last hour)
-      const recentOrders = await zohoReportsService.getSalesOrders('today');
-      
-      // Filter orders modified after last sync
-      const newOrders = recentOrders.filter(order => {
-        const orderDate = new Date(order.last_modified_time || order.date);
-        return orderDate > lastSync;
-      });
-      
-      let orderCount = 0;
-      let transactionCount = 0;
-      
-       if (newOrders.length > 0) {
-    console.log(`Found ${newOrders.length} new/modified orders`);
     
-    // Get user mappings before processing orders
-    const usersSnapshot = await db.collection('users').get();
-    const usersByZohoId = new Map();
+    // Get metadata from last sync
+    const metadata = await this.getSyncMetadata('high_frequency') || {};
+    const lastSync = metadata.lastSync ? new Date(metadata.lastSync) : new Date(Date.now() - 60 * 60 * 1000);
     
-    usersSnapshot.forEach(doc => {
-      const userData = doc.data();
-      if (userData.zohospID) {
-        usersByZohoId.set(userData.zohospID, {
-          uid: doc.id,
-          name: userData.name,
-          email: userData.email
-        });
-      }
+    console.log(`Syncing changes since: ${lastSync.toISOString()}`);
+    
+    // Get recently modified orders (last hour)
+    const recentOrders = await zohoReportsService.getSalesOrders('today');
+    
+    // Filter orders modified after last sync
+    const newOrders = recentOrders.filter(order => {
+      const orderDate = new Date(order.last_modified_time || order.date);
+      return orderDate > lastSync;
     });
     
-    // Enrich orders with salesperson_uid
-    const enrichedOrders = newOrders.map(order => {
-      let salespersonUid = null;
+    if (newOrders.length > 0) {
+      console.log(`Found ${newOrders.length} new/modified orders`);
       
-      // Check if it's a marketplace order
-      const isMarketplaceOrder = 
-        order.customer_name === 'Amazon UK Limited' ||
-        order.customer_name === 'Amazon UK - Customer' ||
-        order.company_name === 'Amazon UK Limited' ||
-        order.company_name?.toLowerCase().includes('amazon');
+      // Enrich orders with UIDs
+      const enrichedOrders = await this.enrichOrdersWithUIDs(newOrders);
+      await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+      orderCount = enrichedOrders.length;
       
-      // Map salesperson_id to uid if not marketplace
-      if (!isMarketplaceOrder && order.salesperson_id && usersByZohoId.has(order.salesperson_id)) {
-        salespersonUid = usersByZohoId.get(order.salesperson_id).uid;
+      // Process transactions
+      const transactions = await this.processSalesTransactions(enrichedOrders, db);
+      if (transactions.length > 0) {
+        await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
+        transactionCount = transactions.length;
+        
+        // Update brand statistics
+        await this.updateBrandStatistics(transactions, '30_days');
       }
-      
-      return {
-        ...order,
-        salesperson_uid: salespersonUid,
-        is_marketplace_order: isMarketplaceOrder,
-        marketplace_source: isMarketplaceOrder ? 'Amazon' : null
-      };
-    });
-    
-    // Process enriched orders
-    await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
-    orderCount = enrichedOrders.length;
-    
-    // Process transactions with manufacturer info from items collection
-    const transactions = await this.processSalesTransactions(newOrders, db);
-    if (transactions.length > 0) {
-      await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
-      transactionCount = transactions.length;
-      
-      // Update brand statistics
-      await this.updateBrandStatistics(transactions, '30_days');
     }
-      
-      // Get recent invoices
-      const recentInvoices = await zohoReportsService.getInvoices('today');
-      const invoiceData = Array.isArray(recentInvoices) ? recentInvoices : 
-                         [...(recentInvoices.all || []), ...(recentInvoices.outstanding || [])];
-      
-      // Filter invoices modified after last sync
-      const newInvoices = invoiceData.filter(invoice => {
-        const invoiceDate = new Date(invoice.last_modified_time || invoice.date);
-        return invoiceDate > lastSync;
-      });
-      
-      let invoiceCount = 0;
-      
-      if (newInvoices.length > 0) {
-        console.log(`Found ${newInvoices.length} new/modified invoices`);
-        await this.syncAndNormalizeInvoices(newInvoices);
-        invoiceCount = newInvoices.length;
-      }
-      
-      // Update metadata
-      await this.updateSyncMetadata('high_frequency', {
-        recordsProcessed: {
-          orders: orderCount,
-          transactions: transactionCount,
-          invoices: invoiceCount
-        },
-        duration: Date.now() - startTime
-      });
-      
-  const duration = Date.now() - startTime;
+    
+    // Get recent invoices
+    const recentInvoices = await zohoReportsService.getInvoices('today');
+    const invoiceData = Array.isArray(recentInvoices) ? recentInvoices : 
+                       [...(recentInvoices.all || []), ...(recentInvoices.outstanding || [])];
+    
+    // Filter invoices modified after last sync
+    const newInvoices = invoiceData.filter(invoice => {
+      const invoiceDate = new Date(invoice.last_modified_time || invoice.date);
+      return invoiceDate > lastSync;
+    });
+    
+    if (newInvoices.length > 0) {
+      console.log(`Found ${newInvoices.length} new/modified invoices`);
+      await this.syncAndNormalizeInvoices(newInvoices);
+      invoiceCount = newInvoices.length;
+    }
+    
+    // Update metadata
+    await this.updateSyncMetadata('high_frequency', {
+      recordsProcessed: {
+        orders: orderCount,
+        transactions: transactionCount,
+        invoices: invoiceCount
+      },
+      duration: Date.now() - startTime
+    });
+    
+    const duration = Date.now() - startTime;
     
     return { 
       success: true, 
@@ -762,226 +721,216 @@ async calculateMarketShare(dateRange = '30_days') {
    * MEDIUM FREQUENCY SYNC - Every 2 hours
    * Catches any missed records from the last 24 hours
    */
-  async mediumFrequencySync() {
-    const jobType = 'medium-frequency';
-    
-    if (this.isRunning.get(jobType)) {
-      console.log('⚠️ Medium frequency sync already running, skipping...');
-      return { success: false, message: 'Job already running' };
-    }
-
-    this.isRunning.set(jobType, true);
-    const startTime = Date.now();
-    const db = admin.firestore();
-
-    try {
-      console.log('🔄 Starting medium frequency sync (last 24 hours)...');
-      
-      // Get yesterday and today's data to catch any missed records
-      const [ordersToday, ordersYesterday] = await Promise.all([
-        zohoReportsService.getSalesOrders('today'),
-        zohoReportsService.getSalesOrders('yesterday')
-      ]);
-      
-      const allOrders = [...ordersToday, ...ordersYesterday];
-      
-      // Remove duplicates
-      const uniqueOrders = Array.from(
-        new Map(allOrders.map(order => [order.salesorder_id, order])).values()
-      );
-      
-if (uniqueOrders.length > 0) {
-  const enrichedOrders = await this.enrichOrdersWithUIDs(uniqueOrders);
-  await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+async mediumFrequencySync() {
+  const jobType = 'medium-frequency';
   
-  
-        
-        // Process transactions
-        const transactions = await this.processSalesTransactions(enrichedOrders, db);
-        const transactions = this.processSalesTransactions(uniqueOrders);
-        if (transactions.length > 0) {
-          await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
-        }
-        
-        // Enrich orders
-        await this.enrichNormalizedOrdersWithLineItems(uniqueOrders.map(o => o.salesorder_id));
-      }
-      
-      // Sync invoices from last 24 hours
-      const invoicesResult = await zohoReportsService.getInvoices('7_days');
-      const recentInvoices = [...(invoicesResult.all || []), ...(invoicesResult.outstanding || [])];
-      
-      // Filter to last 24 hours
-      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const last24HourInvoices = recentInvoices.filter(inv => 
-        new Date(inv.date) >= oneDayAgo
-      );
-      
-      if (last24HourInvoices.length > 0) {
-        await this.syncAndNormalizeInvoices(last24HourInvoices);
-      }
-      
-      // Update metadata
-      await this.updateSyncMetadata('medium_frequency', {
-        recordsProcessed: {
-          orders: uniqueOrders.length,
-          invoices: last24HourInvoices.length
-        },
-        duration: Date.now() - startTime
-      });
-      
-      const duration = Date.now() - startTime;
-      console.log(`✅ Medium frequency sync completed in ${duration}ms`);
-      
-      return { 
-        success: true, 
-        duration,
-        recordsProcessed: {
-          orders: uniqueOrders.length,
-          invoices: last24HourInvoices.length
-        }
-      };
-      
-    } catch (error) {
-      console.error('❌ Medium frequency sync failed:', error);
-      return { success: false, error: error.message };
-    } finally {
-      this.isRunning.set(jobType, false);
-    }
+  if (this.isRunning.get(jobType)) {
+    console.log('⚠️ Medium frequency sync already running, skipping...');
+    return { success: false, message: 'Job already running' };
   }
+  
+  this.isRunning.set(jobType, true);
+  const startTime = Date.now();
+  const db = admin.firestore();
+  
+  try {
+    console.log('🔄 Starting medium frequency sync (last 24 hours)...');
+    
+    // Get yesterday and today's data to catch any missed records
+    const [ordersToday, ordersYesterday] = await Promise.all([
+      zohoReportsService.getSalesOrders('today'),
+      zohoReportsService.getSalesOrders('yesterday')
+    ]);
+    
+    const allOrders = [...ordersToday, ...ordersYesterday];
+    
+    // Remove duplicates
+    const uniqueOrders = Array.from(
+      new Map(allOrders.map(order => [order.salesorder_id, order])).values()
+    );
+    
+    if (uniqueOrders.length > 0) {
+      const enrichedOrders = await this.enrichOrdersWithUIDs(uniqueOrders);
+      await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+      
+      // Process transactions
+      const transactions = await this.processSalesTransactions(enrichedOrders, db);
+      if (transactions.length > 0) {
+        await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
+        
+        // Update brand statistics
+        await this.updateBrandStatistics(transactions, '30_days');
+      }
+    }
+    // REMOVED the extra } and the enrichNormalizedOrdersWithLineItems call
+    
+    // Sync invoices from last 24 hours
+    const invoicesResult = await zohoReportsService.getInvoices('7_days');
+    const recentInvoices = [...(invoicesResult.all || []), ...(invoicesResult.outstanding || [])];
+    
+    // Filter to last 24 hours
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const last24HourInvoices = recentInvoices.filter(inv => 
+      new Date(inv.date) >= oneDayAgo
+    );
+    
+    if (last24HourInvoices.length > 0) {
+      await this.syncAndNormalizeInvoices(last24HourInvoices);
+    }
+    
+    // Update metadata
+    await this.updateSyncMetadata('medium_frequency', {
+      recordsProcessed: {
+        orders: uniqueOrders.length,
+        invoices: last24HourInvoices.length
+      },
+      duration: Date.now() - startTime
+    });
+    
+    const duration = Date.now() - startTime;
+    console.log(`✅ Medium frequency sync completed in ${duration}ms`);
+    
+    return { 
+      success: true, 
+      duration,
+      recordsProcessed: {
+        orders: uniqueOrders.length,
+        invoices: last24HourInvoices.length
+      }
+    };
+    
+  } catch (error) {
+    console.error('❌ Medium frequency sync failed:', error);
+    return { success: false, error: error.message };
+  } finally {
+    this.isRunning.set(jobType, false);
+  }
+}
 
   /**
    * LOW FREQUENCY SYNC - Daily at 2 AM
    * Comprehensive sync of last 7 days + cleanup
    */
-  async lowFrequencySync() {
-    const jobType = 'low-frequency';
-    
-    if (this.isRunning.get(jobType)) {
-      console.log('⚠️ Low frequency sync already running, skipping...');
-      return { success: false, message: 'Job already running' };
-    }
-
-    this.isRunning.set(jobType, true);
-    const startTime = Date.now();
-    const db = admin.firestore();
-
-    try {
-      console.log('🔄 Starting low frequency sync (weekly cleanup)...');
-      
-      // Sync product updates
-      console.log('📦 Syncing product catalog updates...');
-      const productSyncResult = await syncInventory(false); // incremental update
-      
-      // Get last 7 days of data for comprehensive sync
-      const [orders7Days, invoices7Days, purchaseOrders7Days] = await Promise.all([
-        zohoReportsService.getSalesOrders('7_days'),
-        zohoReportsService.getInvoices('7_days'),
-        zohoReportsService.getPurchaseOrders('7_days')
-      ]);
-
-      // Process all data
-if (orders7Days.length > 0) {
-  const enrichedOrders = await this.enrichOrdersWithUIDs(orders7Days);
-  await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
-        
-        // Process transactions with brand enrichment
-        const transactions = await this.processSalesTransactions(enrichedOrders, db);
-        const transactions = this.processSalesTransactions(orders7Days);
-        if (transactions.length > 0) {
-          await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
-        }
-        
-        // Enrich all orders from the week
-        await this.enrichNormalizedOrdersWithLineItems(orders7Days.map(o => o.salesorder_id));
-      }
-      
-      // Process invoices
-      const allInvoices = [
-        ...(invoices7Days.all || []),
-        ...(invoices7Days.outstanding || []),
-        ...(invoices7Days.overdue || [])
-      ];
-      
-      const uniqueInvoices = Array.from(
-        new Map(allInvoices.map(inv => [inv.invoice_id, inv])).values()
-      );
-      
-      if (uniqueInvoices.length > 0) {
-        await this.syncAndNormalizeInvoices(uniqueInvoices);
-      }
-      
-      // Process purchase orders
-      if (purchaseOrders7Days.length > 0) {
-        await this._batchWrite(db, 'purchase_orders', purchaseOrders7Days, 'purchaseorder_id');
-      }
-      
-        // After processing purchase orders
-  if (purchaseOrders7Days.length > 0) {
-    await this._batchWrite(db, 'purchaseorders', purchaseOrders7Days, 'purchaseorder_id');
-  }
+ async lowFrequencySync() {
+  const jobType = 'low-frequency';
   
-  // Update brand backorders
-  console.log('📦 Updating brand backorder information...');
-  const backorderResult = await this.updateBrandBackorders();
-      
-      // Update customer analytics
-      console.log('👥 Updating customer analytics...');
-      const customers = await zohoReportsService.getCustomerAnalytics('7_days');
-      if (customers.customers && customers.customers.length > 0) {
-        const customerData = customers.customers.map(customer => ({
-          customer_id: customer.id,
-          name: customer.name,
-          email: customer.email,
-          totalSpent: customer.totalSpent,
-          orderCount: customer.orderCount,
-          lastOrderDate: customer.lastOrderDate,
-          firstOrderDate: customer.firstOrderDate,
-          segment: customer.segment,
-          agentId: customer.agentId,
-          last_modified: admin.firestore.FieldValue.serverTimestamp()
-        }));
-        
-        await this._batchWrite(db, 'customers', customerData, 'customer_id');
-      }
-      
-      // Run full normalization
-      console.log('🔄 Running weekly data normalization...');
-      
-      // Update metadata
-      await this.updateSyncMetadata('low_frequency', {
-        recordsProcessed: {
-          products: productSyncResult.stats,
-          orders: orders7Days.length,
-          invoices: uniqueInvoices.length,
-          purchaseOrders: purchaseOrders7Days.length,
-          customers: customers.customers?.length || 0
-        },
-        duration: Date.now() - startTime
-      });
-      
-      const duration = Date.now() - startTime;
-      console.log(`✅ Low frequency sync completed in ${duration}ms`);
-      
-      return { 
-        success: true, 
-        duration,
-        recordsProcessed: {
-          products: productSyncResult.stats,
-          orders: orders7Days.length,
-          invoices: uniqueInvoices.length,
-          purchaseOrders: purchaseOrders7Days.length,
-          customers: customers.customers?.length || 0
-        }
-      };
-      
-    } catch (error) {
-      console.error('❌ Low frequency sync failed:', error);
-      return { success: false, error: error.message };
-    } finally {
-      this.isRunning.set(jobType, false);
-    }
+  if (this.isRunning.get(jobType)) {
+    console.log('⚠️ Low frequency sync already running, skipping...');
+    return { success: false, message: 'Job already running' };
   }
+
+  this.isRunning.set(jobType, true);
+  const startTime = Date.now();
+  const db = admin.firestore();
+
+  try {
+    console.log('🔄 Starting low frequency sync (weekly cleanup)...');
+    
+    // Sync product updates
+    console.log('📦 Syncing product catalog updates...');
+    const productSyncResult = await syncInventory(false); // incremental update
+    
+    // Get last 7 days of data for comprehensive sync
+    const [orders7Days, invoices7Days, purchaseOrders7Days] = await Promise.all([
+      zohoReportsService.getSalesOrders('7_days'),
+      zohoReportsService.getInvoices('7_days'),
+      zohoReportsService.getPurchaseOrders('7_days')
+    ]);
+
+    // Process all data
+    if (orders7Days.length > 0) {
+      const enrichedOrders = await this.enrichOrdersWithUIDs(orders7Days);
+      await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+      
+      // Process transactions - REMOVE DUPLICATE
+      const transactions = await this.processSalesTransactions(enrichedOrders, db);
+      if (transactions.length > 0) {
+        await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
+        
+        // Update brand statistics
+        await this.updateBrandStatistics(transactions, '30_days');
+      }
+    }
+    
+    // Process invoices
+    const allInvoices = [
+      ...(invoices7Days.all || []),
+      ...(invoices7Days.outstanding || []),
+      ...(invoices7Days.overdue || [])
+    ];
+    
+    const uniqueInvoices = Array.from(
+      new Map(allInvoices.map(inv => [inv.invoice_id, inv])).values()
+    );
+    
+    if (uniqueInvoices.length > 0) {
+      await this.syncAndNormalizeInvoices(uniqueInvoices);
+    }
+    
+    // Process purchase orders - FIXED COLLECTION NAME
+    if (purchaseOrders7Days.length > 0) {
+      await this._batchWrite(db, 'purchaseorders', purchaseOrders7Days, 'purchaseorder_id');
+    }
+    
+    // Update brand backorders
+    console.log('📦 Updating brand backorder information...');
+    const backorderResult = await this.updateBrandBackorders();
+    
+    // Update customer analytics
+    console.log('👥 Updating customer analytics...');
+    const customers = await zohoReportsService.getCustomerAnalytics('7_days');
+    if (customers.customers && customers.customers.length > 0) {
+      const customerData = customers.customers.map(customer => ({
+        customer_id: customer.id,
+        name: customer.name,
+        email: customer.email,
+        totalSpent: customer.totalSpent,
+        orderCount: customer.orderCount,
+        lastOrderDate: customer.lastOrderDate,
+        firstOrderDate: customer.firstOrderDate,
+        segment: customer.segment,
+        agentId: customer.agentId,
+        last_modified: admin.firestore.FieldValue.serverTimestamp()
+      }));
+      
+      await this._batchWrite(db, 'customers', customerData, 'customer_id');
+    }
+    
+    // Update metadata
+    await this.updateSyncMetadata('low_frequency', {
+      recordsProcessed: {
+        products: productSyncResult.stats,
+        orders: orders7Days.length,
+        invoices: uniqueInvoices.length,
+        purchaseOrders: purchaseOrders7Days.length,
+        customers: customers.customers?.length || 0,
+        backorderResult: backorderResult
+      },
+      duration: Date.now() - startTime
+    });
+    
+    const duration = Date.now() - startTime;
+    console.log(`✅ Low frequency sync completed in ${duration}ms`);
+    
+    return { 
+      success: true, 
+      duration,
+      recordsProcessed: {
+        products: productSyncResult.stats,
+        orders: orders7Days.length,
+        invoices: uniqueInvoices.length,
+        purchaseOrders: purchaseOrders7Days.length,
+        customers: customers.customers?.length || 0
+      }
+    };
+    
+  } catch (error) {
+    console.error('❌ Low frequency sync failed:', error);
+    return { success: false, error: error.message };
+  } finally {
+    this.isRunning.set(jobType, false);
+  }
+}
 
   /**
    * Sync and normalize invoices
