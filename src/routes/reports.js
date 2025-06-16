@@ -3,7 +3,6 @@ import express from 'express';
 import zohoReportsService from '../services/zohoReportsService.js';
 import admin from 'firebase-admin';
 import collectionDashboardService from '../services/collectionDashboardService.js';
-import dataNormalizerService from '../services/dataNormalizerService.js';
 
 const router = express.Router();
 
@@ -116,31 +115,29 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
     console.log(`📊 Dashboard request: User ${userId}, Range: ${dateRange}`);
     
     // Use the collection-based dashboard service with timeout protection
-    const rawDashboardData = await collectionDashboardService.getDashboardDataWithTimeout(
+    const dashboardData = await collectionDashboardService.getDashboardDataWithTimeout(
       userId, 
       dateRange, 
       customDateRange
     );
     
-    // Normalize the data for consistent frontend consumption
-    const normalizedData = dataNormalizerService.normalizeDashboardData(
-      rawDashboardData,
-      userId
-    );
+    // The collectionDashboardService already returns properly structured data
+    // No normalization needed
     
     // Log data structure for debugging
-    console.log('📊 Normalized dashboard structure:', {
-      hasMetrics: !!normalizedData.metrics,
-      ordersCount: normalizedData.orders.length,
-      invoicesCount: normalizedData.invoices.all.length,
-      brandsCount: normalizedData.performance.brands.length,
-      hasCommission: !!normalizedData.commission,
-      hasAgentPerformance: !!normalizedData.agentPerformance
+    console.log('📊 Dashboard data structure:', {
+      hasMetrics: !!dashboardData.metrics,
+      ordersCount: dashboardData.orders?.length || 0,
+      invoicesCount: dashboardData.invoices?.all?.length || 0,
+      brandsCount: dashboardData.performance?.brands?.length || 0,
+      hasCommission: !!dashboardData.commission,
+      hasAgentPerformance: !!dashboardData.agentPerformance,
+      role: dashboardData.role
     });
     
     res.json({
       success: true,
-      data: normalizedData,
+      data: dashboardData,
       userContext: {
         role: req.userContext.role,
         userId: req.userContext.userId,
