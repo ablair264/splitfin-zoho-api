@@ -711,7 +711,8 @@ async enrichOrdersWithUIDs(orders) {
       order.customer_name === 'Amazon UK Limited' ||
       order.customer_name === 'Amazon UK - Customer' ||
       order.company_name === 'Amazon UK Limited' ||
-      order.company_name?.toLowerCase().includes('amazon');
+      order.company_name?.toLowerCase().includes('amazon') ||
+      false; // Add false as default to ensure it's never undefined
     
     // Map salesperson_id to uid if not marketplace
     if (!isMarketplaceOrder && order.salesperson_id && usersByZohoId.has(order.salesperson_id)) {
@@ -720,8 +721,8 @@ async enrichOrdersWithUIDs(orders) {
     
     return {
       ...order,
-      salesperson_uid: salespersonUid,
-      is_marketplace_order: isMarketplaceOrder,
+      salesperson_uid: salespersonUid || null, // Use null instead of undefined
+      is_marketplace_order: isMarketplaceOrder, // Will always be boolean now
       marketplace_source: isMarketplaceOrder ? 'Amazon' : null
     };
   });
