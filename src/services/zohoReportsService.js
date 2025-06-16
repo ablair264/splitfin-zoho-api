@@ -279,89 +279,103 @@ class ZohoReportsService {
   /**
    * Get brand performance data - UPDATED to use actual collections
    */
-  async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
-    try {
-      const db = admin.firestore();
-      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+ async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
+  try {
+    const db = admin.firestore();
+    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+    
+    // Brand mappings
+    const brandMappings = {
+      'rader': ['rader', 'räder', 'Rader', 'Räder'],
+      'relaxound': ['relaxound', 'Relaxound'],
+      'myflame': ['my flame', 'My Flame', 'myflame', 'MyFlame', 'My Flame Lifestyle'],
+      'blomus': ['blomus', 'Blomus'],
+      'remember': ['remember', 'Remember'],
+      'elvang': ['elvang', 'Elvang']
+    };
+    
+    // Query sales_transactions for the date range
+    const transactionsSnapshot = await db.collection('sales_transactions')
+      .where('order_date', '>=', startDate.toISOString().split('T')[0])
+      .where('order_date', '<=', endDate.toISOString().split('T')[0])
+      .get();
+    
+    const brandStats = new Map();
+    
+    // Initialize all brands
+    Object.entries(brandMappings).forEach(([key, variants]) => {
+      brandStats.set(key, {
+        name: variants[variants.length - 1], // Use the properly capitalized version
+        revenue: 0,
+        quantity: 0,
+        orders: new Set(),
+        products: new Set(),
+        marketplace_orders: new Set(),
+        direct_orders: new Set()
+      });
+    });
+    
+    // Process transactions
+    transactionsSnapshot.forEach(doc => {
+      const trans = doc.data();
       
-      // Get sales orders with line items
-      const ordersSnapshot = await db.collection('salesorders')
-        .where('date', '>=', startDate.toISOString().split('T')[0])
-        .where('date', '<=', endDate.toISOString().split('T')[0])
-        .get();
-      
-      // Get products for brand mapping
-      const productsSnapshot = await db.collection('items').get();
-      const productMap = new Map();
-      productsSnapshot.docs.forEach(doc => {
-        const product = doc.data();
-        productMap.set(doc.id, {
-          brand: product.brand || 'Unknown',
-          name: product.name || product.item_name
-        });
+      // Find which brand this belongs to
+      let brandKey = null;
+      Object.entries(brandMappings).forEach(([key, variants]) => {
+        if (variants.some(variant => 
+          variant.toLowerCase() === (trans.brand || '').toLowerCase()
+        )) {
+          brandKey = key;
+        }
       });
       
-      const brandStats = new Map();
-      
-      ordersSnapshot.forEach(doc => {
-        const order = doc.data();
+      if (brandKey && brandStats.has(brandKey)) {
+        const stats = brandStats.get(brandKey);
+        stats.revenue += trans.total || 0;
+        stats.quantity += trans.quantity || 0;
+        stats.orders.add(trans.order_id);
+        stats.products.add(trans.item_id);
         
-        if (order.line_items && Array.isArray(order.line_items)) {
-          order.line_items.forEach(item => {
-            const productInfo = productMap.get(item.item_id) || {};
-            const brand = productInfo.brand || 'Unknown';
-            
-            if (!brandStats.has(brand)) {
-              brandStats.set(brand, {
-                name: brand,
-                revenue: 0,
-                quantity: 0,
-                orders: new Set(),
-                products: new Set()
-              });
-            }
-            
-            const stats = brandStats.get(brand);
-            stats.revenue += parseFloat(item.item_total || 0);
-            stats.quantity += parseInt(item.quantity || 0);
-            stats.orders.add(order.salesorder_number);
-            if (item.item_id) {
-              stats.products.add(item.item_id);
-            }
-          });
+        if (trans.is_marketplace_order) {
+          stats.marketplace_orders.add(trans.order_id);
+        } else {
+          stats.direct_orders.add(trans.order_id);
         }
-      });
-      
-      // Convert to array
-      const brands = Array.from(brandStats.values()).map(stats => ({
-        name: stats.name,
-        revenue: stats.revenue,
-        quantity: stats.quantity,
-        orderCount: stats.orders.size,
-        productCount: stats.products.size,
-        market_share: 0
-      })).sort((a, b) => b.revenue - a.revenue);
-      
-      // Calculate market share
-      const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
-      brands.forEach(brand => {
-        brand.market_share = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
-      });
-      
-      return {
-        brands,
-        summary: {
-          totalBrands: brands.length,
-          totalRevenue,
-          topBrand: brands[0] || null
-        }
-      };
-      
-    } catch (error) {
-      console.error('❌ Error fetching brand performance:', error);
-      throw error;
-    }
+      }
+    });
+    
+    // Convert to array
+    const brands = Array.from(brandStats.values()).map(stats => ({
+      name: stats.name,
+      revenue: stats.revenue,
+      quantity: stats.quantity,
+      orderCount: stats.orders.size,
+      productCount: stats.products.size,
+      marketplace_orders: stats.marketplace_orders.size,
+      direct_orders: stats.direct_orders.size,
+      market_share: 0
+    })).sort((a, b) => b.revenue - a.revenue);
+    
+    // Calculate market share
+    const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
+    brands.forEach(brand => {
+      brand.market_share = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
+    });
+    
+    return {
+      brands,
+      summary: {
+        totalBrands: brands.length,
+        totalRevenue,
+        topBrand: brands[0] || null
+      }
+    };
+    
+  } catch (error) {
+    console.error('❌ Error fetching brand performance:', error);
+    throw error;
   }
+}
 
   /**
    * Get customer analytics - UPDATED to use actual customers collection

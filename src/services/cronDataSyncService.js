@@ -394,84 +394,153 @@ async getBrandBackorderDetails(brandNormalized) {
 
 async updateBrandStatistics(transactions, dateRange = '30_days') {
   const db = admin.firestore();
-  console.log('📊 Updating brand statistics...');
+  console.log('📊 Updating brand statistics from sales transactions...');
   
   try {
-    // Group transactions by brand
+    // Brand mappings with Firebase document IDs
+    const brandMappings = {
+      'rader': { id: '14gZGdIzCx4FXk688pFU', display: 'Räder', normalized: 'rader', variants: ['rader', 'räder', 'Rader', 'Räder'] },
+      'relaxound': { id: 'EgCkp88aE2tBGuMJffeg', display: 'Relaxound', normalized: 'relaxound', variants: ['relaxound', 'Relaxound'] },
+      'myflame': { id: 'RSIgBqXEEyvL5edkwBCh', display: 'My Flame', normalized: 'myflame', variants: ['my flame', 'My Flame', 'myflame', 'MyFlame'] },
+      'blomus': { id: 'U3IP2jxNGYpae9WGkCQJ', display: 'Blomus', normalized: 'blomus', variants: ['blomus', 'Blomus'] },
+      'remember': { id: 'fMIJ7hHmyXczdfCAdn4Q', display: 'Remember', normalized: 'remember', variants: ['remember', 'Remember'] },
+      'elvang': { id: 'zYcbCnehcmGw3sud81UZ', display: 'Elvang', normalized: 'elvang', variants: ['elvang', 'Elvang'] }
+    };
+    
+    // Get date range
+    const { startDate, endDate } = this.getDateRange(dateRange);
+    
+    // Query sales_transactions for all relevant brands
+    const brandQueries = [];
+    Object.values(brandMappings).forEach(brandInfo => {
+      brandInfo.variants.forEach(variant => {
+        brandQueries.push(
+          db.collection('sales_transactions')
+            .where('brand', '==', variant)
+            .where('order_date', '>=', startDate.toISOString().split('T')[0])
+            .where('order_date', '<=', endDate.toISOString().split('T')[0])
+            .get()
+        );
+      });
+    });
+    
+    // Execute all queries
+    const results = await Promise.all(brandQueries);
+    
+    // Combine all transactions
+    const allTransactions = [];
+    results.forEach(snapshot => {
+      snapshot.docs.forEach(doc => {
+        allTransactions.push({ id: doc.id, ...doc.data() });
+      });
+    });
+    
+    // Group transactions by normalized brand
     const brandStats = new Map();
     
-    for (const trans of transactions) {
-      const brand = trans.manufacturer || trans.brand || 'Unknown';
-      
-      if (!brandStats.has(brand)) {
-        brandStats.set(brand, {
-          brand_name: brand,
-          brand_normalized: brand.toLowerCase().replace(/\s+/g, '-'),
-          total_quantity: 0,
-          total_revenue: 0,
-          marketplace_orders: new Set(),
-          direct_orders: new Set(),
-          unique_items: new Set(),
-          transactions: []
-        });
-      }
-      
-      const stats = brandStats.get(brand);
-      stats.total_quantity += trans.quantity;
-      stats.total_revenue += trans.total;
-      stats.unique_items.add(trans.item_id);
-      stats.transactions.push({
-        item_id: trans.item_id,
-        item_name: trans.item_name,
-        quantity: trans.quantity,
-        revenue: trans.total,
-        is_marketplace: trans.is_marketplace_order
+    // Initialize all brands
+    Object.entries(brandMappings).forEach(([key, brandInfo]) => {
+      brandStats.set(key, {
+        brand_name: brandInfo.display,
+        brand_normalized: brandInfo.normalized,
+        brand_id: brandInfo.id,
+        total_quantity: 0,
+        total_revenue: 0,
+        unique_orders: new Set(),
+        marketplace_orders: new Set(),
+        direct_orders: new Set(),
+        items: new Map(), // For tracking best selling items
+        transactions: []
+      });
+    });
+    
+    // Process transactions
+    allTransactions.forEach(trans => {
+      // Find which brand this belongs to
+      let brandKey = null;
+      Object.entries(brandMappings).forEach(([key, brandInfo]) => {
+        if (brandInfo.variants.some(variant => 
+          variant.toLowerCase() === (trans.brand || '').toLowerCase()
+        )) {
+          brandKey = key;
+        }
       });
       
-      // Track order types
-      if (trans.is_marketplace_order) {
-        stats.marketplace_orders.add(trans.order_id);
-      } else {
-        stats.direct_orders.add(trans.order_id);
-      }
-    }
-    
-    // Update brands collection
-    const batch = db.batch();
-    let count = 0;
-    
-    for (const [brandName, stats] of brandStats) {
-      // Calculate derived metrics
-      const totalOrders = stats.marketplace_orders.size + stats.direct_orders.size;
-      const avgOrderValue = totalOrders > 0 ? stats.total_revenue / totalOrders : 0;
-      
-      // Get top selling items
-      const itemStats = new Map();
-      stats.transactions.forEach(trans => {
-        if (!itemStats.has(trans.item_id)) {
-          itemStats.set(trans.item_id, {
+      if (brandKey && brandStats.has(brandKey)) {
+        const stats = brandStats.get(brandKey);
+        
+        // Update stats
+        stats.total_quantity += trans.quantity || 0;
+        stats.total_revenue += trans.total || 0;
+        stats.unique_orders.add(trans.order_id);
+        
+        // Track order types
+        if (trans.is_marketplace_order) {
+          stats.marketplace_orders.add(trans.order_id);
+        } else {
+          stats.direct_orders.add(trans.order_id);
+        }
+        
+        // Track items for best sellers
+        const itemKey = trans.item_id;
+        if (!stats.items.has(itemKey)) {
+          stats.items.set(itemKey, {
             item_id: trans.item_id,
             item_name: trans.item_name,
+            sku: trans.sku,
             quantity: 0,
             revenue: 0
           });
         }
-        const item = itemStats.get(trans.item_id);
-        item.quantity += trans.quantity;
-        item.revenue += trans.revenue;
+        const item = stats.items.get(itemKey);
+        item.quantity += trans.quantity || 0;
+        item.revenue += trans.total || 0;
+        
+        stats.transactions.push(trans);
+      }
+    });
+    
+    // Calculate total revenue for market share
+    let totalRevenue = 0;
+    brandStats.forEach(stats => {
+      totalRevenue += stats.total_revenue;
+    });
+    
+    // Get active product counts
+    const activeProductCounts = await this.getActiveProductCounts();
+    
+    // Update brands collection
+    const batch = db.batch();
+    
+    for (const [brandKey, stats] of brandStats) {
+      const brandInfo = brandMappings[brandKey];
+      const orderCount = stats.unique_orders.size;
+      const avgOrderValue = orderCount > 0 ? stats.total_revenue / orderCount : 0;
+      const marketShare = totalRevenue > 0 ? (stats.total_revenue / totalRevenue) * 100 : 0;
+      
+      // Get best selling item for this brand
+      let bestSellingItem = null;
+      let maxQuantity = 0;
+      stats.items.forEach(item => {
+        if (item.quantity > maxQuantity) {
+          maxQuantity = item.quantity;
+          bestSellingItem = item;
+        }
       });
       
-      const topSellingItems = Array.from(itemStats.values())
+      // Get top selling items (sorted by quantity)
+      const topSellingItems = Array.from(stats.items.values())
         .sort((a, b) => b.quantity - a.quantity)
         .slice(0, 10);
       
-      const topRevenueItems = Array.from(itemStats.values())
+      // Get top revenue items
+      const topRevenueItems = Array.from(stats.items.values())
         .sort((a, b) => b.revenue - a.revenue)
         .slice(0, 10);
       
       // Prepare brand document
       const brandDoc = {
-        brand_name: brandName,
+        brand_name: brandInfo.display,
         brand_normalized: stats.brand_normalized,
         
         // Metrics for current period
@@ -480,50 +549,139 @@ async updateBrandStatistics(transactions, dateRange = '30_days') {
           total_revenue: stats.total_revenue,
           marketplace_orders: stats.marketplace_orders.size,
           direct_orders: stats.direct_orders.size,
-          total_orders: totalOrders,
+          total_orders: orderCount,
           average_order_value: avgOrderValue,
-          unique_items: stats.unique_items.size,
+          market_share: marketShare,
+          active_products: activeProductCounts[brandKey] || 0,
+          best_selling_item: bestSellingItem,
           top_selling_items: topSellingItems,
           top_revenue_items: topRevenueItems,
           last_updated: admin.firestore.FieldValue.serverTimestamp()
         },
         
-        // Overall metrics (accumulative)
-        overall_metrics: admin.firestore.FieldValue.increment({
-          total_quantity: stats.total_quantity,
-          total_revenue: stats.total_revenue
-        }),
-        
         last_updated: admin.firestore.FieldValue.serverTimestamp()
       };
       
-      // Use brand_normalized as document ID
-      const docRef = db.collection('brands').doc(stats.brand_normalized);
+      // Use the specific Firebase document ID
+      const docRef = db.collection('brands').doc(brandInfo.id);
       batch.set(docRef, brandDoc, { merge: true });
-      
-      count++;
-      
-      if (count % 400 === 0) {
-        await batch.commit();
-        batch = db.batch();
+    }
+    
+    // Commit all updates
+    await batch.commit();
+    
+    // Generate summary statistics
+    const brandsSummary = Array.from(brandStats.entries()).map(([key, stats]) => ({
+      brand: brandMappings[key].display,
+      revenue: stats.total_revenue,
+      orders: stats.unique_orders.size,
+      quantity: stats.total_quantity,
+      marketShare: totalRevenue > 0 ? (stats.total_revenue / totalRevenue) * 100 : 0
+    }));
+    
+    // Sort for top 5
+    const top5Revenue = [...brandsSummary].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+    const top5Orders = [...brandsSummary].sort((a, b) => b.orders - a.orders).slice(0, 5);
+    
+    console.log(`✅ Updated statistics for ${brandStats.size} brands`);
+    console.log('📊 Top 5 Brands by Revenue:', top5Revenue.map(b => `${b.brand}: £${b.revenue.toFixed(2)}`));
+    console.log('📦 Top 5 Brands by Orders:', top5Orders.map(b => `${b.brand}: ${b.orders} orders`));
+    
+    return { 
+      success: true, 
+      brandsUpdated: brandStats.size,
+      summary: {
+        top5Revenue,
+        top5Orders,
+        totalRevenue,
+        brands: brandsSummary
       }
-    }
-    
-    // Commit remaining
-    if (count % 400 !== 0) {
-      await batch.commit();
-    }
-    
-    // Calculate market share
-    await this.calculateMarketShare(dateRange);
-    
-    console.log(`✅ Updated statistics for ${count} brands`);
-    return { success: true, brandsUpdated: count };
+    };
     
   } catch (error) {
     console.error('❌ Error updating brand statistics:', error);
     return { success: false, error: error.message };
   }
+}
+
+/**
+ * Get active product counts by brand
+ */
+async getActiveProductCounts() {
+  const db = admin.firestore();
+  
+  try {
+    // Brand name mappings for items collection
+    const brandSearchTerms = {
+      'rader': ['Räder', 'Rader', 'räder', 'rader'],
+      'relaxound': ['Relaxound', 'relaxound'],
+      'myflame': ['My Flame', 'my flame', 'MyFlame', 'myflame'],
+      'blomus': ['Blomus', 'blomus'],
+      'remember': ['Remember', 'remember'],
+      'elvang': ['Elvang', 'elvang']
+    };
+    
+    const counts = {};
+    
+    // Query items collection for each brand
+    for (const [brandKey, searchTerms] of Object.entries(brandSearchTerms)) {
+      let activeCount = 0;
+      
+      for (const term of searchTerms) {
+        const snapshot = await db.collection('items')
+          .where('Manufacturer', '==', term)
+          .where('status', '==', 'active')
+          .get();
+        
+        activeCount += snapshot.size;
+      }
+      
+      counts[brandKey] = activeCount;
+    }
+    
+    return counts;
+    
+  } catch (error) {
+    console.error('Error getting active product counts:', error);
+    return {};
+  }
+}
+
+/**
+ * Helper to get date range
+ */
+getDateRange(dateRange) {
+  const now = new Date();
+  let startDate, endDate;
+  
+  switch (dateRange) {
+    case 'today':
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+      break;
+    case '7_days':
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      endDate = now;
+      break;
+    case '30_days':
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      endDate = now;
+      break;
+    case 'quarter':
+      const currentQuarter = Math.floor(now.getMonth() / 3);
+      startDate = new Date(now.getFullYear(), currentQuarter * 3, 1);
+      endDate = now;
+      break;
+    case 'year':
+      startDate = new Date(now.getFullYear(), 0, 1);
+      endDate = now;
+      break;
+    default:
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      endDate = now;
+  }
+  
+  return { startDate, endDate };
 }
 
 async enrichOrdersWithUIDs(orders) {
@@ -567,50 +725,6 @@ async enrichOrdersWithUIDs(orders) {
       marketplace_source: isMarketplaceOrder ? 'Amazon' : null
     };
   });
-}
-
-
-/**
- * Calculate market share for all brands
- */
-async calculateMarketShare(dateRange = '30_days') {
-  const db = admin.firestore();
-  
-  try {
-    // Get all brands
-    const brandsSnapshot = await db.collection('brands').get();
-    
-    // Calculate total revenue across all brands
-    let totalRevenue = 0;
-    const brands = [];
-    
-    brandsSnapshot.forEach(doc => {
-      const brand = doc.data();
-      const metrics = brand[`metrics_${dateRange}`];
-      if (metrics) {
-        totalRevenue += metrics.total_revenue || 0;
-        brands.push({ id: doc.id, revenue: metrics.total_revenue || 0 });
-      }
-    });
-    
-    // Update market share for each brand
-    const batch = db.batch();
-    
-    brands.forEach(brand => {
-      const marketShare = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
-      const docRef = db.collection('brands').doc(brand.id);
-      
-      batch.update(docRef, {
-        [`metrics_${dateRange}.market_share`]: marketShare
-      });
-    });
-    
-    await batch.commit();
-    console.log('✅ Market share calculated for all brands');
-    
-  } catch (error) {
-    console.error('❌ Error calculating market share:', error);
-  }
 }
 
   /**
