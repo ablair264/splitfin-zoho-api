@@ -116,6 +116,25 @@ app.get('/', (req, res) => {
   });
 });
 
+app.post('/api/customers/enrich', async (req, res) => {
+  try {
+    const { customerId } = req.body;
+    
+    if (customerId) {
+      // Enrich single customer
+      const result = await customerEnrichmentService.enrichCustomer(customerId);
+      res.json({ success: true, data: result });
+    } else {
+      // Enrich all customers missing data
+      const result = await customerEnrichmentService.enrichMissingCustomers();
+      res.json({ success: true, data: result });
+    }
+  } catch (error) {
+    console.error('Enrichment error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/health', async (req, res) => {
   try {
     // Basic health check
