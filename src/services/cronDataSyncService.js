@@ -617,20 +617,24 @@ async calculateMarketShare(dateRange = '30_days') {
    * HIGH FREQUENCY SYNC - Every 15 minutes
    * Only syncs orders and invoices modified in the last hour
    */
-  async highFrequencySync() {
-    const jobType = 'high-frequency';
+ async highFrequencySync() {
+  const jobType = 'high';
+  
+  if (this.isRunning.get(jobType)) {
+    console.log('⏩ High frequency sync already running, skipping...');
+    return { success: false, reason: 'Already running' };
+  }
+  
+  this.isRunning.set(jobType, true);
+  const startTime = Date.now();
+  
+  try {
+    console.log('🚀 Starting high frequency sync...');
     
-    if (this.isRunning.get(jobType)) {
-      console.log('⚠️ High frequency sync already running, skipping...');
-      return { success: false, message: 'Job already running' };
-    }
-
-    this.isRunning.set(jobType, true);
-    const startTime = Date.now();
-    const db = admin.firestore();
-
-    try {
-      console.log('🔄 Starting high frequency sync (last hour changes)...');
+    // Initialize counters
+    let orderCount = 0;
+    let transactionCount = 0;
+    let invoiceCount = 0;
       
       // Get metadata from last sync
       const metadata = await this.getSyncMetadata('high_frequency') || {};
@@ -735,28 +739,25 @@ async calculateMarketShare(dateRange = '30_days') {
         duration: Date.now() - startTime
       });
       
-      const duration = Date.now() - startTime;
-      console.log(`✅ High frequency sync completed in ${duration}ms`);
-      console.log(`   Processed: ${orderCount} orders, ${transactionCount} transactions, ${invoiceCount} invoices`);
-      
-      return { 
-        success: true, 
-        duration, 
-        recordsProcessed: {
-          orders: orderCount,
-          transactions: transactionCount,
-          invoices: invoiceCount
-        }
-      };
-      
-    } catch (error) {
-      console.error('❌ High frequency sync failed:', error);
-      return { success: false, error: error.message };
-    } finally {
-      this.isRunning.set(jobType, false);
-    }
+  const duration = Date.now() - startTime;
+    
+    return { 
+      success: true, 
+      duration, 
+      recordsProcessed: {
+        orders: orderCount,
+        transactions: transactionCount,
+        invoices: invoiceCount
+      }
+    };
+    
+  } catch (error) {
+    console.error('❌ High frequency sync failed:', error);
+    return { success: false, error: error.message };
+  } finally {
+    this.isRunning.set(jobType, false);
   }
-
+}
   /**
    * MEDIUM FREQUENCY SYNC - Every 2 hours
    * Catches any missed records from the last 24 hours
