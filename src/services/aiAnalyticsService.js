@@ -32,7 +32,7 @@ function truncateText(text, maxChars) {
  * Data Limiting Utilities
  */
 function limitArrayData(arr, maxItems = 10, keepFields = null) {
-  if (!Array.isArray(arr)) return arr;
+  if (!Array.isArray(arr)) return arr || [];
   
   return arr.slice(0, maxItems).map(item => {
     if (!keepFields || typeof item !== 'object') return item;
@@ -47,7 +47,7 @@ function limitArrayData(arr, maxItems = 10, keepFields = null) {
 }
 
 function limitObjectData(obj, maxKeys = 10, keepKeys = null) {
-  if (!obj || typeof obj !== 'object') return obj;
+  if (!obj || typeof obj !== 'object') return obj || {};
   
   const limited = {};
   const keys = keepKeys || Object.keys(obj).slice(0, maxKeys);
@@ -68,6 +68,8 @@ function summarizeData(data, config = {}) {
     keepArrayFields = null,
     keepObjectKeys = null
   } = config;
+
+  if (!data) return {};
 
   if (Array.isArray(data)) {
     return limitArrayData(data, maxArrayItems, keepArrayFields);
@@ -135,6 +137,7 @@ class PromptBuilder {
   }
 
   addSection(content, priority = 1) {
+    if (!content) return this;
     const tokens = estimateTokens(content);
     this.sections.push({ content, tokens, priority });
     this.sections.sort((a, b) => b.priority - a.priority);
@@ -161,21 +164,25 @@ class PromptBuilder {
  */
 export async function generateAIInsights(dashboardData) {
   try {
+    if (!dashboardData) {
+      throw new Error('No dashboard data provided');
+    }
+
     const role = dashboardData.role || 'brandManager';
     const isAgent = role === 'salesAgent';
     
     // Prepare limited data based on role
     const essentialData = {
-      period: dashboardData.dateRange,
+      period: dashboardData.dateRange || 'Unknown period',
       revenue: {
-        current: dashboardData.revenue?.current,
-        previous: dashboardData.revenue?.previous,
-        change: dashboardData.revenue?.percentageChange
+        current: dashboardData.revenue?.current || 0,
+        previous: dashboardData.revenue?.previous || 0,
+        change: dashboardData.revenue?.percentageChange || 0
       },
       orders: {
-        count: dashboardData.orders?.count,
-        value: dashboardData.orders?.totalValue,
-        average: dashboardData.orders?.averageValue
+        count: dashboardData.orders?.count || 0,
+        value: dashboardData.orders?.totalValue || 0,
+        average: dashboardData.orders?.averageValue || 0
       },
       topCustomers: limitArrayData(
         dashboardData.overview?.customers?.topCustomers,
@@ -247,6 +254,7 @@ export async function generateAIInsights(dashboardData) {
 export async function generateCardInsights(cardType, cardData, fullDashboardData) {
   try {
     const role = fullDashboardData?.role || 'brandManager';
+    const validCardType = cardType || 'general';
     
     // Limit card data
     const limitedCardData = summarizeData(cardData, {
@@ -257,8 +265,8 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
     const promptBuilder = new PromptBuilder(200000); // Smaller limit for card insights
     
     promptBuilder
-      .addSection(ContextManager.getBaseContext(role, cardType), 3)
-      .addSection(`Analyze this ${cardType} data: ${JSON.stringify(limitedCardData)}`, 2)
+      .addSection(ContextManager.getBaseContext(role, validCardType), 3)
+      .addSection(`Analyze this ${validCardType} data: ${JSON.stringify(limitedCardData)}`, 2)
       .addSection(`
         Generate focused JSON insights:
         - insight: 2-3 sentences of key findings
@@ -295,10 +303,13 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
  */
 export async function generateDrillDownInsights(viewType, detailData, summaryData, userRole, agentId) {
   try {
+    // Add validation for viewType
+    const validViewType = viewType || 'analysis';
+    
     // Check if data needs chunking
     const dataSize = estimateTokens(detailData);
     if (dataSize > 500000) {
-      return await generateChunkedDrillDownInsights(viewType, detailData, summaryData, userRole, agentId);
+      return await generateChunkedDrillDownInsights(validViewType, detailData, summaryData, userRole, agentId);
     }
 
     // Regular processing for smaller data
@@ -315,9 +326,9 @@ export async function generateDrillDownInsights(viewType, detailData, summaryDat
     const promptBuilder = new PromptBuilder();
     
     promptBuilder
-      .addSection(ContextManager.getBaseContext(userRole, viewType), 3)
+      .addSection(ContextManager.getBaseContext(userRole, validViewType), 3)
       .addSection(ContextManager.getCriticalInstructions(userRole, agentId), 3)
-      .addSection(`Detailed ${viewType} data: ${JSON.stringify(limitedDetail)}`, 2)
+      .addSection(`Detailed ${validViewType} data: ${JSON.stringify(limitedDetail)}`, 2)
       .addSection(`Summary context: ${JSON.stringify(limitedSummary)}`, 1)
       .addSection(`
         Generate drill-down analysis as JSON:
@@ -328,7 +339,7 @@ export async function generateDrillDownInsights(viewType, detailData, summaryDat
         - riskFactors: Array of 1-2 risks
         - opportunities: Array of 2-3 opportunities
         
-        Focus on actionable insights for ${viewType}.
+        Focus on actionable insights for ${validViewType}.
       `, 1);
 
     const prompt = promptBuilder.build();
@@ -366,7 +377,7 @@ async function generateChunkedDrillDownInsights(viewType, detailData, summaryDat
     }
   } else {
     // For objects, split by keys
-    const entries = Object.entries(detailData);
+    const entries = Object.entries(detailData || {});
     for (let i = 0; i < entries.length; i += chunkSize) {
       chunks.push(Object.fromEntries(entries.slice(i, i + chunkSize)));
     }
@@ -452,6 +463,9 @@ function generateTacticalActions(findings) {
  */
 export async function generateComparativeInsights(currentData, previousData, comparisonType = 'period', userRole, agentId) {
   try {
+    // Validate comparison type
+    const validComparisonType = comparisonType || 'period';
+    
     // Summarize both datasets
     const summarizedCurrent = summarizeData(currentData, {
       maxArrayItems: 10,
@@ -471,7 +485,7 @@ export async function generateComparativeInsights(currentData, previousData, com
       .addSection(`Current period: ${JSON.stringify(summarizedCurrent)}`, 2)
       .addSection(`Previous period: ${JSON.stringify(summarizedPrevious)}`, 2)
       .addSection(`
-        Generate ${comparisonType} comparison as JSON:
+        Generate ${validComparisonType} comparison as JSON:
         - overallChange: Summary of performance change
         - significantChanges: Array of 3-4 major changes
         - positiveIndicators: Array of 2-3 positive trends
@@ -508,17 +522,22 @@ export async function generateComparativeInsights(currentData, previousData, com
  */
 export async function generateCustomerInsights(customer, orderHistory, userRole, agentId) {
   try {
+    // Validate customer data
+    if (!customer) {
+      throw new Error('No customer data provided');
+    }
+
     // Limit order history to recent orders
     const recentOrders = limitArrayData(orderHistory, 20, [
       'date', 'value', 'items', 'brand'
     ]);
 
     const customerSummary = {
-      name: customer.name,
-      totalValue: customer.totalValue,
-      orderCount: customer.orderCount,
-      lastOrder: customer.lastOrderDate,
-      averageOrder: customer.averageOrderValue
+      name: customer.name || 'Unknown',
+      totalValue: customer.totalValue || 0,
+      orderCount: customer.orderCount || 0,
+      lastOrder: customer.lastOrderDate || 'Unknown',
+      averageOrder: customer.averageOrderValue || 0
     };
 
     const promptBuilder = new PromptBuilder(300000);
@@ -573,6 +592,9 @@ export async function generateCustomerInsights(customer, orderHistory, userRole,
  */
 export async function generatePurchaseOrderInsights(brand, suggestions, historicalSales, marketData) {
   try {
+    // Validate brand parameter
+    const validBrand = brand || 'Unknown Brand';
+    
     // Limit suggestions to top items
     const topSuggestions = limitArrayData(suggestions, 10, [
       'sku', 'product_name', 'recommendedQuantity', 'confidence'
@@ -580,17 +602,17 @@ export async function generatePurchaseOrderInsights(brand, suggestions, historic
 
     // Summarize market data
     const marketSummary = {
-      searchTrend: marketData.searchTrends?.[0]?.trend || 'Unknown',
-      trendChange: marketData.searchTrends?.[0]?.percentageChange || 0,
-      relatedSearches: marketData.searchTrends?.[0]?.relatedQueries?.slice(0, 3) || []
+      searchTrend: marketData?.searchTrends?.[0]?.trend || 'Unknown',
+      trendChange: marketData?.searchTrends?.[0]?.percentageChange || 0,
+      relatedSearches: marketData?.searchTrends?.[0]?.relatedQueries?.slice(0, 3) || []
     };
 
     const prompt = `
-      Business context: UK luxury import company analyzing ${brand} purchase order.
+      Business context: UK luxury import company analyzing ${validBrand} purchase order.
       
       Top suggestions: ${JSON.stringify(topSuggestions)}
       Market trends: ${JSON.stringify(marketSummary)}
-      Historical revenue: £${historicalSales.totalRevenue?.toFixed(0) || 0}
+      Historical revenue: £${historicalSales?.totalRevenue?.toFixed(0) || 0}
       
       Generate purchase insights as JSON:
       - executiveSummary: How search trends affect this order
@@ -627,15 +649,18 @@ export async function generatePurchaseOrderInsights(brand, suggestions, historic
  */
 export async function generateSeasonalInsights(historicalData, currentSeason, userRole, agentId) {
   try {
+    // Validate current season
+    const validSeason = currentSeason || 'Current Season';
+    
     // Summarize historical patterns
     const seasonalSummary = {
-      currentSeason,
-      lastYearSame: historicalData[currentSeason]?.lastYear || {},
-      yearOverYear: historicalData[currentSeason]?.growth || 0,
+      currentSeason: validSeason,
+      lastYearSame: historicalData?.[validSeason]?.lastYear || {},
+      yearOverYear: historicalData?.[validSeason]?.growth || 0,
       topSeasons: Object.entries(historicalData || {})
-        .sort(([,a], [,b]) => b.revenue - a.revenue)
+        .sort(([,a], [,b]) => (b.revenue || 0) - (a.revenue || 0))
         .slice(0, 3)
-        .map(([season, data]) => ({ season, revenue: data.revenue }))
+        .map(([season, data]) => ({ season, revenue: data.revenue || 0 }))
     };
 
     const promptBuilder = new PromptBuilder(200000);
@@ -682,18 +707,21 @@ export async function generateSeasonalInsights(historicalData, currentSeason, us
  */
 export async function validatePurchaseAdjustments(originalSuggestions, userAdjustments, brand) {
   try {
+    // Validate brand
+    const validBrand = brand || 'Unknown Brand';
+    
     // Only analyze adjusted items
     const relevantSuggestions = originalSuggestions
       .filter(s => userAdjustments.some(a => a.sku === s.sku))
       .map(s => ({
         sku: s.sku,
-        name: s.product_name,
-        recommended: s.recommendedQuantity,
-        userAdjusted: userAdjustments.find(a => a.sku === s.sku)?.quantity
+        name: s.product_name || 'Unknown Product',
+        recommended: s.recommendedQuantity || 0,
+        userAdjusted: userAdjustments.find(a => a.sku === s.sku)?.quantity || 0
       }));
 
     const prompt = `
-      Validate purchase adjustments for ${brand}:
+      Validate purchase adjustments for ${validBrand}:
       
       Adjustments: ${JSON.stringify(relevantSuggestions)}
       
@@ -730,11 +758,16 @@ export async function validatePurchaseAdjustments(originalSuggestions, userAdjus
  */
 export async function generateProductPurchaseInsights(product, suggestion, competitorData, searchTrends) {
   try {
+    // Validate product data
+    if (!product) {
+      throw new Error('No product data provided');
+    }
+
     const productSummary = {
-      name: product.name,
-      sku: product.sku,
-      currentStock: product.stock,
-      suggestedQty: suggestion.recommendedQuantity
+      name: product.name || 'Unknown Product',
+      sku: product.sku || 'Unknown SKU',
+      currentStock: product.stock || 0,
+      suggestedQty: suggestion?.recommendedQuantity || 0
     };
 
     const prompt = `
