@@ -127,7 +127,7 @@ class CronDataSyncService {
         
         // Check if marketplace order
         const isMarketplaceOrder = 
-          order.customer_name === 'Amazon UK - Customer' ||
+          order.customer_name === 'Amazon UK - Customer';
         
         const itemTotal = item.item_total || item.total || 
                         (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
