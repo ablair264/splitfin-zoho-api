@@ -54,12 +54,20 @@ app.use(cors({
 }));
 
 // Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ limit: '25mb', extended: true }));
 
 // Request logging middleware (consider using Morgan in production)
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.url.includes('/ai-insights')) {
+    const size = JSON.stringify(req.body).length / (1024 * 1024);
+    console.log(`AI Insights request size: ${size.toFixed(2)}MB`);
+  }
   next();
 });
 

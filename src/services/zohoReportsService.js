@@ -386,7 +386,7 @@ class ZohoReportsService {
       const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
       
       // Get customers that have ordered in the date range
-      const customersSnapshot = await db.collection('customers').get();
+      const customersSnapshot = await db.collection('customer_data').get();
       
       // Filter customers based on last order date
       const customers = customersSnapshot.docs

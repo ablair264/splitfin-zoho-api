@@ -981,7 +981,7 @@ productsSnapshot.docs.forEach(doc => {
     try {
       const checks = await Promise.all([
         this.db.collection('salesorders').limit(1).get(),
-        this.db.collection('customers').limit(1).get(),
+        this.db.collection('customer_data').limit(1).get(),
         this.db.collection('products').limit(1).get(),
         this.db.collection('purchaseorders').limit(1).get(),
         this.db.collection('invoices').limit(1).get()

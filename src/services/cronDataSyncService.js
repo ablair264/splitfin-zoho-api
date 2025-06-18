@@ -127,10 +127,7 @@ class CronDataSyncService {
         
         // Check if marketplace order
         const isMarketplaceOrder = 
-          order.customer_name === 'Amazon UK Limited' ||
           order.customer_name === 'Amazon UK - Customer' ||
-          order.company_name === 'Amazon UK Limited' ||
-          order.company_name?.toLowerCase().includes('amazon');
         
         const itemTotal = item.item_total || item.total || 
                         (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
@@ -138,7 +135,7 @@ class CronDataSyncService {
         transactions.push({
           transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
           item_id: item.item_id,
-          item_name: item.name || itemInfo.name,
+          item_name: item.name,
           sku: item.sku || itemInfo.sku,
           manufacturer: manufacturer,
           brand: manufacturer, // Keep for compatibility
@@ -154,7 +151,6 @@ class CronDataSyncService {
           salesperson_id: order.salesperson_id || '',
           salesperson_name: order.salesperson_name || '',
           is_marketplace_order: isMarketplaceOrder,
-          marketplace_source: isMarketplaceOrder ? 'Amazon' : null,
           created_at: order.date,
           last_modified: admin.firestore.FieldValue.serverTimestamp()
         });
@@ -1013,7 +1009,7 @@ console.log(`✅ Enriched ${enrichmentResult.enriched} customers`);
         last_modified: admin.firestore.FieldValue.serverTimestamp()
       }));
       
-      await this._batchWrite(db, 'customers', customerData, 'customer_id');
+      await this._batchWrite(db, 'customer_data', customerData, 'customer_id');
     }
     
     // Update metadata
