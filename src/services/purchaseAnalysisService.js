@@ -330,17 +330,43 @@ class PurchaseAnalysisService {
   try {
     const db = admin.firestore();
     
-    // 1. Get all unique SKUs for this brand from sales_transactions
+    // 1. First verify the brand exists
+    const brandDoc = await db.collection('brands').doc(brandId).get();
+    let brandName = brandId;
+    
+    if (brandDoc.exists) {
+      brandName = brandDoc.data().brand_name || brandId;
+      console.log(`Found brand: ${brandName}`);
+    } else {
+      // Try to find by brand_normalized
+      const brandsQuery = await db.collection('brands')
+        .where('brand_normalized', '==', brandId)
+        .limit(1)
+        .get();
+      
+      if (!brandsQuery.empty) {
+        brandName = brandsQuery.docs[0].data().brand_name || brandId;
+        console.log(`Found brand by normalized: ${brandName}`);
+      }
+    }
+    
+    // 2. Get all unique SKUs and products from sales_transactions
+    console.log(`Getting products from sales_transactions for brand_normalized: ${brandId}`);
+    
+    // Get recent sales to understand what products are actively selling
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     
     const recentSalesQuery = await db.collection('sales_transactions')
       .where('brand_normalized', '==', brandId)
-      .where('order_date', '>=', thirtyDaysAgo.toISOString())
+      .where('order_date', '>=', thirtyDaysAgo.toISOString().split('T')[0])
       .get();
+    
+    console.log(`Found ${recentSalesQuery.size} recent sales transactions`);
     
     // Build a map of unique products from sales data
     const productMap = new Map();
+    
     recentSalesQuery.docs.forEach(doc => {
       const data = doc.data();
       if (data.sku && !productMap.has(data.sku)) {
@@ -349,24 +375,24 @@ class PurchaseAnalysisService {
           sku: data.sku,
           name: data.product_name || data.item_name || 'Unknown',
           category: data.category || '',
-          rate: data.rate || data.price || 0,
-          brand: data.brand || brandId,
+          rate: parseFloat(data.rate || data.price || 0),
+          price: parseFloat(data.rate || data.price || 0),
+          brand: brandName,
           brand_normalized: brandId
         });
       }
     });
     
-    const products = Array.from(productMap.values());
-    
-    console.log(`Found ${products.length} unique products for brand ${brandId} from recent sales`);
-    
-    // If no recent sales, try to get historical data
-    if (products.length === 0) {
+    // If not enough recent products, look at historical data
+    if (productMap.size < 10) {
+      console.log('Not enough recent products, checking historical data...');
+      
       const historicalQuery = await db.collection('sales_transactions')
         .where('brand_normalized', '==', brandId)
-        .limit(100)
+        .orderBy('order_date', 'desc')
+        .limit(200)
         .get();
-        
+      
       historicalQuery.docs.forEach(doc => {
         const data = doc.data();
         if (data.sku && !productMap.has(data.sku)) {
@@ -375,16 +401,17 @@ class PurchaseAnalysisService {
             sku: data.sku,
             name: data.product_name || data.item_name || 'Unknown',
             category: data.category || '',
-            rate: data.rate || data.price || 0,
-            brand: data.brand || brandId,
+            rate: parseFloat(data.rate || data.price || 0),
+            price: parseFloat(data.rate || data.price || 0),
+            brand: brandName,
             brand_normalized: brandId
           });
         }
       });
-      
-      products.push(...Array.from(productMap.values()));
-      console.log(`Found ${products.length} products including historical data`);
     }
+    
+    const products = Array.from(productMap.values());
+    console.log(`Found ${products.length} unique products for brand ${brandId}`);
     
     if (products.length === 0) {
       return {
@@ -393,17 +420,23 @@ class PurchaseAnalysisService {
       };
     }
     
-    // 2. Get sales history for all SKUs
-    const skus = products.map(p => p.sku);
+    // Limit to requested number of products
+    const productsToAnalyze = products.slice(0, limit);
+    
+    // 3. Get sales history for all SKUs
+    const skus = productsToAnalyze.map(p => p.sku);
     const salesHistory = await this.getSalesHistory(skus);
     
-    // 3. Get keyword data for product categories
-    const categories = [...new Set(products.map(p => p.category).filter(Boolean))];
+    // 4. Get keyword data for product categories
+    const categories = [...new Set(productsToAnalyze.map(p => p.category).filter(Boolean))];
     const searchData = categories.length > 0 ? await this.getKeywordData(categories) : [];
     
-    // 4. Generate predictions for each product
+    // 5. Skip competitor scraping for now (can be added later)
+    const competitorData = [];
+    
+    // 6. Generate predictions for each product
     const predictions = await Promise.all(
-      products.map(async (product) => {
+      productsToAnalyze.map(async (product) => {
         const categorySearch = searchData.find(s => 
           s.keyword.toLowerCase().includes((product.category || '').toLowerCase())
         );
@@ -413,13 +446,15 @@ class PurchaseAnalysisService {
           trendSlope: 0,
           seasonalityScore: 0,
           stockoutFrequency: 0,
-          lastOrderDaysAgo: 999
+          lastOrderDaysAgo: 999,
+          totalSales: 0,
+          salesCount: 0
         };
         
         const brandData = {
           searchVolume: categorySearch?.avgMonthlySearches || 0,
           searchTrend: categorySearch?.trending || 'stable',
-          competitorStockLevel: 'unknown', // Since competitor scraping might be disabled
+          competitorStockLevel: 'unknown',
           competitorPriceRatio: 1,
           daysUntilPeakSeason: this.calculateDaysUntilPeakSeason(product.category),
           competitorDataPoints: 0,
@@ -430,14 +465,16 @@ class PurchaseAnalysisService {
       })
     );
     
-    // 5. Save analysis results
+    // 7. Save analysis results
     const analysisId = `${brandId}_${Date.now()}`;
     await db.collection('purchase_analyses').doc(analysisId).set({
       brandId,
+      brandName,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
       predictions: predictions.filter(p => p.recommendedQuantity > 0),
       searchData,
-      productsAnalyzed: products.length
+      competitorDataSummary: competitorData.length,
+      productsAnalyzed: productsToAnalyze.length
     });
     
     return {
@@ -454,64 +491,30 @@ class PurchaseAnalysisService {
   }
 }
 
-const skus = products.map(p => p.sku);
-    const salesHistory = await this.getSalesHistory(skus);
-    
-    // 3. Get keyword data for product categories
-    const categories = [...new Set(products.map(p => p.category).filter(Boolean))];
-    const searchData = categories.length > 0 ? await this.getKeywordData(categories) : [];
-    
-    // 4. Generate predictions for each product
-    const predictions = await Promise.all(
-      products.map(async (product) => {
-        const categorySearch = searchData.find(s => 
-          s.keyword.toLowerCase().includes((product.category || '').toLowerCase())
-        );
-        
-        const productSalesHistory = salesHistory.get(product.sku) || {
-          avgMonthlySales: 0,
-          trendSlope: 0,
-          seasonalityScore: 0,
-          stockoutFrequency: 0,
-          lastOrderDaysAgo: 999
-        };
-        
-        const brandData = {
-          searchVolume: categorySearch?.avgMonthlySearches || 0,
-          searchTrend: categorySearch?.trending || 'stable',
-          competitorStockLevel: 'unknown', // Since competitor scraping might be disabled
-          competitorPriceRatio: 1,
-          daysUntilPeakSeason: this.calculateDaysUntilPeakSeason(product.category),
-          competitorDataPoints: 0,
-          salesHistory: productSalesHistory
-        };
-        
-        return await this.predictPurchaseQuantity(product.sku, product, brandData);
-      })
-    );
-    
-    // 5. Save analysis results
-    const analysisId = `${brandId}_${Date.now()}`;
-    await db.collection('purchase_analyses').doc(analysisId).set({
-      brandId,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      predictions: predictions.filter(p => p.recommendedQuantity > 0),
-      searchData,
-      productsAnalyzed: products.length
-    });
-    
-    return {
-      analysisId,
-      predictions: predictions
-        .filter(p => p.recommendedQuantity > 0)
-        .sort((a, b) => b.confidence - a.confidence)
-        .slice(0, 50)
-    };
-    
-  } catch (error) {
-    console.error('Brand analysis error:', error);
-    throw error;
+async getSalesHistory(skus) {
+  const db = admin.firestore();
+  const salesMap = new Map();
+  
+  // Get last 90 days of sales
+  const ninetyDaysAgo = new Date();
+  ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+  
+  for (const sku of skus) {
+    try {
+      // Note: Make sure your order_date field in sales_transactions is stored as a string in ISO format
+      const salesQuery = await db.collection('sales_transactions')
+        .where('sku', '==', sku)
+        .where('order_date', '>=', ninetyDaysAgo.toISOString().split('T')[0]) // YYYY-MM-DD format
+        .orderBy('order_date', 'desc')
+        .get();
+      
+      // Your existing logic here...
+    } catch (error) {
+      console.error(`Error getting sales history for SKU ${sku}:`, error);
+    }
   }
+  
+  return salesMap;
 }
 
   calculateTrendSlope(sales) {
