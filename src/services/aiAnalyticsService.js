@@ -550,17 +550,6 @@ function createImpactFromMetrics(cardType, metrics) {
   return impacts[cardType] || 'Quantified impact pending further analysis.';
 }
 
-// Keep existing helper functions
-function validateTrend(trend) {
-  const validTrends = ['increasing', 'decreasing', 'stable', 'volatile'];
-  return validTrends.includes(trend) ? trend : null;
-}
-
-function validatePriority(priority) {
-  const validPriorities = ['low', 'medium', 'high'];
-  return validPriorities.includes(priority) ? priority : null;
-}
-
 export async function generateOrdersInsights(ordersData, fullDashboardData) {
   try {
     const { orders = [], count = 0, totalValue = 0, averageValue = 0 } = ordersData;
