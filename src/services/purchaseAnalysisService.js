@@ -330,196 +330,189 @@ class PurchaseAnalysisService {
   try {
     const db = admin.firestore();
     
-    // 1. Get products for this brand - try both normalized and display name
-    let productsSnapshot = await db.collection('products')
+    // 1. Get all unique SKUs for this brand from sales_transactions
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const recentSalesQuery = await db.collection('sales_transactions')
       .where('brand_normalized', '==', brandId)
-      .limit(limit)
+      .where('order_date', '>=', thirtyDaysAgo.toISOString())
       .get();
     
-    // If no products found with normalized, try with display name
-    if (productsSnapshot.empty) {
-      console.log(`No products found with brand_normalized: ${brandId}, trying brand field...`);
-      productsSnapshot = await db.collection('products')
-        .where('brand', '==', brandId)
-        .limit(limit)
-        .get();
-    }
-    
-    // If still empty, try case-insensitive match
-    if (productsSnapshot.empty) {
-      console.log(`No products found with brand: ${brandId}, trying case variations...`);
-      // Try common variations
-      const variations = [
-        brandId,
-        brandId.charAt(0).toUpperCase() + brandId.slice(1).toLowerCase(), // Capitalize first letter
-        brandId.toUpperCase(),
-        brandId.toLowerCase()
-      ];
-      
-      for (const variant of variations) {
-        productsSnapshot = await db.collection('products')
-          .where('brand', '==', variant)
-          .limit(limit)
-          .get();
-        
-        if (!productsSnapshot.empty) {
-          console.log(`Found products with brand variant: ${variant}`);
-          break;
-        }
+    // Build a map of unique products from sales data
+    const productMap = new Map();
+    recentSalesQuery.docs.forEach(doc => {
+      const data = doc.data();
+      if (data.sku && !productMap.has(data.sku)) {
+        productMap.set(data.sku, {
+          id: data.sku,
+          sku: data.sku,
+          name: data.product_name || data.item_name || 'Unknown',
+          category: data.category || '',
+          rate: data.rate || data.price || 0,
+          brand: data.brand || brandId,
+          brand_normalized: brandId
+        });
       }
+    });
+    
+    const products = Array.from(productMap.values());
+    
+    console.log(`Found ${products.length} unique products for brand ${brandId} from recent sales`);
+    
+    // If no recent sales, try to get historical data
+    if (products.length === 0) {
+      const historicalQuery = await db.collection('sales_transactions')
+        .where('brand_normalized', '==', brandId)
+        .limit(100)
+        .get();
+        
+      historicalQuery.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.sku && !productMap.has(data.sku)) {
+          productMap.set(data.sku, {
+            id: data.sku,
+            sku: data.sku,
+            name: data.product_name || data.item_name || 'Unknown',
+            category: data.category || '',
+            rate: data.rate || data.price || 0,
+            brand: data.brand || brandId,
+            brand_normalized: brandId
+          });
+        }
+      });
+      
+      products.push(...Array.from(productMap.values()));
+      console.log(`Found ${products.length} products including historical data`);
     }
     
-    if (productsSnapshot.empty) {
-      console.log(`No products found for any variation of brand ${brandId}`);
+    if (products.length === 0) {
       return {
         predictions: [],
-        message: `No products found for brand: ${brandId}`
+        message: `No products found in sales history for brand: ${brandId}`
       };
     }
     
-    const products = productsSnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+    // 2. Get sales history for all SKUs
+    const skus = products.map(p => p.sku);
+    const salesHistory = await this.getSalesHistory(skus);
     
-    console.log(`Found ${products.length} products for brand ${brandId}`);
-      
-      // 2. Get sales history from sales_transactions
-      const salesHistory = await this.getSalesHistory(products.map(p => p.sku));
-      
-      // 3. Get keyword data for product categories
-      const categories = [...new Set(products.map(p => p.category).filter(Boolean))];
-      const searchData = categories.length > 0 ? await this.getKeywordData(categories) : [];
-      
-      // 4. Get competitor data (if URLs available)
-      const competitorProducts = products
-        .filter(p => p.competitorUrls?.length > 0)
-        .slice(0, 20) // Limit to 20 for cost
-        .flatMap(p => 
-          p.competitorUrls.map(url => ({
-            sku: p.sku,
-            url
-          }))
+    // 3. Get keyword data for product categories
+    const categories = [...new Set(products.map(p => p.category).filter(Boolean))];
+    const searchData = categories.length > 0 ? await this.getKeywordData(categories) : [];
+    
+    // 4. Generate predictions for each product
+    const predictions = await Promise.all(
+      products.map(async (product) => {
+        const categorySearch = searchData.find(s => 
+          s.keyword.toLowerCase().includes((product.category || '').toLowerCase())
         );
-      
-      let competitorData = [];
-      if (competitorProducts.length > 0) {
-        console.log(`Analyzing ${competitorProducts.length} competitor URLs...`);
-        competitorData = await this.scrapeCompetitorData(competitorProducts);
-      } else {
-        console.log('No competitor URLs configured for these products');
-      }
-      
-      // 5. Generate predictions for each product
-      const predictions = await Promise.all(
-        products.map(async (product) => {
-          const categorySearch = searchData.find(s => 
-            s.keyword.toLowerCase().includes((product.category || '').toLowerCase())
-          );
-          
-          const competitorInfo = competitorData.filter(c => c.sku === product.sku);
-          const productSalesHistory = salesHistory.get(product.sku) || {
-            avgMonthlySales: 0,
-            trendSlope: 0,
-            seasonalityScore: 0,
-            stockoutFrequency: 0,
-            lastOrderDaysAgo: 999
-          };
-          
-          const brandData = {
-            searchVolume: categorySearch?.avgMonthlySearches || 0,
-            searchTrend: categorySearch?.trending || 'stable',
-            competitorStockLevel: competitorInfo[0]?.stockStatus || 'unknown',
-            competitorPriceRatio: competitorInfo[0]?.price 
-              ? (product.rate || product.price || 0) / competitorInfo[0].price 
-              : 1,
-            daysUntilPeakSeason: this.calculateDaysUntilPeakSeason(product.category),
-            competitorDataPoints: competitorInfo.length,
-            salesHistory: productSalesHistory
-          };
-          
-          return await this.predictPurchaseQuantity(product.sku, product, brandData);
-        })
-      );
-      
-      // 6. Save analysis results
-       const analysisId = `${brandId}_${Date.now()}`;
+        
+        const productSalesHistory = salesHistory.get(product.sku) || {
+          avgMonthlySales: 0,
+          trendSlope: 0,
+          seasonalityScore: 0,
+          stockoutFrequency: 0,
+          lastOrderDaysAgo: 999
+        };
+        
+        const brandData = {
+          searchVolume: categorySearch?.avgMonthlySearches || 0,
+          searchTrend: categorySearch?.trending || 'stable',
+          competitorStockLevel: 'unknown', // Since competitor scraping might be disabled
+          competitorPriceRatio: 1,
+          daysUntilPeakSeason: this.calculateDaysUntilPeakSeason(product.category),
+          competitorDataPoints: 0,
+          salesHistory: productSalesHistory
+        };
+        
+        return await this.predictPurchaseQuantity(product.sku, product, brandData);
+      })
+    );
+    
+    // 5. Save analysis results
+    const analysisId = `${brandId}_${Date.now()}`;
     await db.collection('purchase_analyses').doc(analysisId).set({
       brandId,
-      // userId removed
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
       predictions: predictions.filter(p => p.recommendedQuantity > 0),
       searchData,
-      competitorDataSummary: competitorData.length,
       productsAnalyzed: products.length
     });
-      
-      return {
+    
+    return {
       analysisId,
       predictions: predictions
         .filter(p => p.recommendedQuantity > 0)
         .sort((a, b) => b.confidence - a.confidence)
         .slice(0, 50)
     };
-      
-    } catch (error) {
-      console.error('Brand analysis error:', error);
-      throw error;
-    }
+    
+  } catch (error) {
+    console.error('Brand analysis error:', error);
+    throw error;
   }
+}
 
-  async getSalesHistory(skus) {
-    const db = admin.firestore();
-    const salesMap = new Map();
+const skus = products.map(p => p.sku);
+    const salesHistory = await this.getSalesHistory(skus);
     
-    // Get last 90 days of sales
-    const ninetyDaysAgo = new Date();
-    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    // 3. Get keyword data for product categories
+    const categories = [...new Set(products.map(p => p.category).filter(Boolean))];
+    const searchData = categories.length > 0 ? await this.getKeywordData(categories) : [];
     
-    for (const sku of skus) {
-      try {
-        const salesQuery = await db.collection('sales_transactions')
-          .where('sku', '==', sku)
-          .where('order_date', '>=', ninetyDaysAgo.toISOString())
-          .orderBy('order_date', 'desc')
-          .get();
+    // 4. Generate predictions for each product
+    const predictions = await Promise.all(
+      products.map(async (product) => {
+        const categorySearch = searchData.find(s => 
+          s.keyword.toLowerCase().includes((product.category || '').toLowerCase())
+        );
         
-        const sales = salesQuery.docs.map(doc => doc.data());
+        const productSalesHistory = salesHistory.get(product.sku) || {
+          avgMonthlySales: 0,
+          trendSlope: 0,
+          seasonalityScore: 0,
+          stockoutFrequency: 0,
+          lastOrderDaysAgo: 999
+        };
         
-        if (sales.length > 0) {
-          const totalQuantity = sales.reduce((sum, s) => sum + (s.quantity || 0), 0);
-          const avgMonthlySales = totalQuantity / 3; // 3 months
-          const trendSlope = this.calculateTrendSlope(sales);
-          const seasonalityScore = this.calculateSeasonality(sales);
-          
-          salesMap.set(sku, {
-            avgMonthlySales,
-            trendSlope,
-            seasonalityScore,
-            stockoutFrequency: 0, // TODO: Calculate from inventory data
-            lastOrderDaysAgo: this.daysSinceLastOrder(sales[0]),
-            totalSales: totalQuantity,
-            salesCount: sales.length
-          });
-        } else {
-          // No sales history - new or slow-moving product
-          salesMap.set(sku, {
-            avgMonthlySales: 0,
-            trendSlope: 0,
-            seasonalityScore: 0,
-            stockoutFrequency: 0,
-            lastOrderDaysAgo: 999,
-            totalSales: 0,
-            salesCount: 0
-          });
-        }
-      } catch (error) {
-        console.error(`Error getting sales history for SKU ${sku}:`, error);
-      }
-    }
+        const brandData = {
+          searchVolume: categorySearch?.avgMonthlySearches || 0,
+          searchTrend: categorySearch?.trending || 'stable',
+          competitorStockLevel: 'unknown', // Since competitor scraping might be disabled
+          competitorPriceRatio: 1,
+          daysUntilPeakSeason: this.calculateDaysUntilPeakSeason(product.category),
+          competitorDataPoints: 0,
+          salesHistory: productSalesHistory
+        };
+        
+        return await this.predictPurchaseQuantity(product.sku, product, brandData);
+      })
+    );
     
-    return salesMap;
+    // 5. Save analysis results
+    const analysisId = `${brandId}_${Date.now()}`;
+    await db.collection('purchase_analyses').doc(analysisId).set({
+      brandId,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      predictions: predictions.filter(p => p.recommendedQuantity > 0),
+      searchData,
+      productsAnalyzed: products.length
+    });
+    
+    return {
+      analysisId,
+      predictions: predictions
+        .filter(p => p.recommendedQuantity > 0)
+        .sort((a, b) => b.confidence - a.confidence)
+        .slice(0, 50)
+    };
+    
+  } catch (error) {
+    console.error('Brand analysis error:', error);
+    throw error;
   }
+}
 
   calculateTrendSlope(sales) {
     if (sales.length < 2) return 0;
