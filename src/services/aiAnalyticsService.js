@@ -251,51 +251,403 @@ export async function generateAIInsights(dashboardData) {
 /**
  * Card-specific insights with optimized prompts
  */
+/**
+ * Card-specific insights with optimized prompts
+ */
+/**
+ * Card-specific insights with improved prompts for detailed responses
+ */
 export async function generateCardInsights(cardType, cardData, fullDashboardData) {
   try {
     const role = fullDashboardData?.role || 'brandManager';
     const validCardType = cardType || 'general';
     
-    // Limit card data
-    const limitedCardData = summarizeData(cardData, {
-      maxArrayItems: 5,
-      maxObjectKeys: 10
+    console.log('AI Insights - Processing:', {
+      cardType: validCardType,
+      hasCardData: !!cardData,
+      cardDataKeys: Object.keys(cardData || {}),
+      role
     });
-
-    const promptBuilder = new PromptBuilder(200000); // Smaller limit for card insights
     
-    promptBuilder
-      .addSection(ContextManager.getBaseContext(role, validCardType), 3)
-      .addSection(`Analyze this ${validCardType} data: ${JSON.stringify(limitedCardData)}`, 2)
-      .addSection(`
-        Generate focused JSON insights:
-        - insight: 2-3 sentences of key findings
-        - trend: Direction and significance
-        - action: 1-2 specific recommendations
-        - priority: "low", "medium", or "high"
-        - impact: Business impact statement
+    // Validate we have actual data
+    if (!cardData || Object.keys(cardData).length === 0) {
+      return {
+        insight: "No data available for analysis. Please ensure data is loaded.",
+        trend: "unavailable",
+        action: "Refresh the dashboard to load current data",
+        priority: "high",
+        impact: "Cannot analyze without data"
+      };
+    }
+    
+    // Extract specific metrics based on card type
+    let metrics = {};
+    
+    switch (validCardType) {
+      case 'orders':
+        metrics = {
+          ordersCount: cardData.count || cardData.orders?.length || 0,
+          ordersValue: cardData.totalValue || 0,
+          avgValue: cardData.averageValue || 0,
+          recentOrdersCount: cardData.orders?.slice(0, 5).length || 0,
+          highestOrder: Math.max(...(cardData.orders?.map(o => o.total) || [0])),
+          lowestOrder: Math.min(...(cardData.orders?.map(o => o.total) || [0]))
+        };
+        break;
         
-        Be concise and actionable.
-      `, 1);
+      case 'order_value':
+      case 'revenue':
+        metrics = {
+          revenue: cardData.current || 0,
+          orderCount: cardData.orders || 0,
+          average: cardData.average || 0,
+          percentOfTarget: ((cardData.current || 0) / 100000) * 100 // Assuming £100k target
+        };
+        break;
+        
+      case 'aov':
+        metrics = {
+          aov: cardData.averageValue || 0,
+          totalOrders: cardData.totalOrders || 0,
+          totalRevenue: cardData.totalRevenue || 0,
+          targetAOV: 600, // Business target
+          percentOfTarget: ((cardData.averageValue || 0) / 600) * 100
+        };
+        break;
+        
+      case 'invoices':
+        metrics = {
+          outstanding: cardData.totalOutstanding || 0,
+          overdueCount: cardData.overdue?.length || 0,
+          overdueValue: cardData.overdue?.reduce((sum, inv) => sum + inv.balance, 0) || 0,
+          oldestOverdue: cardData.overdue?.[0]?.days_overdue || 0
+        };
+        break;
+        
+      default:
+        metrics = { dataPoints: Object.keys(cardData).length };
+    }
 
-    const prompt = promptBuilder.build();
+    // Create a very specific prompt that forces detailed responses
+    const systemPrompt = `You are a business analyst for DM Brands, a UK luxury home and giftware import company. 
+    You MUST provide specific, data-driven insights using the exact numbers provided.
+    Your response MUST be valid JSON only, no other text.`;
+
+    const analysisPrompt = `
+    Analyze this ${validCardType} data for a ${role === 'salesAgent' ? 'sales agent' : 'brand manager'}:
     
-    const result = await model.generateContent(prompt);
+    METRICS:
+    ${Object.entries(metrics).map(([key, value]) => `- ${key}: ${typeof value === 'number' ? value.toLocaleString() : value}`).join('\n')}
+    
+    REQUIREMENTS:
+    1. Your insight MUST reference at least 2 specific numbers from the metrics above
+    2. Your trend analysis MUST be based on the data patterns
+    3. Your action MUST be specific and measurable
+    4. Your priority MUST reflect the business impact
+    5. Your impact statement MUST quantify the potential effect
+    
+    RESPONSE FORMAT (JSON only):
+    {
+      "insight": "[2-3 sentences using specific numbers from the data. For example: 'With X orders worth £Y, performance shows Z trend...']",
+      "trend": "[Choose based on data: increasing|decreasing|stable|volatile]",
+      "action": "[Specific action with measurable outcome. For example: 'Increase average order value by £X through Y strategy']",
+      "priority": "[high if metrics are below 70% of target, medium if 70-90%, low if above 90%]",
+      "impact": "[Quantified impact. For example: 'Could increase revenue by £X or Y%']"
+    }
+    
+    IMPORTANT: You MUST use the actual numbers provided above. Generic responses will be rejected.`;
+
+    const result = await model.generateContent({
+      contents: [{
+        role: 'user',
+        parts: [{
+          text: systemPrompt + '\n\n' + analysisPrompt
+        }]
+      }],
+      generationConfig: {
+        temperature: 0.3, // Lower temperature for more consistent responses
+        topK: 40,
+        topP: 0.95,
+        maxOutputTokens: 1024,
+      }
+    });
+    
     const response = await result.response;
     const text = response.text();
     
-    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+    console.log('AI Raw Response:', text);
+    
+    // Parse and validate the response
+    let parsedResponse;
+    try {
+      const cleanedText = text
+        .replace(/```json/g, '')
+        .replace(/```/g, '')
+        .replace(/^[^{]*/, '')
+        .replace(/[^}]*$/, '')
+        .trim();
+      
+      parsedResponse = JSON.parse(cleanedText);
+    } catch (parseError) {
+      console.error('Failed to parse AI response:', parseError);
+      
+      // If parsing fails, create a data-driven fallback
+      return createDataDrivenFallback(validCardType, metrics, role);
+    }
+    
+    // Validate the response contains actual data references
+    const responseText = JSON.stringify(parsedResponse).toLowerCase();
+    const hasNumbers = /\d+/.test(parsedResponse.insight || '');
+    const hasSpecificData = Object.values(metrics).some(value => 
+      responseText.includes(value.toString().toLowerCase())
+    );
+    
+    // If response is too generic, create a better one
+    if (!hasNumbers || parsedResponse.insight?.split(' ').length < 10) {
+      console.warn('AI response too generic, creating data-driven response');
+      return createDataDrivenFallback(validCardType, metrics, role);
+    }
+    
+    // Ensure all fields are present
+    return {
+      insight: parsedResponse.insight || createInsightFromMetrics(validCardType, metrics, role),
+      trend: validateTrend(parsedResponse.trend) || determineTrendFromMetrics(metrics, validCardType),
+      action: parsedResponse.action || createActionFromMetrics(validCardType, metrics, role),
+      priority: validatePriority(parsedResponse.priority) || determinePriorityFromMetrics(metrics, validCardType),
+      impact: parsedResponse.impact || createImpactFromMetrics(validCardType, metrics)
+    };
 
   } catch (error) {
     console.error(`❌ Error generating ${cardType} insights:`, error);
+    
+    // Return a data-driven fallback instead of generic response
+    return createDataDrivenFallback(cardType, cardData, fullDashboardData?.role);
+  }
+}
+
+// Helper function to create data-driven fallbacks
+function createDataDrivenFallback(cardType, metrics, role) {
+  switch (cardType) {
+    case 'orders':
+      return {
+        insight: `You have ${metrics.ordersCount || 0} orders totaling £${(metrics.ordersValue || 0).toLocaleString()} with an average value of £${Math.round(metrics.avgValue || 0)}. ${metrics.avgValue < 600 ? 'Average order value is below the £600 target.' : 'Average order value meets targets.'}`,
+        trend: metrics.ordersCount > 10 ? 'increasing' : 'stable',
+        action: metrics.avgValue < 600 ? 
+          `Focus on increasing average order value by £${Math.round(600 - metrics.avgValue)} through product bundling and upselling.` :
+          `Maintain current performance while targeting ${Math.round(metrics.ordersCount * 1.2)} orders next period.`,
+        priority: metrics.ordersCount < 10 || metrics.avgValue < 500 ? 'high' : 'medium',
+        impact: `Achieving target AOV of £600 could increase revenue by £${Math.round((600 - metrics.avgValue) * metrics.ordersCount).toLocaleString()}.`
+      };
+      
+    case 'revenue':
+    case 'order_value':
+      const revenueTarget = 100000;
+      const percentOfTarget = (metrics.revenue / revenueTarget) * 100;
+      return {
+        insight: `Revenue of £${(metrics.revenue || 0).toLocaleString()} represents ${percentOfTarget.toFixed(1)}% of the £100k target from ${metrics.orderCount || 0} orders. Average order value is £${Math.round(metrics.average || 0)}.`,
+        trend: percentOfTarget > 80 ? 'increasing' : percentOfTarget > 50 ? 'stable' : 'decreasing',
+        action: percentOfTarget < 100 ? 
+          `Increase order count by ${Math.round((revenueTarget - metrics.revenue) / (metrics.average || 600))} orders to reach target.` :
+          `Exceeded target by ${percentOfTarget - 100}%. Focus on maintaining quality and customer satisfaction.`,
+        priority: percentOfTarget < 70 ? 'high' : percentOfTarget < 90 ? 'medium' : 'low',
+        impact: `Reaching £100k target requires additional £${(revenueTarget - metrics.revenue).toLocaleString()} in revenue.`
+      };
+      
+    case 'aov':
+      const aovGap = 600 - (metrics.aov || 0);
+      return {
+        insight: `Average order value of £${Math.round(metrics.aov || 0)} is ${metrics.percentOfTarget?.toFixed(1) || 0}% of the £600 target across ${metrics.totalOrders || 0} orders. ${aovGap > 0 ? `£${aovGap} below target.` : 'Exceeding target.'}`,
+        trend: metrics.aov > 550 ? 'increasing' : metrics.aov > 450 ? 'stable' : 'decreasing',
+        action: aovGap > 0 ? 
+          `Implement minimum order incentives at £600 and train team on upselling to increase AOV by £${Math.round(aovGap)}.` :
+          `Maintain current strategies while exploring premium product placement to further increase AOV.`,
+        priority: metrics.aov < 450 ? 'high' : metrics.aov < 550 ? 'medium' : 'low',
+        impact: `Achieving £600 AOV target would generate additional £${Math.round(aovGap * metrics.totalOrders).toLocaleString()} revenue.`
+      };
+      
+    case 'invoices':
+      return {
+        insight: `Outstanding invoices total £${(metrics.outstanding || 0).toLocaleString()} with ${metrics.overdueCount || 0} overdue invoices worth £${(metrics.overdueValue || 0).toLocaleString()}. Oldest overdue by ${metrics.oldestOverdue || 0} days.`,
+        trend: metrics.overdueCount > 5 ? 'increasing' : 'stable',
+        action: metrics.overdueCount > 0 ? 
+          `Contact all ${metrics.overdueCount} customers with overdue invoices to recover £${(metrics.overdueValue || 0).toLocaleString()}. Prioritize oldest overdue.` :
+          `Maintain current collection practices. Consider early payment incentives to improve cash flow.`,
+        priority: metrics.overdueValue > 10000 ? 'high' : metrics.overdueValue > 5000 ? 'medium' : 'low',
+        impact: `Collecting overdue invoices would improve cash flow by £${(metrics.overdueValue || 0).toLocaleString()} immediately.`
+      };
+      
+    default:
+      return {
+        insight: `Analysis of ${cardType} shows ${metrics.dataPoints || 0} data points available for review.`,
+        trend: 'stable',
+        action: 'Review detailed metrics and identify improvement opportunities.',
+        priority: 'medium',
+        impact: 'Further analysis needed to quantify impact.'
+      };
+  }
+}
+
+// Helper functions for creating specific insights
+function createInsightFromMetrics(cardType, metrics, role) {
+  const insights = {
+    orders: `With ${metrics.ordersCount} orders worth £${metrics.ordersValue.toLocaleString()}, average order value is £${Math.round(metrics.avgValue)}.`,
+    revenue: `Revenue of £${metrics.revenue.toLocaleString()} from ${metrics.orderCount} orders shows ${metrics.percentOfTarget.toFixed(1)}% of target.`,
+    aov: `Average order value is £${Math.round(metrics.aov)}, ${metrics.percentOfTarget.toFixed(1)}% of £600 target.`,
+    invoices: `£${metrics.outstanding.toLocaleString()} outstanding with ${metrics.overdueCount} overdue invoices.`
+  };
+  return insights[cardType] || 'Data analysis complete.';
+}
+
+function determineTrendFromMetrics(metrics, cardType) {
+  switch (cardType) {
+    case 'orders':
+      return metrics.ordersCount > 20 ? 'increasing' : metrics.ordersCount < 10 ? 'decreasing' : 'stable';
+    case 'revenue':
+      return metrics.percentOfTarget > 90 ? 'increasing' : metrics.percentOfTarget < 70 ? 'decreasing' : 'stable';
+    case 'aov':
+      return metrics.percentOfTarget > 90 ? 'increasing' : metrics.percentOfTarget < 75 ? 'decreasing' : 'stable';
+    case 'invoices':
+      return metrics.overdueCount > 5 ? 'increasing' : 'stable';
+    default:
+      return 'stable';
+  }
+}
+
+function createActionFromMetrics(cardType, metrics, role) {
+  const actions = {
+    orders: metrics.avgValue < 600 ? 
+      `Increase AOV by £${Math.round(600 - metrics.avgValue)} through bundling.` : 
+      'Focus on increasing order volume.',
+    revenue: `Target ${Math.round((100000 - metrics.revenue) / metrics.average)} more orders to reach £100k.`,
+    aov: `Implement strategies to increase AOV by £${Math.round(600 - metrics.aov)}.`,
+    invoices: `Contact ${metrics.overdueCount} customers to collect £${metrics.overdueValue.toLocaleString()}.`
+  };
+  return actions[cardType] || 'Review metrics and set improvement targets.';
+}
+
+function determinePriorityFromMetrics(metrics, cardType) {
+  switch (cardType) {
+    case 'orders':
+      return metrics.ordersCount < 10 || metrics.avgValue < 450 ? 'high' : metrics.avgValue < 550 ? 'medium' : 'low';
+    case 'revenue':
+      return metrics.percentOfTarget < 70 ? 'high' : metrics.percentOfTarget < 90 ? 'medium' : 'low';
+    case 'aov':
+      return metrics.percentOfTarget < 75 ? 'high' : metrics.percentOfTarget < 90 ? 'medium' : 'low';
+    case 'invoices':
+      return metrics.overdueValue > 10000 ? 'high' : metrics.overdueValue > 5000 ? 'medium' : 'low';
+    default:
+      return 'medium';
+  }
+}
+
+function createImpactFromMetrics(cardType, metrics) {
+  const impacts = {
+    orders: `Improving AOV to £600 could add £${Math.round((600 - metrics.avgValue) * metrics.ordersCount).toLocaleString()} revenue.`,
+    revenue: `Reaching target would add £${(100000 - metrics.revenue).toLocaleString()} revenue.`,
+    aov: `Each £10 AOV increase generates £${(10 * metrics.totalOrders).toLocaleString()} additional revenue.`,
+    invoices: `Collecting overdue improves cash flow by £${metrics.overdueValue.toLocaleString()}.`
+  };
+  return impacts[cardType] || 'Quantified impact pending further analysis.';
+}
+
+// Keep existing helper functions
+function validateTrend(trend) {
+  const validTrends = ['increasing', 'decreasing', 'stable', 'volatile'];
+  return validTrends.includes(trend) ? trend : null;
+}
+
+function validatePriority(priority) {
+  const validPriorities = ['low', 'medium', 'high'];
+  return validPriorities.includes(priority) ? priority : null;
+}
+
+export async function generateOrdersInsights(ordersData, fullDashboardData) {
+  try {
+    const { orders = [], count = 0, totalValue = 0, averageValue = 0 } = ordersData;
+    const role = fullDashboardData?.role || 'brandManager';
+    
+    // Calculate additional metrics
+    const recentOrders = orders.slice(0, 10);
+    const todayOrders = orders.filter(o => {
+      const orderDate = new Date(o.date);
+      const today = new Date();
+      return orderDate.toDateString() === today.toDateString();
+    }).length;
+    
+    const yesterdayOrders = orders.filter(o => {
+      const orderDate = new Date(o.date);
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      return orderDate.toDateString() === yesterday.toDateString();
+    }).length;
+    
+    // Calculate trend
+    let trend = 'stable';
+    if (todayOrders > yesterdayOrders * 1.1) trend = 'increasing';
+    else if (todayOrders < yesterdayOrders * 0.9) trend = 'decreasing';
+    
+    // Generate role-specific insights
+    if (role === 'salesAgent') {
+      return {
+        insight: `You have processed ${count} orders worth £${totalValue.toLocaleString()} with an average value of £${averageValue.toFixed(0)}. ${todayOrders > 0 ? `Today's ${todayOrders} orders show ${trend} activity.` : 'No orders yet today.'}`,
+        trend: trend,
+        action: averageValue < 500 ? 
+          "Focus on upselling to increase average order value. Consider bundling complementary products." :
+          "Maintain momentum with high-value customers and explore similar customer profiles.",
+        priority: count < 10 ? "high" : "medium",
+        impact: `Your current performance ${count < 10 ? 'needs attention to meet targets' : 'is on track for success'}.`
+      };
+    } else {
+      return {
+        insight: `Total of ${count} orders generated £${totalValue.toLocaleString()} in revenue. Average order value of £${averageValue.toFixed(0)} ${averageValue > 600 ? 'exceeds' : 'falls below'} the £600 target. Daily trend shows ${trend} activity.`,
+        trend: trend,
+        action: averageValue < 600 ? 
+          "Implement minimum order incentives and train agents on upselling techniques." :
+          "Continue current strategy while exploring premium product placement.",
+        priority: totalValue < 50000 ? "high" : "medium",
+        impact: `Revenue performance is ${totalValue > 100000 ? 'strong' : totalValue > 50000 ? 'moderate' : 'below expectations'}, requiring ${totalValue < 50000 ? 'immediate' : 'continued'} attention.`
+      };
+    }
+    
+  } catch (error) {
+    console.error('Error generating orders insights:', error);
     return {
-      insight: "Analysis temporarily unavailable.",
-      trend: "Unknown",
-      action: "Please retry",
-      priority: "low",
-      impact: "Unable to determine"
+      insight: "Unable to analyze orders at this time.",
+      trend: "unknown",
+      action: "Please retry or check data manually.",
+      priority: "medium",
+      impact: "Analysis unavailable."
     };
   }
+}
+
+// Helper functions for parsing
+function extractBetween(text, key, delimiter = '"') {
+  const regex = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`, 'i');
+  const match = text.match(regex);
+  return match ? match[1] : null;
+}
+
+function extractTrend(text) {
+  const trends = ['increasing', 'decreasing', 'stable', 'volatile'];
+  const lowerText = text.toLowerCase();
+  return trends.find(trend => lowerText.includes(trend)) || 'stable';
+}
+
+function extractPriority(text) {
+  const priorities = ['high', 'medium', 'low'];
+  const lowerText = text.toLowerCase();
+  return priorities.find(priority => lowerText.includes(priority)) || 'medium';
+}
+
+function validateTrend(trend) {
+  const validTrends = ['increasing', 'decreasing', 'stable', 'volatile'];
+  return validTrends.includes(trend) ? trend : 'stable';
+}
+
+function validatePriority(priority) {
+  const validPriorities = ['low', 'medium', 'high'];
+  return validPriorities.includes(priority) ? priority : 'medium';
 }
 
 /**
