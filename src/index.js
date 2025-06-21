@@ -17,6 +17,7 @@ import productsRoutes from './routes/products.js';
 import authRoutes from './routes/auth.js';
 import purchaseAnalysisRoutes from './routes/purchaseAnalysis.js';
 import searchTrendsRoutes from './routes/searchTrends.js';
+import emailRoutes from './routes/email.js';
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
@@ -81,6 +82,7 @@ app.use('/api/products', productsRoutes);
 app.use('/oauth', authRoutes);
 app.use('/api/purchase-analysis', purchaseAnalysisRoutes);
 app.use('/api/search-trends', searchTrendsRoutes);
+app.use('/api/auth', authRoutes);
 
 
 // Legacy webhook route (kept for backward compatibility)
@@ -199,6 +201,8 @@ app.use((err, req, res, next) => {
     timestamp: new Date().toISOString()
   });
 });
+
+app.use('/api/email', emailRoutes);
 
 // ── Server Startup ──────────────────────────────────────────────────
 const server = app.listen(PORT, '0.0.0.0', () => {
