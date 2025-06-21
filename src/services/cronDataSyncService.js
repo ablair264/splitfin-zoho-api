@@ -993,21 +993,9 @@ const enrichmentResult = await customerEnrichmentService.default.enrichMissingCu
 console.log(`✅ Enriched ${enrichmentResult.enriched} customers`);
     
     // Update customer analytics
-    console.log('👥 Updating customer analytics...');
-    const customers = await zohoReportsService.getCustomerAnalytics('7_days');
-    if (customers.customers && customers.customers.length > 0) {
-      const customerData = customers.customers.map(customer => ({
-        customer_id: customer.id,
-        name: customer.name,
-        email: customer.email,
-        totalSpent: customer.totalSpent,
-        orderCount: customer.orderCount,
-        lastOrderDate: customer.lastOrderDate,
-        firstOrderDate: customer.firstOrderDate,
-        segment: customer.segment,
-        agentId: customer.agentId,
-        last_modified: admin.firestore.FieldValue.serverTimestamp()
-      }));
+console.log('👥 Syncing customers from Zoho Inventory...');
+const customerSyncResult = await zohoReportsService.syncCustomers('all'); // Get all customers
+console.log(`✅ Synced ${customerSyncResult.synced} customers`);
       
       await this._batchWrite(db, 'customer_data', customerData, 'customer_id');
     }
