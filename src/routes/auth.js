@@ -250,6 +250,30 @@ async function refreshAccessToken() {
   }
 }
 
+router.post('/create-customer', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // Create Firebase Auth user
+    const userRecord = await admin.auth().createUser({
+      email,
+      password,
+      emailVerified: true
+    });
+    
+    res.json({ 
+      success: true, 
+      uid: userRecord.uid 
+    });
+  } catch (error) {
+    console.error('Error creating customer auth:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
 /**
  * Token status endpoint (for debugging)
  */

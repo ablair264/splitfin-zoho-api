@@ -29,6 +29,7 @@
     "node-cache": "^5.1.2",
     "node-cron": "^4.0.7",
     "p-limit": "^6.2.0",
+    "postmark": "^4.0.5",
     "puppeteer": "^24.10.1",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
