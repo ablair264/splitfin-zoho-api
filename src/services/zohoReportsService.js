@@ -984,6 +984,191 @@ class ZohoReportsService {
       .slice(0, 10);
   }
 
+
+// Add this to zohoReportsService.js
+
+/**
+ * Get customers from Zoho Inventory
+ */
+async getCustomers(dateRange = 'all', customDateRange = null) {
+  try {
+    console.log(`📥 Fetching customers from Zoho Inventory...`);
+    
+    const params = {
+      organization_id: ZOHO_CONFIG.orgId
+    };
+    
+    // Add date filter if not 'all'
+    if (dateRange !== 'all') {
+      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+      // Zoho Inventory uses date filters differently
+      params.created_date_start = startDate.toISOString().split('T')[0];
+      params.created_date_end = endDate.toISOString().split('T')[0];
+    }
+    
+    // Fetch from Zoho Inventory Contacts endpoint
+    const customers = await this.fetchPaginatedData(
+      `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
+      params,
+      'contacts'  // Note: Zoho Inventory uses 'contacts' as the data key
+    );
+    
+    console.log(`✅ Fetched ${customers.length} customers from Zoho Inventory`);
+    
+    // Transform to your expected format
+    return customers.map(customer => ({
+      customer_id: customer.contact_id,
+      customer_name: customer.contact_name || customer.company_name || 'Unknown',
+      company_name: customer.company_name || customer.contact_name || '',
+      email: customer.email || '',
+      Primary_Email: customer.email || '',
+      phone: customer.phone || customer.mobile || '',
+      billing_address: customer.billing_address || {},
+      shipping_address: customer.shipping_address || {},
+      currency_code: customer.currency_code || 'GBP',
+      payment_terms: customer.payment_terms || 0,
+      status: customer.status || 'active',
+      created_time: customer.created_time,
+      last_modified_time: customer.last_modified_time,
+      // Zoho Inventory provides these fields directly
+      outstanding_receivable_amount: customer.outstanding_receivable_amount || 0,
+      unused_credits_receivable_amount: customer.unused_credits_receivable_amount || 0,
+      // Fields to be enriched from orders
+      total_spent: 0,
+      order_count: 0,
+      last_order_date: null,
+      first_order_date: null,
+      average_order_value: 0,
+      segment: 'New'
+    }));
+    
+  } catch (error) {
+    console.error('❌ Error fetching customers from Zoho Inventory:', error);
+    return [];
+  }
+}
+
+/**
+ * Sync customers from Zoho Inventory to Firestore and enrich with order data
+ */
+async syncCustomers(dateRange = '7_days') {
+  try {
+    console.log('👥 Syncing customers from Zoho Inventory...');
+    const db = admin.firestore();
+    
+    // 1. Fetch customers from Zoho Inventory
+    const zohoCustomers = await this.getCustomers(dateRange);
+    
+    if (zohoCustomers.length === 0) {
+      console.log('No customers found in Zoho Inventory');
+      return { synced: 0, enriched: 0 };
+    }
+    
+    // 2. Get all sales orders to calculate customer metrics
+    const ordersSnapshot = await db.collection('salesorders').get();
+    const ordersByCustomer = new Map();
+    
+    ordersSnapshot.forEach(doc => {
+      const order = doc.data();
+      if (order.customer_id) {
+        if (!ordersByCustomer.has(order.customer_id)) {
+          ordersByCustomer.set(order.customer_id, []);
+        }
+        ordersByCustomer.get(order.customer_id).push(order);
+      }
+    });
+    
+    // 3. Enrich customer data with order metrics
+    const enrichedCustomers = zohoCustomers.map(customer => {
+      const customerOrders = ordersByCustomer.get(customer.customer_id) || [];
+      
+      // Calculate metrics
+      const totalSpent = customerOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
+      const orderCount = customerOrders.length;
+      const averageOrderValue = orderCount > 0 ? totalSpent / orderCount : 0;
+      
+      // Get first and last order dates
+      const orderDates = customerOrders
+        .map(order => new Date(order.date))
+        .sort((a, b) => a - b);
+      
+      const firstOrderDate = orderDates[0] || null;
+      const lastOrderDate = orderDates[orderDates.length - 1] || null;
+      
+      // Determine segment based on total spent or outstanding amount
+      let segment = 'New';
+      const totalValue = totalSpent + (customer.outstanding_receivable_amount || 0);
+      
+      if (totalValue >= 10000) segment = 'VIP';
+      else if (totalValue >= 5000) segment = 'High';
+      else if (totalValue >= 1000) segment = 'Medium';
+      else if (totalValue > 0) segment = 'Low';
+      
+      return {
+        ...customer,
+        total_spent: totalSpent,
+        order_count: orderCount,
+        average_order_value: averageOrderValue,
+        first_order_date: firstOrderDate ? firstOrderDate.toISOString() : null,
+        last_order_date: lastOrderDate ? lastOrderDate.toISOString() : null,
+        segment,
+        _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+        _source: 'zoho_inventory'
+      };
+    });
+    
+    // 4. Write to Firestore in batches
+    const batch = db.batch();
+    let count = 0;
+    
+    for (const customer of enrichedCustomers) {
+      const docRef = db.collection('customer_data').doc(customer.customer_id);
+      batch.set(docRef, customer, { merge: true });
+      count++;
+      
+      if (count % 400 === 0) {
+        await batch.commit();
+        batch = db.batch();
+      }
+    }
+    
+    if (count % 400 !== 0) {
+      await batch.commit();
+    }
+    
+    console.log(`✅ Synced ${enrichedCustomers.length} customers from Zoho Inventory`);
+    
+    return {
+      synced: enrichedCustomers.length,
+      enriched: enrichedCustomers.filter(c => c.order_count > 0).length
+    };
+    
+  } catch (error) {
+    console.error('❌ Error syncing customers:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get specific customer details from Zoho Inventory
+ */
+async getCustomerDetail(customerId) {
+  try {
+    const url = `${ZOHO_CONFIG.baseUrls.inventory}/contacts/${customerId}`;
+    const token = await getAccessToken();
+    
+    const response = await axios.get(url, {
+      params: { organization_id: ZOHO_CONFIG.orgId },
+      headers: { Authorization: `Zoho-oauthtoken ${token}` }
+    });
+    
+    return response.data?.contact || null;
+    
+  } catch (error) {
+    console.error(`❌ Error fetching customer ${customerId}:`, error.message);
+    return null;
+  }
+}
   /**
    * Calculate sales trends over time
    */
