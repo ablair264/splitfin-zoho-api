@@ -953,7 +953,7 @@ async mediumFrequencySync() {
       const enrichedOrders = await this.enrichOrdersWithUIDs(orders7Days);
       await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
       
-      // Process transactions - REMOVE DUPLICATE
+      // Process transactions
       const transactions = await this.processSalesTransactions(enrichedOrders, db);
       if (transactions.length > 0) {
         await this._batchWrite(db, 'sales_transactions', transactions, 'transaction_id');
@@ -978,7 +978,7 @@ async mediumFrequencySync() {
       await this.syncAndNormalizeInvoices(uniqueInvoices);
     }
     
-    // Process purchase orders - FIXED COLLECTION NAME
+    // Process purchase orders
     if (purchaseOrders7Days.length > 0) {
       await this._batchWrite(db, 'purchaseorders', purchaseOrders7Days, 'purchaseorder_id');
     }
@@ -987,18 +987,16 @@ async mediumFrequencySync() {
     console.log('📦 Updating brand backorder information...');
     const backorderResult = await this.updateBrandBackorders();
     
+    // Customer enrichment
     console.log('🌍 Enriching customer data...');
-const customerEnrichmentService = await import('./customerEnrichmentService.js');
-const enrichmentResult = await customerEnrichmentService.default.enrichMissingCustomers();
-console.log(`✅ Enriched ${enrichmentResult.enriched} customers`);
+    const customerEnrichmentService = await import('./customerEnrichmentService.js');
+    const enrichmentResult = await customerEnrichmentService.default.enrichMissingCustomers();
+    console.log(`✅ Enriched ${enrichmentResult.enriched} customers`);
     
-    // Update customer analytics
-console.log('👥 Syncing customers from Zoho Inventory...');
-const customerSyncResult = await zohoReportsService.syncCustomers('all'); // Get all customers
-console.log(`✅ Synced ${customerSyncResult.synced} customers`);
-      
-      await this._batchWrite(db, 'customer_data', customerData, 'customer_id');
-    }
+    // Sync customers
+    console.log('👥 Syncing customers from Zoho Inventory...');
+    const customerSyncResult = await zohoReportsService.syncCustomers('all');
+    console.log(`✅ Synced ${customerSyncResult.synced} customers`);
     
     // Update metadata
     await this.updateSyncMetadata('low_frequency', {
@@ -1007,7 +1005,7 @@ console.log(`✅ Synced ${customerSyncResult.synced} customers`);
         orders: orders7Days.length,
         invoices: uniqueInvoices.length,
         purchaseOrders: purchaseOrders7Days.length,
-        customers: customers.customers?.length || 0,
+        customers: customerSyncResult.synced || 0,
         backorderResult: backorderResult
       },
       duration: Date.now() - startTime
@@ -1024,7 +1022,7 @@ console.log(`✅ Synced ${customerSyncResult.synced} customers`);
         orders: orders7Days.length,
         invoices: uniqueInvoices.length,
         purchaseOrders: purchaseOrders7Days.length,
-        customers: customers.customers?.length || 0
+        customers: customerSyncResult.synced || 0
       }
     };
     
