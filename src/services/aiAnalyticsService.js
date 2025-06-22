@@ -266,7 +266,9 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
       cardType: validCardType,
       hasCardData: !!cardData,
       cardDataKeys: Object.keys(cardData || {}),
-      role
+      role,
+      // Add more detailed logging
+      cardDataSample: JSON.stringify(cardData).substring(0, 200)
     });
     
     // Validate we have actual data
@@ -280,28 +282,29 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
       };
     }
     
-    // Extract specific metrics based on card type
+    // Extract specific metrics based on card type with better fallbacks
     let metrics = {};
     
     switch (validCardType) {
       case 'orders':
+        // Check multiple possible data structures
         metrics = {
-          ordersCount: cardData.count || cardData.orders?.length || 0,
-          ordersValue: cardData.totalValue || 0,
-          avgValue: cardData.averageValue || 0,
-          recentOrdersCount: cardData.orders?.slice(0, 5).length || 0,
-          highestOrder: Math.max(...(cardData.orders?.map(o => o.total) || [0])),
-          lowestOrder: Math.min(...(cardData.orders?.map(o => o.total) || [0]))
+          ordersCount: cardData.count || cardData.totalOrders || cardData.orders?.length || 0,
+          ordersValue: cardData.totalValue || cardData.value || cardData.revenue || 0,
+          avgValue: cardData.averageValue || cardData.averageOrderValue || cardData.aov || 0,
+          recentOrdersCount: cardData.recentOrders?.length || cardData.orders?.slice(0, 5).length || 0,
+          highestOrder: Math.max(...(cardData.orders?.map(o => o.total || o.value || 0) || [0])),
+          lowestOrder: Math.min(...(cardData.orders?.map(o => o.total || o.value || 0) || [0]))
         };
         break;
         
       case 'order_value':
       case 'revenue':
         metrics = {
-          revenue: cardData.current || 0,
-          orderCount: cardData.orders || 0,
-          average: cardData.average || 0,
-          percentOfTarget: ((cardData.current || 0) / 100000) * 100 // Assuming £100k target
+          revenue: cardData.current || cardData.revenue || cardData.total || 0,
+          orderCount: cardData.orders || cardData.orderCount || cardData.count || 0,
+          average: cardData.average || cardData.averageValue || cardData.aov || 0,
+          percentOfTarget: ((cardData.current || cardData.revenue || 0) / 100000) * 100
         };
         break;
         
@@ -416,6 +419,8 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
       priority: validatePriority(parsedResponse.priority) || determinePriorityFromMetrics(metrics, validCardType),
       impact: parsedResponse.impact || createImpactFromMetrics(validCardType, metrics)
     };
+    
+     console.log('Extracted metrics:', metrics);
 
   } catch (error) {
     console.error(`❌ Error generating ${cardType} insights:`, error);
