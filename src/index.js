@@ -6,6 +6,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { verifyFirebaseToken } from './middleware/auth.js';
 
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
@@ -90,7 +91,7 @@ app.use('/api/auth', authRoutes);
 // Legacy webhook route (kept for backward compatibility)
 app.use('/api', webhookRoutes);
 
-app.put('/api/zoho/update-contact', authenticateUser, updateZohoContact);
+app.put('/api/zoho/update-contact', updateZohoContact);
 
 // ── Root & Health Endpoints ─────────────────────────────────────────
 app.get('/', (req, res) => {
