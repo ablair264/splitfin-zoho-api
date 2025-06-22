@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createZohoSalesOrder } from './services/salesOrder.js';
+import { syncCustomerWithZoho, syncAllCustomers } from './services/customerSync.js';x
 
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
@@ -89,6 +90,8 @@ app.use('/api/auth', authRoutes);
 
 app.put('/api/zoho/update-contact', updateZohoContact);
 app.post('/api/zoho/salesorder', createZohoSalesOrder);
+app.post('/api/customers/sync', syncCustomerWithZoho);
+app.post('/api/customers/sync-all', syncAllCustomers);
 
 // Legacy webhook route (kept for backward compatibility)
 app.use('/api', webhookRoutes);
