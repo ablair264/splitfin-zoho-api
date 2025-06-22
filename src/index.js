@@ -87,11 +87,11 @@ app.use('/api/purchase-analysis', purchaseAnalysisRoutes);
 app.use('/api/search-trends', searchTrendsRoutes);
 app.use('/api/auth', authRoutes);
 
+app.put('/api/zoho/update-contact', updateZohoContact);
+app.post('/api/zoho/salesorder', createZohoSalesOrder);
 
 // Legacy webhook route (kept for backward compatibility)
 app.use('/api', webhookRoutes);
-
-app.put('/api/zoho/update-contact', updateZohoContact);
 
 // ── Root & Health Endpoints ─────────────────────────────────────────
 app.get('/', (req, res) => {
@@ -208,8 +208,6 @@ app.use((err, req, res, next) => {
 });
 
 app.use('/api/email', emailRoutes);
-
-app.post('/api/zoho/salesorder', createZohoSalesOrder);
 
 // ── Server Startup ──────────────────────────────────────────────────
 const server = app.listen(PORT, '0.0.0.0', () => {
