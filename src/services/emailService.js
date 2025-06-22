@@ -7,7 +7,7 @@ const client = new postmark.ServerClient(process.env.POSTMARK_SERVER_TOKEN);
 export const sendEmail = async ({ to, subject, html, text }) => {
   try {
     const result = await client.sendEmail({
-      From: process.env.EMAIL_FROM || 'noreply@splitfin.co.uk',
+      From: process.env.EMAIL_FROM || 'sales@dmbrands.co.uk',
       To: to,
       Subject: subject,
       HtmlBody: html,
@@ -37,7 +37,7 @@ export const sendEmail = async ({ to, subject, html, text }) => {
 export const sendEmailWithTemplate = async ({ to, templateAlias, templateModel }) => {
   try {
     const result = await client.sendEmailWithTemplate({
-      From: process.env.EMAIL_FROM || 'noreply@splitfin.co.uk',
+      From: process.env.EMAIL_FROM || 'sales@dmbrands.co.uk',
       To: to,
       TemplateAlias: templateAlias,
       TemplateModel: templateModel,
@@ -60,7 +60,7 @@ export const sendEmailWithTemplate = async ({ to, templateAlias, templateModel }
 export const sendBulkEmails = async (emails) => {
   try {
     const messages = emails.map(({ to, subject, html, text }) => ({
-      From: process.env.EMAIL_FROM || 'noreply@splitfin.co.uk',
+      From: process.env.EMAIL_FROM || 'sales@dmbrands.co.uk',
       To: to,
       Subject: subject,
       HtmlBody: html,
