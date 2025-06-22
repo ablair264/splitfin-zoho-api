@@ -6,6 +6,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { verifyFirebaseToken } from './middleware/auth.js';
 
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
@@ -21,6 +22,8 @@ import emailRoutes from './routes/email.js';
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
+import { updateZohoContact } from './services/updateContact.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +90,8 @@ app.use('/api/auth', authRoutes);
 
 // Legacy webhook route (kept for backward compatibility)
 app.use('/api', webhookRoutes);
+
+app.put('/api/zoho/update-contact', authenticateUser, updateZohoContact);
 
 // ── Root & Health Endpoints ─────────────────────────────────────────
 app.get('/', (req, res) => {
