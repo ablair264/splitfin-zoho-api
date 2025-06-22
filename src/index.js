@@ -6,6 +6,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { createZohoSalesOrder } from './services/salesOrder.js';
 
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
@@ -207,6 +208,8 @@ app.use((err, req, res, next) => {
 });
 
 app.use('/api/email', emailRoutes);
+
+app.post('/api/zoho/salesorder', createZohoSalesOrder);
 
 // ── Server Startup ──────────────────────────────────────────────────
 const server = app.listen(PORT, '0.0.0.0', () => {
