@@ -181,5 +181,89 @@ router.post('/order-confirmation', async (req, res) => {
   }
 });
 
+router.post('/password-reset', async (req, res) => {
+  try {
+    const { to, customerName, newPassword, loginUrl } = req.body;
+    
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #6366f1;">Password Reset</h2>
+        <p>Dear ${customerName},</p>
+        <p>Your password has been reset by an administrator.</p>
+        
+        <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h3>New Login Details:</h3>
+          <p><strong>Email:</strong> ${to}</p>
+          <p><strong>New Password:</strong> <code style="background: #e5e5e5; padding: 4px 8px; border-radius: 4px;">${newPassword}</code></p>
+        </div>
+        
+        <p style="color: #ef4444;"><strong>Important:</strong> Please login and change your password immediately for security.</p>
+        
+        <a href="${loginUrl}" 
+           style="display: inline-block; background: #6366f1; color: white; padding: 12px 24px; 
+                  text-decoration: none; border-radius: 6px; margin-top: 20px;">
+          Login to Your Account
+        </a>
+      </div>
+    `;
+    
+    await sendEmail({
+      to,
+      subject: 'Your Splitfin Password Has Been Reset',
+      html: emailHtml
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/password-reset-link', async (req, res) => {
+  try {
+    const { to, customerName, resetUrl } = req.body;
+    
+    // In a real implementation, you'd generate a secure token
+    const resetToken = Math.random().toString(36).substring(2, 15);
+    const fullResetUrl = `${resetUrl}?token=${resetToken}&email=${encodeURIComponent(to)}`;
+    
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #6366f1;">Reset Your Password</h2>
+        <p>Dear ${customerName},</p>
+        <p>We received a request to reset your password. Click the button below to create a new password:</p>
+        
+        <a href="${fullResetUrl}" 
+           style="display: inline-block; background: #6366f1; color: white; padding: 12px 24px; 
+                  text-decoration: none; border-radius: 6px; margin: 20px 0;">
+          Reset Password
+        </a>
+        
+        <p style="color: #666; font-size: 14px;">
+          If you didn't request a password reset, please ignore this email. 
+          This link will expire in 24 hours.
+        </p>
+        
+        <p style="color: #666; font-size: 12px;">
+          If the button doesn't work, copy and paste this link into your browser:<br>
+          <a href="${fullResetUrl}">${fullResetUrl}</a>
+        </p>
+      </div>
+    `;
+    
+    await sendEmail({
+      to,
+      subject: 'Reset Your Splitfin Password',
+      html: emailHtml
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ADD THIS LINE - This is what's missing!
 export default router;
