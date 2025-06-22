@@ -116,5 +116,70 @@ router.post('/customer-approval', async (req, res) => {
   }
 });
 
+router.post('/order-confirmation', async (req, res) => {
+  try {
+    const { to, orderNumber, customerName, items, total, deliveryAddress } = req.body;
+    
+    const itemsHtml = items.map(item => `
+      <tr>
+        <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.name}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">£${(item.price * item.quantity).toFixed(2)}</td>
+      </tr>
+    `).join('');
+    
+    const addressHtml = deliveryAddress.map(line => `${line}<br>`).join('');
+    
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #10b981;">Order Confirmed!</h2>
+        <p>Dear ${customerName},</p>
+        <p>Your order #${orderNumber} has been confirmed and is being processed.</p>
+        
+        <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h3>Order Details</h3>
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr>
+                <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd;">Item</th>
+                <th style="text-align: center; padding: 8px; border-bottom: 2px solid #ddd;">Qty</th>
+                <th style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd;">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itemsHtml}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="2" style="padding: 8px; text-align: right; font-weight: bold;">Total (inc. VAT):</td>
+                <td style="padding: 8px; text-align: right; font-weight: bold;">£${total.toFixed(2)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        
+        <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h3>Delivery Address</h3>
+          <p>${addressHtml}</p>
+        </div>
+        
+        <p>We'll send you another email when your order has been dispatched.</p>
+        <p>If you have any questions, please don't hesitate to contact us.</p>
+      </div>
+    `;
+    
+    await sendEmail({
+      to,
+      subject: `Order Confirmation - #${orderNumber}`,
+      html: emailHtml
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ADD THIS LINE - This is what's missing!
 export default router;
