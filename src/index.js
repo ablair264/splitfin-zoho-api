@@ -87,6 +87,7 @@ app.use('/oauth', authRoutes);
 app.use('/api/purchase-analysis', purchaseAnalysisRoutes);
 app.use('/api/search-trends', searchTrendsRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/email', emailRoutes);  // ← ADD THIS LINE HERE
 
 app.put('/api/zoho/update-contact', updateZohoContact);
 app.post('/api/zoho/salesorder', createZohoSalesOrder);
@@ -209,8 +210,6 @@ app.use((err, req, res, next) => {
     timestamp: new Date().toISOString()
   });
 });
-
-app.use('/api/email', emailRoutes);
 
 // ── Server Startup ──────────────────────────────────────────────────
 const server = app.listen(PORT, '0.0.0.0', () => {

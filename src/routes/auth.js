@@ -1,6 +1,7 @@
 // server/src/routes/auth.js
 import express from 'express';
 import axios from 'axios';
+import admin from 'firebase-admin';
 
 const router = express.Router();
 
