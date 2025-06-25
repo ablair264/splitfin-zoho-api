@@ -132,28 +132,28 @@ class CronDataSyncService {
         const itemTotal = item.item_total || item.total || 
                         (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
         
-        transactions.push({
-          transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
-          item_id: item.item_id,
-          item_name: item.name,
-          sku: item.sku || itemInfo.sku,
-          manufacturer: manufacturer,
-          brand: manufacturer, // Keep for compatibility
-          brand_normalized: manufacturer.toLowerCase().replace(/\s+/g, '-'),
-          quantity: parseInt(item.quantity || 0),
-          price: parseFloat(item.rate || 0),
-          total: itemTotal,
-          order_id: order.salesorder_id,
-          order_number: order.salesorder_number,
-          order_date: order.date,
-          customer_id: order.customer_id,
-          customer_name: order.customer_name,
-          salesperson_id: order.salesperson_id || '',
-          salesperson_name: order.salesperson_name || '',
-          is_marketplace_order: isMarketplaceOrder,
-          created_at: order.date,
-          last_modified: admin.firestore.FieldValue.serverTimestamp()
-        });
+transactions.push({
+  transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
+  item_id: item.item_id,
+  item_name: item.name || item.item_name || 'Unknown Item', // Add fallbacks
+  sku: item.sku || itemInfo.sku || '', // Provide empty string instead of undefined
+  manufacturer: manufacturer,
+  brand: manufacturer,
+  brand_normalized: manufacturer.toLowerCase().replace(/\s+/g, '-'),
+  quantity: parseInt(item.quantity || 0),
+  price: parseFloat(item.rate || 0),
+  total: itemTotal,
+  order_id: order.salesorder_id,
+  order_number: order.salesorder_number,
+  order_date: order.date,
+  customer_id: order.customer_id,
+  customer_name: order.customer_name,
+  salesperson_id: order.salesperson_id || '',
+  salesperson_name: order.salesperson_name || '',
+  is_marketplace_order: isMarketplaceOrder,
+  created_at: order.date,
+  last_modified: admin.firestore.FieldValue.serverTimestamp()
+});
       });
     }
   });

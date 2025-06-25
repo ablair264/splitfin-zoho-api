@@ -1,6 +1,5 @@
 import admin from 'firebase-admin';
 import dotenv from 'dotenv';
-
 dotenv.config();
 
 // Initialize Firebase Admin SDK
@@ -13,6 +12,13 @@ if (!admin.apps.length) {
       credential: admin.credential.cert(serviceAccount),
     });
     console.log('✅ Firebase Admin SDK initialized successfully.');
+    
+    // Configure Firestore settings
+    admin.firestore().settings({
+      ignoreUndefinedProperties: true
+    });
+    console.log('✅ Firestore configured to ignore undefined properties.');
+    
   } catch (error) {
     console.error('❌ Firebase Admin SDK initialization failed:', error);
     // Exit if Firebase can't be initialized, as it's critical
