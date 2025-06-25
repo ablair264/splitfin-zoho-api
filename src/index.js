@@ -7,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createZohoSalesOrder } from './services/salesOrder.js';
-import { syncCustomerWithZoho, syncAllCustomers } from './services/customerSync.js';x
+import { syncCustomerWithZoho, syncAllCustomers } from './services/customerSync.js';
 
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
