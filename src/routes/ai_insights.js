@@ -1,24 +1,26 @@
-// server/src/routes/ai-insights.js - INTEGRATED VERSION USING YOUR AI SERVICE
+// server/src/routes/ai-insights.js
 import express from 'express';
 import admin from 'firebase-admin';
-// IMPORTANT: Import your sophisticated AI analytics service
 import { 
   generateAIInsights, 
   generateCardInsights, 
   generateDrillDownInsights,
   generateComparativeInsights,
   generateSeasonalInsights,
-  generateCustomerInsights // Add this import
+  generateCustomerInsights,
+  generatePurchaseOrderInsights,
+  generateProductPurchaseInsights,
+  validatePurchaseAdjustments
 } from '../services/aiAnalyticsService.js';
+import { fetchComprehensiveData } from '../api/zoho.js';
 
 const router = express.Router();
 
 /**
- * Rate limiting for AI requests (to manage API costs)
- * This protects your Google API usage while allowing reasonable access
+ * Rate limiting for AI requests
  */
 const aiRequestLimiter = new Map();
-const AI_REQUEST_LIMIT = 15; // Reasonable limit for your business needs
+const AI_REQUEST_LIMIT = 15;
 const AI_WINDOW_MS = 60 * 60 * 1000; // 1 hour window
 
 function checkAIRateLimit(req, res, next) {
@@ -55,14 +57,13 @@ function checkAIRateLimit(req, res, next) {
 }
 
 /**
- * Simplified authentication middleware that works in both development and production
+ * Authentication middleware
  */
 async function validateUserForAI(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
     
     if (!authHeader) {
-      // Development mode - allow access but log warning
       console.warn('⚠️ AI request without authentication - development mode');
       req.userId = 'development-user';
       req.userContext = { role: 'brandManager', name: 'Development User' };
@@ -85,7 +86,6 @@ async function validateUserForAI(req, res, next) {
           req.userContext = userDoc.data();
           console.log(`🤖 AI request from: ${req.userContext.name} (${req.userContext.role})`);
         } else {
-          // User document doesn't exist, but token is valid
           req.userContext = { role: 'user', name: 'Unknown User' };
         }
         
@@ -99,7 +99,6 @@ async function validateUserForAI(req, res, next) {
     next();
   } catch (error) {
     console.error('❌ Error in AI authentication:', error);
-    // Don't fail the request - provide development access
     req.userId = 'development-user';
     req.userContext = { role: 'brandManager', name: 'Development User' };
     next();
@@ -107,10 +106,9 @@ async function validateUserForAI(req, res, next) {
 }
 
 /**
- * Health check endpoint - Always available to test connectivity
+ * Health check endpoint
  */
 router.get('/health', (req, res) => {
-  // Check if Google API key is configured
   const googleApiConfigured = !!process.env.GOOGLE_API_KEY;
   
   res.json({
@@ -124,40 +122,57 @@ router.get('/health', (req, res) => {
       dashboardInsights: googleApiConfigured,
       drillDownInsights: googleApiConfigured,
       comparativeInsights: googleApiConfigured,
-      seasonalInsights: googleApiConfigured
+      seasonalInsights: googleApiConfigured,
+      purchaseOrderInsights: googleApiConfigured,
+      comprehensiveData: true
     },
     businessIntelligence: {
       dmBrandsContext: true,
       brandPortfolioAnalysis: true,
       luxuryImportFocus: true,
       agentPerformanceAnalysis: true,
-      seasonalPlanningSupport: true
+      seasonalPlanningSupport: true,
+      cashFlowAnalysis: true,
+      customerSegmentation: true,
+      inventoryOptimization: true
+    },
+    dataIntegration: {
+      firebase: {
+        salesTransactions: true,
+        salesOrders: true,
+        customerData: true,
+        invoices: true,
+        purchaseOrders: true
+      },
+      zoho: {
+        inventory: true,
+        contacts: true,
+        crm: true
+      }
     },
     rateLimit: {
       requestsPerHour: AI_REQUEST_LIMIT,
       windowMinutes: AI_WINDOW_MS / 1000 / 60
     },
-    
-endpoints: [
-  'GET /api/ai-insights/health',
-  'POST /api/ai-insights/card-insights',
-  'POST /api/ai-insights/dashboard-insights',
-  'POST /api/ai-insights/drill-down-insights',
-  'POST /api/ai-insights/comparative-insights',
-  'POST /api/ai-insights/seasonal-insights',
-  'POST /api/ai-insights/customer-insights',
-  'POST /api/ai-insights/purchase-order-insights',     // NEW
-  'POST /api/ai-insights/product-purchase-insights',   // NEW
-  'POST /api/ai-insights/validate-adjustments',        // NEW
-  'GET /api/ai-insights/usage-stats'
-],
+    endpoints: [
+      'GET /api/ai-insights/health',
+      'POST /api/ai-insights/card-insights',
+      'POST /api/ai-insights/dashboard-insights',
+      'POST /api/ai-insights/drill-down-insights',
+      'POST /api/ai-insights/comparative-insights',
+      'POST /api/ai-insights/seasonal-insights',
+      'POST /api/ai-insights/customer-insights',
+      'POST /api/ai-insights/purchase-order-insights',
+      'POST /api/ai-insights/product-purchase-insights',
+      'POST /api/ai-insights/validate-adjustments',
+      'GET /api/ai-insights/usage-stats'
+    ],
     timestamp: new Date().toISOString()
   });
 });
 
 /**
- * MAIN ENDPOINT: Card-specific insights using your sophisticated AI service
- * This connects your frontend to your business intelligence functions
+ * Card-specific insights with comprehensive data
  */
 router.post('/card-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
   try {
@@ -171,10 +186,26 @@ router.post('/card-insights', validateUserForAI, checkAIRateLimit, async (req, r
       });
     }
 
-    console.log(`🤖 Generating sophisticated AI insights for ${cardType} card (User: ${req.userContext?.name})`);
+    console.log(`🤖 Generating AI insights for ${cardType} card (User: ${req.userContext?.name})`);
     
-    // Use YOUR sophisticated AI service function
-    const insights = await generateCardInsights(cardType, cardData, fullDashboardData);
+    // For purchase-related cards, fetch comprehensive data
+    let enrichedDashboardData = fullDashboardData;
+    if (cardType === 'orders' || cardType === 'revenue' || cardType === 'aov') {
+      try {
+        const brandId = fullDashboardData.selectedBrand || 'all';
+        if (brandId !== 'all') {
+          const comprehensiveData = await fetchComprehensiveData(brandId, fullDashboardData.selectedBrandName);
+          enrichedDashboardData = {
+            ...fullDashboardData,
+            comprehensiveData
+          };
+        }
+      } catch (dataError) {
+        console.warn('Could not fetch comprehensive data:', dataError.message);
+      }
+    }
+    
+    const insights = await generateCardInsights(cardType, cardData, enrichedDashboardData);
     
     res.json({
       success: true,
@@ -190,14 +221,13 @@ router.post('/card-insights', validateUserForAI, checkAIRateLimit, async (req, r
   } catch (error) {
     console.error(`❌ Error generating ${req.body?.cardType || 'unknown'} AI insights:`, error);
     
-    // Provide a graceful fallback that still gives some value
     res.status(500).json({
       success: false,
       error: 'AI insights temporarily unavailable',
       fallback: {
-        insight: `Analysis for ${req.body?.cardType || 'this metric'} is temporarily unavailable. The system may be experiencing high demand or configuration issues.`,
+        insight: `Analysis for ${req.body?.cardType || 'this metric'} is temporarily unavailable.`,
         trend: "Unable to analyze current trends",
-        action: "Please try again in a few minutes or contact support if the issue persists",
+        action: "Please try again in a few minutes",
         priority: "medium",
         impact: "Limited impact on immediate operations"
       },
@@ -207,7 +237,7 @@ router.post('/card-insights', validateUserForAI, checkAIRateLimit, async (req, r
 });
 
 /**
- * Comprehensive dashboard insights using your sophisticated analysis
+ * Comprehensive dashboard insights
  */
 router.post('/dashboard-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
   try {
@@ -222,7 +252,6 @@ router.post('/dashboard-insights', validateUserForAI, checkAIRateLimit, async (r
     
     console.log(`🤖 Generating comprehensive dashboard insights for user ${req.userId}`);
     
-    // Use YOUR sophisticated dashboard analysis function
     const insights = await generateAIInsights(dashboardData);
     
     res.json({
@@ -247,7 +276,7 @@ router.post('/dashboard-insights', validateUserForAI, checkAIRateLimit, async (r
       success: false,
       error: 'Comprehensive analysis temporarily unavailable',
       fallback: {
-        summary: "Dashboard analysis is temporarily unavailable due to system load or configuration issues.",
+        summary: "Dashboard analysis is temporarily unavailable.",
         keyDrivers: ["System temporarily unavailable"],
         recommendations: ["Please try again in a few minutes"],
         criticalAlerts: [],
@@ -257,208 +286,11 @@ router.post('/dashboard-insights', validateUserForAI, checkAIRateLimit, async (r
   }
 });
 
-/**
- * Drill-down analysis using your sophisticated business intelligence
- */
-router.post('/drill-down-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
-  try {
-    const { viewType, detailData, summaryData } = req.body;
-    
-    if (!viewType || !detailData) {
-      return res.status(400).json({
-        success: false,
-        error: 'viewType and detailData are required',
-        supportedViews: ['orders', 'invoices', 'revenue', 'customers', 'agents', 'brands', 'products']
-      });
-    }
-    
-    console.log(`🤖 Generating drill-down insights for ${viewType} view`);
-    
-    // Use YOUR sophisticated drill-down analysis function
-    const insights = await generateDrillDownInsights(viewType, detailData, summaryData);
-    
-    res.json({
-      success: true,
-      data: insights,
-      viewType,
-      analysisDepth: 'detailed_operational_intelligence',
-      businessFocus: 'dm_brands_luxury_import_operations',
-      generatedAt: new Date().toISOString(),
-      userRole: req.userContext?.role
-    });
-    
-  } catch (error) {
-    console.error(`❌ Error generating drill-down insights for ${req.body?.viewType}:`, error);
-    res.status(500).json({
-      success: false,
-      error: `Drill-down analysis for ${req.body?.viewType} temporarily unavailable`
-    });
-  }
-});
+// Continuing ai-insights.js...
 
 /**
- * Comparative analysis between periods using your AI service
+ * Purchase order insights with comprehensive data
  */
-router.post('/comparative-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
-  try {
-    const { currentData, previousData, comparisonType = 'period' } = req.body;
-    
-    if (!currentData || !previousData) {
-      return res.status(400).json({
-        success: false,
-        error: 'Both currentData and previousData are required for comparison'
-      });
-    }
-    
-    console.log(`🤖 Generating comparative insights (${comparisonType})`);
-    
-    // Use YOUR sophisticated comparative analysis function
-    const insights = await generateComparativeInsights(currentData, previousData, comparisonType);
-    
-    res.json({
-      success: true,
-      data: insights,
-      comparisonType,
-      analysisType: 'period_comparison_intelligence',
-      generatedAt: new Date().toISOString(),
-      userRole: req.userContext?.role
-    });
-    
-  } catch (error) {
-    console.error('❌ Error generating comparative insights:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Comparative analysis temporarily unavailable'
-    });
-  }
-});
-
-/**
- * Seasonal planning insights using your business intelligence
- */
-router.post('/seasonal-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
-  try {
-    const { historicalData, currentSeason } = req.body;
-    
-    if (!historicalData) {
-      return res.status(400).json({
-        success: false,
-        error: 'Historical data is required for seasonal analysis'
-      });
-    }
-    
-    // Determine current season if not provided
-    const season = currentSeason || getCurrentSeason();
-    
-    console.log(`🤖 Generating seasonal insights for ${season}`);
-    
-    // Use YOUR sophisticated seasonal analysis function
-    const insights = await generateSeasonalInsights(historicalData, season);
-    
-    res.json({
-      success: true,
-      data: insights,
-      season,
-      analysisType: 'seasonal_planning_intelligence',
-      businessFocus: 'luxury_home_giftware_seasonality',
-      generatedAt: new Date().toISOString(),
-      userRole: req.userContext?.role
-    });
-    
-  } catch (error) {
-    console.error('❌ Error generating seasonal insights:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Seasonal analysis temporarily unavailable'
-    });
-  }
-});
-
-/**
- * Get AI usage statistics for the current user
- */
-router.get('/usage-stats', validateUserForAI, (req, res) => {
-  try {
-    const userId = req.userId;
-    const userLimit = aiRequestLimiter.get(userId);
-    
-    const stats = {
-      requestsUsed: userLimit ? userLimit.count : 0,
-      requestsRemaining: AI_REQUEST_LIMIT - (userLimit ? userLimit.count : 0),
-      windowResetTime: userLimit ? userLimit.window + AI_WINDOW_MS : Date.now() + AI_WINDOW_MS,
-      limitPerHour: AI_REQUEST_LIMIT,
-      usagePercentage: userLimit ? (userLimit.count / AI_REQUEST_LIMIT) * 100 : 0,
-      canMakeRequest: !userLimit || userLimit.count < AI_REQUEST_LIMIT
-    };
-    
-    res.json({
-      success: true,
-      data: stats,
-      userId: req.userId,
-      businessContext: 'dm_brands_ai_analytics',
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Error getting AI usage stats:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get usage statistics'
-    });
-  }
-});
-
-/**
- * Test endpoint for debugging connectivity and configuration
- */
-router.get('/test', (req, res) => {
-  res.json({
-    success: true,
-    message: 'AI Insights test endpoint working perfectly',
-    systemStatus: {
-      routes: 'operational',
-      authentication: 'flexible_development_mode',
-      googleApi: !!process.env.GOOGLE_API_KEY ? 'configured' : 'needs_configuration',
-      businessIntelligence: 'dm_brands_context_loaded',
-      aiService: 'sophisticated_analysis_available'
-    },
-    testInstructions: {
-      step1: 'Verify this endpoint works (you should see this message)',
-      step2: 'Test /api/ai-insights/health for detailed status',
-      step3: 'Try card insights with: POST /api/ai-insights/card-insights',
-      step4: 'Check rate limiting with: GET /api/ai-insights/usage-stats'
-    },
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
-});
-
-router.post('/customer-insights', async (req, res) => {
-  try {
-    const { customer, orderHistory, userRole, agentId } = req.body;
-    
-    // Generate insights
-    const insights = await generateCustomerInsights(
-      customer,
-      orderHistory,
-      userRole,
-      agentId
-    );
-    
-    res.json({
-      success: true,
-      data: insights
-    });
-  } catch (error) {
-    console.error('❌ Error generating customer insights:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to generate customer insights',
-      error: error.message
-    });
-  }
-});
-
 router.post('/purchase-order-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
   try {
     const { brand, suggestions, historicalSales, marketData } = req.body;
@@ -472,13 +304,33 @@ router.post('/purchase-order-insights', validateUserForAI, checkAIRateLimit, asy
     
     console.log(`🤖 Generating purchase order insights for ${brand} (User: ${req.userContext?.name})`);
     
-    // Import generatePurchaseOrderInsights from your AI service
-    const { generatePurchaseOrderInsights } = await import('../services/aiAnalyticsService.js');
+    // If historical sales not provided, fetch comprehensive data
+    let enhancedHistoricalSales = historicalSales;
+    if (!historicalSales || Object.keys(historicalSales).length === 0) {
+      try {
+        const brandId = brand.toLowerCase().replace(/\s+/g, '_');
+        const comprehensiveData = await fetchComprehensiveData(brandId, brand);
+        
+        enhancedHistoricalSales = {
+          totalRevenue: comprehensiveData.salesTransactions.totalRevenue,
+          totalUnits: comprehensiveData.salesTransactions.totalUnits,
+          topProducts: comprehensiveData.salesTransactions.topProducts,
+          seasonalPattern: comprehensiveData.salesTransactions.seasonalPattern,
+          salesOrders: comprehensiveData.salesOrders,
+          customerMetrics: comprehensiveData.customerInsights,
+          invoiceMetrics: comprehensiveData.invoiceMetrics,
+          purchaseHistory: comprehensiveData.purchaseHistory,
+          zohoMetrics: comprehensiveData.zohoMetrics
+        };
+      } catch (dataError) {
+        console.warn('Could not fetch comprehensive data:', dataError.message);
+      }
+    }
     
     const insights = await generatePurchaseOrderInsights(
       brand,
       suggestions,
-      historicalSales || {},
+      enhancedHistoricalSales || {},
       marketData || {}
     );
     
@@ -489,6 +341,7 @@ router.post('/purchase-order-insights', validateUserForAI, checkAIRateLimit, asy
       businessContext: 'dm_brands_inventory_optimization',
       brand,
       suggestionsAnalyzed: suggestions.length,
+      dataCompleteness: enhancedHistoricalSales ? 'comprehensive' : 'limited',
       generatedAt: new Date().toISOString(),
       userRole: req.userContext?.role
     });
@@ -504,7 +357,9 @@ router.post('/purchase-order-insights', validateUserForAI, checkAIRateLimit, asy
         riskAssessment: "Analysis pending",
         categoryOptimization: "Review manually",
         cashFlowImpact: "Unknown",
-        alternativeStrategies: ["Consider phased ordering"],
+        customerImpact: "Unable to determine",
+        channelStrategy: "Review channel performance",
+        inventoryOptimization: "Check stock levels",
         confidenceAssessment: "Low confidence due to error"
       }
     });
@@ -526,9 +381,6 @@ router.post('/product-purchase-insights', validateUserForAI, checkAIRateLimit, a
     }
     
     console.log(`🤖 Generating product insights for ${product.sku} - ${product.name}`);
-    
-    // Import generateProductPurchaseInsights from your AI service
-    const { generateProductPurchaseInsights } = await import('../services/aiAnalyticsService.js');
     
     const insights = await generateProductPurchaseInsights(
       product,
@@ -578,9 +430,6 @@ router.post('/validate-adjustments', validateUserForAI, checkAIRateLimit, async 
     
     console.log(`🤖 Validating ${userAdjustments.length} adjustments for ${brand}`);
     
-    // Import validatePurchaseAdjustments from your AI service
-    const { validatePurchaseAdjustments } = await import('../services/aiAnalyticsService.js');
-    
     const validation = await validatePurchaseAdjustments(
       originalSuggestions,
       userAdjustments,
@@ -613,8 +462,258 @@ router.post('/validate-adjustments', validateUserForAI, checkAIRateLimit, async 
 });
 
 /**
- * Helper function to determine current season for seasonal analysis
+ * Drill-down analysis
  */
+router.post('/drill-down-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { viewType, detailData, summaryData } = req.body;
+    
+    if (!viewType || !detailData) {
+      return res.status(400).json({
+        success: false,
+        error: 'viewType and detailData are required',
+        supportedViews: ['orders', 'invoices', 'revenue', 'customers', 'agents', 'brands', 'products']
+      });
+    }
+    
+    console.log(`🤖 Generating drill-down insights for ${viewType} view`);
+    
+    const insights = await generateDrillDownInsights(
+      viewType, 
+      detailData, 
+      summaryData,
+      req.userContext?.role,
+      req.userId
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      viewType,
+      analysisDepth: 'detailed_operational_intelligence',
+      businessFocus: 'dm_brands_luxury_import_operations',
+      generatedAt: new Date().toISOString(),
+      userRole: req.userContext?.role
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error generating drill-down insights for ${req.body?.viewType}:`, error);
+    res.status(500).json({
+      success: false,
+      error: `Drill-down analysis for ${req.body?.viewType} temporarily unavailable`
+    });
+  }
+});
+
+/**
+ * Comparative analysis
+ */
+router.post('/comparative-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { currentData, previousData, comparisonType = 'period' } = req.body;
+    
+    if (!currentData || !previousData) {
+      return res.status(400).json({
+        success: false,
+        error: 'Both currentData and previousData are required for comparison'
+      });
+    }
+    
+    console.log(`🤖 Generating comparative insights (${comparisonType})`);
+    
+    const insights = await generateComparativeInsights(
+      currentData, 
+      previousData, 
+      comparisonType,
+      req.userContext?.role,
+      req.userId
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      comparisonType,
+      analysisType: 'period_comparison_intelligence',
+      generatedAt: new Date().toISOString(),
+      userRole: req.userContext?.role
+    });
+    
+  } catch (error) {
+    console.error('❌ Error generating comparative insights:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Comparative analysis temporarily unavailable'
+    });
+  }
+});
+
+/**
+ * Seasonal planning insights
+ */
+router.post('/seasonal-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { historicalData, currentSeason } = req.body;
+    
+    if (!historicalData) {
+      return res.status(400).json({
+        success: false,
+        error: 'Historical data is required for seasonal analysis'
+      });
+    }
+    
+    // Determine current season if not provided
+    const season = currentSeason || getCurrentSeason();
+    
+    console.log(`🤖 Generating seasonal insights for ${season}`);
+    
+    const insights = await generateSeasonalInsights(
+      historicalData, 
+      season,
+      req.userContext?.role,
+      req.userId
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      season,
+      analysisType: 'seasonal_planning_intelligence',
+      businessFocus: 'luxury_home_giftware_seasonality',
+      generatedAt: new Date().toISOString(),
+      userRole: req.userContext?.role
+    });
+    
+  } catch (error) {
+    console.error('❌ Error generating seasonal insights:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Seasonal analysis temporarily unavailable'
+    });
+  }
+});
+
+/**
+ * Customer insights
+ */
+router.post('/customer-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { customer, orderHistory, userRole, agentId } = req.body;
+    
+    if (!customer) {
+      return res.status(400).json({
+        success: false,
+        error: 'Customer data is required'
+      });
+    }
+    
+    console.log(`🤖 Generating customer insights for ${customer.name || customer.id}`);
+    
+    const insights = await generateCustomerInsights(
+      customer,
+      orderHistory || [],
+      userRole || req.userContext?.role,
+      agentId || req.userId
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      customerId: customer.id,
+      analysisType: 'customer_relationship_intelligence',
+      generatedAt: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error generating customer insights:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Customer analysis temporarily unavailable',
+      fallback: {
+        customerProfile: "Analysis unavailable",
+        orderTrends: {
+          frequency: "Unknown",
+          averageValue: "Unable to calculate",
+          seasonalPatterns: "Analysis pending",
+          brandPreferences: []
+        },
+        opportunities: ["Manual review recommended"],
+        riskFactors: ["Unable to assess"],
+        recommendedActions: ["Contact customer"],
+        relationshipStrategy: "Maintain engagement",
+        nextSteps: ["Follow up"]
+      }
+    });
+  }
+});
+
+/**
+ * Get AI usage statistics
+ */
+router.get('/usage-stats', validateUserForAI, (req, res) => {
+  try {
+    const userId = req.userId;
+    const userLimit = aiRequestLimiter.get(userId);
+    
+    const stats = {
+      requestsUsed: userLimit ? userLimit.count : 0,
+      requestsRemaining: AI_REQUEST_LIMIT - (userLimit ? userLimit.count : 0),
+      windowResetTime: userLimit ? userLimit.window + AI_WINDOW_MS : Date.now() + AI_WINDOW_MS,
+      limitPerHour: AI_REQUEST_LIMIT,
+      usagePercentage: userLimit ? (userLimit.count / AI_REQUEST_LIMIT) * 100 : 0,
+      canMakeRequest: !userLimit || userLimit.count < AI_REQUEST_LIMIT
+    };
+    
+    res.json({
+      success: true,
+      data: stats,
+      userId: req.userId,
+      businessContext: 'dm_brands_ai_analytics',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting AI usage stats:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get usage statistics'
+    });
+  }
+});
+
+/**
+ * Test endpoint
+ */
+router.get('/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'AI Insights test endpoint working perfectly',
+    systemStatus: {
+      routes: 'operational',
+      authentication: 'flexible_development_mode',
+      googleApi: !!process.env.GOOGLE_API_KEY ? 'configured' : 'needs_configuration',
+      businessIntelligence: 'dm_brands_context_loaded',
+      aiService: 'sophisticated_analysis_available',
+      dataIntegration: 'firebase_and_zoho_connected'
+    },
+    availableEndpoints: {
+      health: 'GET /api/ai-insights/health',
+      cardInsights: 'POST /api/ai-insights/card-insights',
+      dashboardInsights: 'POST /api/ai-insights/dashboard-insights',
+      purchaseOrderInsights: 'POST /api/ai-insights/purchase-order-insights',
+      productInsights: 'POST /api/ai-insights/product-purchase-insights',
+      validateAdjustments: 'POST /api/ai-insights/validate-adjustments',
+      drillDown: 'POST /api/ai-insights/drill-down-insights',
+      comparative: 'POST /api/ai-insights/comparative-insights',
+      seasonal: 'POST /api/ai-insights/seasonal-insights',
+      customer: 'POST /api/ai-insights/customer-insights',
+      usageStats: 'GET /api/ai-insights/usage-stats'
+    },
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Helper function to determine current season
 function getCurrentSeason() {
   const month = new Date().getMonth() + 1; // 1-12
   
@@ -625,3 +724,5 @@ function getCurrentSeason() {
 }
 
 export default router;
+    
+    
