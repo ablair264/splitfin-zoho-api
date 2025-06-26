@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createZohoSalesOrder } from './services/salesOrder.js';
 import { syncCustomerWithZoho, syncAllCustomers } from './services/customerSync.js';
+import { createZohoContact } from './services/createContact.js';
 
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
@@ -90,6 +91,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/email', emailRoutes);  // ← ADD THIS LINE HERE
 
 app.put('/api/zoho/update-contact', updateZohoContact);
+app.post('/api/zoho/create-contact', createZohoContact);
 app.post('/api/zoho/salesorder', createZohoSalesOrder);
 app.post('/api/customers/sync', syncCustomerWithZoho);
 app.post('/api/customers/sync-all', syncAllCustomers);

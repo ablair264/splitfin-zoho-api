@@ -331,6 +331,63 @@ export function getTokenInfo() {
   };
 }
 
+export async function createInventoryContact(contactData) {
+  const token = await getAccessToken();
+  
+  // Prepare the payload according to Zoho Inventory's contact structure
+  const payload = {
+    contact_name: contactData.contact_name,
+    company_name: contactData.company_name || '',
+    contact_type: 'customer',
+    customer_sub_type: contactData.customer_sub_type || 'business',
+    email: contactData.email,
+    phone: contactData.phone || '',
+    currency_code: contactData.currency_code || 'GBP',
+    payment_terms: contactData.payment_terms || 30,
+    credit_limit: contactData.credit_limit || 5000,
+    billing_address: contactData.billing_address,
+    shipping_address: contactData.shipping_address || contactData.billing_address,
+    // Add custom fields if needed
+    custom_fields: contactData.custom_fields || []
+  };
+
+  // Remove empty fields that might cause issues
+  Object.keys(payload).forEach(key => {
+    if (payload[key] === '' || payload[key] === null || payload[key] === undefined) {
+      delete payload[key];
+    }
+  });
+
+  try {
+    console.log('Creating contact in Zoho Inventory:', payload.email);
+    
+    const response = await axios.post(
+      `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
+      JSON.stringify(payload),
+      {
+        headers: {
+          'Authorization': `Zoho-oauthtoken ${token}`,
+          'Content-Type': 'application/json',
+          'X-com-zoho-inventory-organizationid': ZOHO_CONFIG.orgId
+        }
+      }
+    );
+
+    if (response.data.code !== 0) {
+      throw new Error(response.data.message || 'Failed to create contact in Zoho Inventory');
+    }
+
+    console.log('✅ Contact created in Zoho Inventory:', response.data.contact.contact_id);
+    return response.data;
+  } catch (error) {
+    console.error('❌ Failed to create Inventory contact:', error.response?.data || error.message);
+    if (error.response?.data) {
+      console.error('Zoho error details:', JSON.stringify(error.response.data, null, 2));
+    }
+    throw error;
+  }
+}
+
 export async function getInventoryContactIdByEmail(email) {
   if (!email) {
     return null;
