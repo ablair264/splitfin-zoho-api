@@ -156,6 +156,118 @@ app.post('/api/customers/enrich', async (req, res) => {
   }
 });
 
+app.post('/api/zoho/test/contact-creation', async (req, res) => {
+  const results = {
+    timestamp: new Date().toISOString(),
+    tests: []
+  };
+  
+  try {
+    const token = await getAccessToken();
+    
+    // Test 1: Create a simple contact
+    const testContact = {
+      contact_name: `API Test ${Date.now()}`,
+      contact_type: 'customer',
+      email: `apitest${Date.now()}@test.com`
+    };
+    
+    console.log('Creating test contact:', testContact);
+    
+    const createResponse = await axios.post(
+      `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
+      testContact,
+      {
+        headers: {
+          'Authorization': `Zoho-oauthtoken ${token}`,
+          'Content-Type': 'application/json',
+          'X-com-zoho-inventory-organizationid': ZOHO_CONFIG.orgId
+        }
+      }
+    );
+    
+    results.tests.push({
+      test: 'create',
+      success: createResponse.data.code === 0,
+      response: createResponse.data
+    });
+    
+    // Test 2: If created, try to fetch it
+    if (createResponse.data.contact?.contact_id) {
+      const contactId = createResponse.data.contact.contact_id;
+      
+      // Wait a moment for Zoho to process
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      try {
+        const fetchResponse = await axios.get(
+          `${ZOHO_CONFIG.baseUrls.inventory}/contacts/${contactId}`,
+          {
+            headers: {
+              'Authorization': `Zoho-oauthtoken ${token}`,
+              'X-com-zoho-inventory-organizationid': ZOHO_CONFIG.orgId
+            }
+          }
+        );
+        
+        results.tests.push({
+          test: 'fetch',
+          success: true,
+          found: true,
+          contact: fetchResponse.data.contact
+        });
+      } catch (fetchError) {
+        results.tests.push({
+          test: 'fetch',
+          success: false,
+          error: fetchError.response?.data || fetchError.message
+        });
+      }
+    }
+    
+    // Test 3: List all contacts to see our test contact
+    const listResponse = await axios.get(
+      `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
+      {
+        params: {
+          sort_column: 'created_time',
+          sort_order: 'D',
+          per_page: 10
+        },
+        headers: {
+          'Authorization': `Zoho-oauthtoken ${token}`,
+          'X-com-zoho-inventory-organizationid': ZOHO_CONFIG.orgId
+        }
+      }
+    );
+    
+    results.tests.push({
+      test: 'list',
+      totalContacts: listResponse.data.page_context?.total || 0,
+      recentContacts: listResponse.data.contacts?.map(c => ({
+        id: c.contact_id,
+        name: c.contact_name,
+        email: c.email,
+        created: c.created_time
+      }))
+    });
+    
+    res.json({
+      success: true,
+      orgId: ZOHO_CONFIG.orgId,
+      results: results
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.response?.data,
+      orgId: ZOHO_CONFIG.orgId
+    });
+  }
+});
+
 app.get('/health', async (req, res) => {
   try {
     // Basic health check
