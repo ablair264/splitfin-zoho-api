@@ -157,13 +157,6 @@ app.post('/api/customers/enrich', async (req, res) => {
   }
 });
 
-The error shows that ZOHO_CONFIG is not defined in the test endpoint. We need to fix the import. Here's the corrected test endpoint:
-1. First, update your server's index.js to add the proper imports:
-javascript// server/src/index.js - Add this import at the top with other imports
-import { getAccessToken, fetchPaginatedData, createInventoryContact } from './api/zoho.js';
-import axios from 'axios';
-
-// Then add this test endpoint (make sure it's after your other routes but before the 404 handler)
 app.post('/api/zoho/test/contact-creation', async (req, res) => {
   const results = {
     timestamp: new Date().toISOString(),
@@ -238,7 +231,6 @@ app.post('/api/zoho/test/contact-creation', async (req, res) => {
       });
     }
     
-    // Test 3: List recent contacts
     try {
       const listResponse = await axios.get(
         'https://www.zohoapis.eu/inventory/v1/contacts',
