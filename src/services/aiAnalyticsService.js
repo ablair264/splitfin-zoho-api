@@ -1,3 +1,4 @@
+// src/services/aiAnalyticsService.js
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Initialize the Google Generative AI with the API key from environment variables
@@ -103,14 +104,16 @@ class ContextManager {
         revenue: 'Analyze the agent\'s personal revenue performance from their customers.',
         orders: 'Evaluate the agent\'s order patterns and customer engagement.',
         customers: 'Review the agent\'s customer portfolio and relationships.',
-        seasonal: 'Provide seasonal strategies for the agent\'s territory.'
+        seasonal: 'Provide seasonal strategies for the agent\'s territory.',
+        purchase: 'Recommend purchase quantities based on the agent\'s customer demand patterns.'
       },
       brandManager: {
         general: 'You analyze DM Brands, a UK luxury import company specializing in European home and giftware.',
         revenue: 'Analyze revenue performance considering brand mix and profitability.',
         orders: 'Evaluate sales patterns, agent performance, and market trends.',
         customers: 'Assess customer value, segmentation, and growth opportunities.',
-        seasonal: 'Analyze seasonal trends for luxury import planning.'
+        seasonal: 'Analyze seasonal trends for luxury import planning.',
+        purchase: 'Recommend optimal purchase quantities based on comprehensive business data.'
       }
     };
 
@@ -249,13 +252,7 @@ export async function generateAIInsights(dashboardData) {
 }
 
 /**
- * Card-specific insights with optimized prompts
- */
-/**
- * Card-specific insights with optimized prompts
- */
-/**
- * Card-specific insights with improved prompts for detailed responses
+ * Card-specific insights with comprehensive data
  */
 export async function generateCardInsights(cardType, cardData, fullDashboardData) {
   try {
@@ -267,7 +264,6 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
       hasCardData: !!cardData,
       cardDataKeys: Object.keys(cardData || {}),
       role,
-      // Add more detailed logging
       cardDataSample: JSON.stringify(cardData).substring(0, 200)
     });
     
@@ -282,12 +278,11 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
       };
     }
     
-    // Extract specific metrics based on card type with better fallbacks
+    // Extract specific metrics based on card type
     let metrics = {};
     
     switch (validCardType) {
       case 'orders':
-        // Check multiple possible data structures
         metrics = {
           ordersCount: cardData.count || cardData.totalOrders || cardData.orders?.length || 0,
           ordersValue: cardData.totalValue || cardData.value || cardData.revenue || 0,
@@ -313,7 +308,7 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
           aov: cardData.averageValue || 0,
           totalOrders: cardData.totalOrders || 0,
           totalRevenue: cardData.totalRevenue || 0,
-          targetAOV: 600, // Business target
+          targetAOV: 600,
           percentOfTarget: ((cardData.averageValue || 0) / 600) * 100
         };
         break;
@@ -331,7 +326,7 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
         metrics = { dataPoints: Object.keys(cardData).length };
     }
 
-    // Create a very specific prompt that forces detailed responses
+    // Create a comprehensive prompt with business context
     const systemPrompt = `You are a business analyst for DM Brands, a UK luxury home and giftware import company. 
     You MUST provide specific, data-driven insights using the exact numbers provided.
     Your response MUST be valid JSON only, no other text.`;
@@ -368,7 +363,7 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
         }]
       }],
       generationConfig: {
-        temperature: 0.3, // Lower temperature for more consistent responses
+        temperature: 0.3,
         topK: 40,
         topP: 0.95,
         maxOutputTokens: 1024,
@@ -393,8 +388,6 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
       parsedResponse = JSON.parse(cleanedText);
     } catch (parseError) {
       console.error('Failed to parse AI response:', parseError);
-      
-      // If parsing fails, create a data-driven fallback
       return createDataDrivenFallback(validCardType, metrics, role);
     }
     
@@ -419,13 +412,9 @@ export async function generateCardInsights(cardType, cardData, fullDashboardData
       priority: validatePriority(parsedResponse.priority) || determinePriorityFromMetrics(metrics, validCardType),
       impact: parsedResponse.impact || createImpactFromMetrics(validCardType, metrics)
     };
-    
-     console.log('Extracted metrics:', metrics);
 
   } catch (error) {
     console.error(`❌ Error generating ${cardType} insights:`, error);
-    
-    // Return a data-driven fallback instead of generic response
     return createDataDrivenFallback(cardType, cardData, fullDashboardData?.role);
   }
 }
@@ -492,164 +481,228 @@ function createDataDrivenFallback(cardType, metrics, role) {
   }
 }
 
-// Helper functions for creating specific insights
-function createInsightFromMetrics(cardType, metrics, role) {
-  const insights = {
-    orders: `With ${metrics.ordersCount} orders worth £${metrics.ordersValue.toLocaleString()}, average order value is £${Math.round(metrics.avgValue)}.`,
-    revenue: `Revenue of £${metrics.revenue.toLocaleString()} from ${metrics.orderCount} orders shows ${metrics.percentOfTarget.toFixed(1)}% of target.`,
-    aov: `Average order value is £${Math.round(metrics.aov)}, ${metrics.percentOfTarget.toFixed(1)}% of £600 target.`,
-    invoices: `£${metrics.outstanding.toLocaleString()} outstanding with ${metrics.overdueCount} overdue invoices.`
-  };
-  return insights[cardType] || 'Data analysis complete.';
-}
-
-function determineTrendFromMetrics(metrics, cardType) {
-  switch (cardType) {
-    case 'orders':
-      return metrics.ordersCount > 20 ? 'increasing' : metrics.ordersCount < 10 ? 'decreasing' : 'stable';
-    case 'revenue':
-      return metrics.percentOfTarget > 90 ? 'increasing' : metrics.percentOfTarget < 70 ? 'decreasing' : 'stable';
-    case 'aov':
-      return metrics.percentOfTarget > 90 ? 'increasing' : metrics.percentOfTarget < 75 ? 'decreasing' : 'stable';
-    case 'invoices':
-      return metrics.overdueCount > 5 ? 'increasing' : 'stable';
-    default:
-      return 'stable';
-  }
-}
-
-function createActionFromMetrics(cardType, metrics, role) {
-  const actions = {
-    orders: metrics.avgValue < 600 ? 
-      `Increase AOV by £${Math.round(600 - metrics.avgValue)} through bundling.` : 
-      'Focus on increasing order volume.',
-    revenue: `Target ${Math.round((100000 - metrics.revenue) / metrics.average)} more orders to reach £100k.`,
-    aov: `Implement strategies to increase AOV by £${Math.round(600 - metrics.aov)}.`,
-    invoices: `Contact ${metrics.overdueCount} customers to collect £${metrics.overdueValue.toLocaleString()}.`
-  };
-  return actions[cardType] || 'Review metrics and set improvement targets.';
-}
-
-function determinePriorityFromMetrics(metrics, cardType) {
-  switch (cardType) {
-    case 'orders':
-      return metrics.ordersCount < 10 || metrics.avgValue < 450 ? 'high' : metrics.avgValue < 550 ? 'medium' : 'low';
-    case 'revenue':
-      return metrics.percentOfTarget < 70 ? 'high' : metrics.percentOfTarget < 90 ? 'medium' : 'low';
-    case 'aov':
-      return metrics.percentOfTarget < 75 ? 'high' : metrics.percentOfTarget < 90 ? 'medium' : 'low';
-    case 'invoices':
-      return metrics.overdueValue > 10000 ? 'high' : metrics.overdueValue > 5000 ? 'medium' : 'low';
-    default:
-      return 'medium';
-  }
-}
-
-function createImpactFromMetrics(cardType, metrics) {
-  const impacts = {
-    orders: `Improving AOV to £600 could add £${Math.round((600 - metrics.avgValue) * metrics.ordersCount).toLocaleString()} revenue.`,
-    revenue: `Reaching target would add £${(100000 - metrics.revenue).toLocaleString()} revenue.`,
-    aov: `Each £10 AOV increase generates £${(10 * metrics.totalOrders).toLocaleString()} additional revenue.`,
-    invoices: `Collecting overdue improves cash flow by £${metrics.overdueValue.toLocaleString()}.`
-  };
-  return impacts[cardType] || 'Quantified impact pending further analysis.';
-}
-
-export async function generateOrdersInsights(ordersData, fullDashboardData) {
+/**
+ * Enhanced Purchase Order Insights with comprehensive data
+ */
+export async function generatePurchaseOrderInsights(brand, suggestions, historicalSales, marketData) {
   try {
-    const { orders = [], count = 0, totalValue = 0, averageValue = 0 } = ordersData;
-    const role = fullDashboardData?.role || 'brandManager';
+    // Validate brand parameter
+    const validBrand = brand || 'Unknown Brand';
     
-    // Calculate additional metrics
-    const recentOrders = orders.slice(0, 10);
-    const todayOrders = orders.filter(o => {
-      const orderDate = new Date(o.date);
-      const today = new Date();
-      return orderDate.toDateString() === today.toDateString();
-    }).length;
+    // Limit suggestions to top items
+    const topSuggestions = limitArrayData(suggestions, 20, [
+      'sku', 'product_name', 'recommendedQuantity', 'confidence', 'reasoning'
+    ]);
+
+    // Create a comprehensive prompt with all available data
+    const prompt = `
+      Business context: UK luxury import company DM Brands analyzing ${validBrand} purchase order.
+      
+      COMPREHENSIVE BUSINESS DATA:
+      
+      Sales Performance (6 months):
+      - Total Revenue: £${historicalSales.totalRevenue?.toFixed(0) || 0}
+      - Total Units Sold: ${historicalSales.totalUnits || 0}
+      - Average Order Value: £${historicalSales.salesOrders?.avgOrderValue?.toFixed(0) || 0}
+      - Top Products: ${JSON.stringify(historicalSales.topProducts?.slice(0, 5) || [])}
+      - Monthly Revenue Pattern: ${JSON.stringify(historicalSales.seasonalPattern || {})}
+      
+      Customer Insights:
+      - Active Customers: ${historicalSales.customerMetrics?.totalActiveCustomers || 0}
+      - VIP Customers: ${historicalSales.customerMetrics?.customerSegments?.vip?.length || 0}
+      - Repeat Purchase Rate: ${((historicalSales.customerMetrics?.repeatCustomers || 0) / 
+        Math.max(historicalSales.customerMetrics?.totalActiveCustomers || 1, 1) * 100).toFixed(1)}%
+      - Customer Retention: ${historicalSales.customerMetrics?.retentionRate?.toFixed(1) || 0}%
+      - Churn Risk Customers: ${historicalSales.customerMetrics?.churnRisk?.length || 0}
+      
+      Order Patterns:
+      - Total Orders: ${historicalSales.salesOrders?.totalOrders || 0}
+      - Direct vs Marketplace: ${JSON.stringify(historicalSales.salesOrders?.channelBreakdown || {})}
+      - Popular Bundles: ${(historicalSales.salesOrders?.topBundles || []).slice(0, 3).map(b => b.items.join('+')).join(', ')}
+      - Average Items per Order: ${historicalSales.salesOrders?.avgItemsPerOrder?.toFixed(1) || 0}
+      
+      Cash Flow Situation:
+      - Outstanding Invoices: £${historicalSales.invoiceMetrics?.totalOutstanding || 0}
+      - Average Payment Days: ${historicalSales.invoiceMetrics?.avgPaymentDays?.toFixed(0) || 30}
+      - Overdue Risk: £${historicalSales.invoiceMetrics?.overdueAmount || 0}
+      - High Risk Invoices: ${historicalSales.invoiceMetrics?.riskAssessment?.high?.length || 0}
+      - Expected Cash (30 days): £${historicalSales.invoiceMetrics?.cashFlowProjection?.next30Days || 0}
+      
+      Supply Chain:
+      - Pending Purchase Orders: ${historicalSales.purchaseHistory?.pendingOrders?.length || 0}
+      - Total Pending Value: £${historicalSales.purchaseHistory?.totalPending || 0}
+      - Average Lead Time: ${historicalSales.purchaseHistory?.avgLeadTime || 14} days
+      - Reorder Patterns: ${Object.keys(historicalSales.purchaseHistory?.reorderPatterns || {}).length} SKUs tracked
+      
+      Inventory Status:
+      - Current Stock Value: £${historicalSales.zohoMetrics?.totalValue || 0}
+      - Low Stock Items: ${historicalSales.zohoMetrics?.lowStockItems?.length || 0}
+      - Out of Stock Items: ${historicalSales.zohoMetrics?.outOfStockItems?.length || 0}
+      - Overstock Items: ${historicalSales.zohoMetrics?.overstockItems?.length || 0}
+      
+      Market Trends:
+      - Search Trends: ${JSON.stringify(marketData.searchTrends?.slice(0, 3) || [])}
+      - Market Share: ${marketData.marketShare?.toFixed(1) || 0}%
+      - Category Growth: ${marketData.categoryGrowth?.toFixed(1) || 0}%
+      
+      Purchase Suggestions (top 20):
+      ${JSON.stringify(topSuggestions)}
+      
+      Generate comprehensive purchase insights as JSON:
+      - executiveSummary: Comprehensive analysis including customer demand, cash flow, and market position (3-4 sentences)
+      - marketTiming: Assessment based on search trends, seasonality, and current inventory levels
+      - trendBasedRecommendations: Array of 4-5 specific actions based on all data points
+      - riskAssessment: Key risks considering cash flow, customer patterns, and market trends
+      - categoryOptimization: Which product categories to focus on based on bundles, customer segments, and trends
+      - cashFlowImpact: Specific impact on cash flow considering payment patterns and outstanding invoices
+      - customerImpact: How this order will serve different customer segments (VIP, regular, churn risk)
+      - channelStrategy: Recommendations for direct vs marketplace allocation based on channel performance
+      - inventoryOptimization: How to balance low stock, overstock, and new purchases
+      - confidenceAssessment: Overall confidence with specific reasoning based on data quality and trends
+      
+      Be specific and reference the actual data provided. Consider the luxury import business model.
+    `;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
     
-    const yesterdayOrders = orders.filter(o => {
-      const orderDate = new Date(o.date);
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      return orderDate.toDateString() === yesterday.toDateString();
-    }).length;
-    
-    // Calculate trend
-    let trend = 'stable';
-    if (todayOrders > yesterdayOrders * 1.1) trend = 'increasing';
-    else if (todayOrders < yesterdayOrders * 0.9) trend = 'decreasing';
-    
-    // Generate role-specific insights
-    if (role === 'salesAgent') {
-      return {
-        insight: `You have processed ${count} orders worth £${totalValue.toLocaleString()} with an average value of £${averageValue.toFixed(0)}. ${todayOrders > 0 ? `Today's ${todayOrders} orders show ${trend} activity.` : 'No orders yet today.'}`,
-        trend: trend,
-        action: averageValue < 500 ? 
-          "Focus on upselling to increase average order value. Consider bundling complementary products." :
-          "Maintain momentum with high-value customers and explore similar customer profiles.",
-        priority: count < 10 ? "high" : "medium",
-        impact: `Your current performance ${count < 10 ? 'needs attention to meet targets' : 'is on track for success'}.`
-      };
-    } else {
-      return {
-        insight: `Total of ${count} orders generated £${totalValue.toLocaleString()} in revenue. Average order value of £${averageValue.toFixed(0)} ${averageValue > 600 ? 'exceeds' : 'falls below'} the £600 target. Daily trend shows ${trend} activity.`,
-        trend: trend,
-        action: averageValue < 600 ? 
-          "Implement minimum order incentives and train agents on upselling techniques." :
-          "Continue current strategy while exploring premium product placement.",
-        priority: totalValue < 50000 ? "high" : "medium",
-        impact: `Revenue performance is ${totalValue > 100000 ? 'strong' : totalValue > 50000 ? 'moderate' : 'below expectations'}, requiring ${totalValue < 50000 ? 'immediate' : 'continued'} attention.`
-      };
-    }
-    
+    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+
   } catch (error) {
-    console.error('Error generating orders insights:', error);
+    console.error("❌ Error generating purchase insights:", error);
     return {
-      insight: "Unable to analyze orders at this time.",
-      trend: "unknown",
-      action: "Please retry or check data manually.",
-      priority: "medium",
-      impact: "Analysis unavailable."
+      executiveSummary: "Analysis unavailable due to processing error",
+      marketTiming: "Unable to assess market timing",
+      trendBasedRecommendations: ["Manual review recommended", "Check data completeness"],
+      riskAssessment: "Risk analysis pending",
+      categoryOptimization: ["Focus on best-selling categories"],
+      cashFlowImpact: "Cash flow impact unknown",
+      customerImpact: "Customer impact analysis unavailable",
+      channelStrategy: "Review channel performance manually",
+      inventoryOptimization: "Check current stock levels",
+      confidenceAssessment: "Low confidence due to error"
     };
   }
 }
 
-// Helper functions for parsing
-function extractBetween(text, key, delimiter = '"') {
-  const regex = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`, 'i');
-  const match = text.match(regex);
-  return match ? match[1] : null;
-}
+/**
+ * Product-specific purchase insights
+ */
+export async function generateProductPurchaseInsights(product, suggestion, competitorData, searchTrends) {
+  try {
+    // Validate product data
+    if (!product) {
+      throw new Error('No product data provided');
+    }
 
-function extractTrend(text) {
-  const trends = ['increasing', 'decreasing', 'stable', 'volatile'];
-  const lowerText = text.toLowerCase();
-  return trends.find(trend => lowerText.includes(trend)) || 'stable';
-}
+    const productSummary = {
+      name: product.name || 'Unknown Product',
+      sku: product.sku || 'Unknown SKU',
+      currentStock: product.stock || 0,
+      suggestedQty: suggestion?.recommendedQuantity || 0,
+      category: product.category || 'General',
+      price: product.retailPrice || 0
+    };
 
-function extractPriority(text) {
-  const priorities = ['high', 'medium', 'low'];
-  const lowerText = text.toLowerCase();
-  return priorities.find(priority => lowerText.includes(priority)) || 'medium';
-}
+    const prompt = `
+      Product purchase analysis for DM Brands luxury import:
+      
+      Product: ${JSON.stringify(productSummary)}
+      Confidence: ${(suggestion?.confidence * 100)?.toFixed(0) || 0}%
+      Reasoning: ${suggestion?.reasoning || 'Based on historical sales'}
+      
+      Market Intelligence:
+      - Competitor Stock: ${competitorData?.competitorStock || 'Unknown'}
+      - Search Trend: ${searchTrends?.trend || 'Unknown'} (${searchTrends?.volume || 0} searches)
+      - Related Searches: ${searchTrends?.relatedQueries?.slice(0, 3).join(', ') || 'None'}
+      
+      Generate insights as JSON:
+      - purchaseRationale: Why stock this quantity for a luxury import business
+      - seasonalConsiderations: Seasonal factors for UK market
+      - competitiveAdvantage: Market positioning for this product
+      - targetCustomers: Specific customer segments (luxury retailers, boutiques, etc.)
+      - pricingStrategy: Premium pricing approach for luxury market
+      - displaySuggestions: Merchandising tips for luxury presentation
+      
+      Be specific and actionable for the UK luxury home and giftware market.
+    `;
 
-function validateTrend(trend) {
-  const validTrends = ['increasing', 'decreasing', 'stable', 'volatile'];
-  return validTrends.includes(trend) ? trend : 'stable';
-}
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
 
-function validatePriority(priority) {
-  const validPriorities = ['low', 'medium', 'high'];
-  return validPriorities.includes(priority) ? priority : 'medium';
+  } catch (error) {
+    console.error("❌ Error generating product insights:", error);
+    return null;
+  }
 }
 
 /**
- * Drill-down insights with chunking support
+ * Validation for purchase adjustments
+ */
+export async function validatePurchaseAdjustments(originalSuggestions, userAdjustments, brand) {
+  try {
+    // Validate brand
+    const validBrand = brand || 'Unknown Brand';
+    
+    // Map adjustments to suggestions
+    const adjustmentDetails = userAdjustments.map(adj => {
+      const original = originalSuggestions.find(s => s.sku === adj.sku);
+      return {
+        sku: adj.sku,
+        name: original?.product_name || 'Unknown Product',
+        originalQty: adj.originalQuantity,
+        adjustedQty: adj.adjustedQuantity || adj.quantity,
+        difference: (adj.adjustedQuantity || adj.quantity) - adj.originalQuantity,
+        percentChange: ((adj.adjustedQuantity || adj.quantity) - adj.originalQuantity) / adj.originalQuantity * 100
+      };
+    });
+
+    const prompt = `
+      Validate purchase adjustments for ${validBrand} (UK luxury import business):
+      
+      Adjustments: ${JSON.stringify(adjustmentDetails)}
+      
+      Total Original Quantity: ${adjustmentDetails.reduce((sum, a) => sum + a.originalQty, 0)}
+      Total Adjusted Quantity: ${adjustmentDetails.reduce((sum, a) => sum + a.adjustedQty, 0)}
+      
+      Generate validation as JSON:
+      - adjustmentAssessment: Overall assessment of the changes
+      - potentialRisks: Array of specific risks (overstock, understock, cash flow)
+      - improvements: Array of positive aspects of the adjustments
+      - alternativeSuggestions: Array of alternative approaches
+      - confidenceInAdjustments: Score 0-100 with reasoning
+      
+      Consider cash flow, storage capacity, and seasonal demand for luxury goods.
+    `;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+
+  } catch (error) {
+    console.error("❌ Error validating adjustments:", error);
+    return {
+      adjustmentAssessment: "Validation unavailable",
+      potentialRisks: ["Manual review recommended"],
+      improvements: ["User expertise applied"],
+      alternativeSuggestions: [],
+      confidenceInAdjustments: 50
+    };
+  }
+}
+
+/**
+ * Drill-down insights with comprehensive data
  */
 export async function generateDrillDownInsights(viewType, detailData, summaryData, userRole, agentId) {
   try {
-    // Add validation for viewType
+    // Validate viewType
     const validViewType = viewType || 'analysis';
     
     // Check if data needs chunking
@@ -795,12 +848,10 @@ function combineChunkInsights(chunkInsights, viewType) {
 }
 
 function generateRecommendations(findings) {
-  // Simple recommendation generation based on findings
   return findings.map(finding => `Address: ${finding}`).slice(0, 4);
 }
 
 function generateTacticalActions(findings) {
-  // Simple tactical action generation
   return findings.map(finding => `Immediate action for: ${finding}`).slice(0, 3);
 }
 
@@ -934,63 +985,6 @@ export async function generateCustomerInsights(customer, orderHistory, userRole,
 }
 
 /**
- * Purchase order insights with market data
- */
-export async function generatePurchaseOrderInsights(brand, suggestions, historicalSales, marketData) {
-  try {
-    // Validate brand parameter
-    const validBrand = brand || 'Unknown Brand';
-    
-    // Limit suggestions to top items
-    const topSuggestions = limitArrayData(suggestions, 10, [
-      'sku', 'product_name', 'recommendedQuantity', 'confidence'
-    ]);
-
-    // Summarize market data
-    const marketSummary = {
-      searchTrend: marketData?.searchTrends?.[0]?.trend || 'Unknown',
-      trendChange: marketData?.searchTrends?.[0]?.percentageChange || 0,
-      relatedSearches: marketData?.searchTrends?.[0]?.relatedQueries?.slice(0, 3) || []
-    };
-
-    const prompt = `
-      Business context: UK luxury import company analyzing ${validBrand} purchase order.
-      
-      Top suggestions: ${JSON.stringify(topSuggestions)}
-      Market trends: ${JSON.stringify(marketSummary)}
-      Historical revenue: £${historicalSales?.totalRevenue?.toFixed(0) || 0}
-      
-      Generate purchase insights as JSON:
-      - executiveSummary: How search trends affect this order
-      - marketTiming: Assessment based on ${marketSummary.searchTrend} trend (${marketSummary.trendChange}% change)
-      - trendBasedRecommendations: Array of 3 actions based on trends
-      - riskAssessment: Key risks considering market signals
-      - categoryOptimization: Array of categories to focus on
-      - confidenceAssessment: Overall confidence statement
-      
-      Be concise and data-driven.
-    `;
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-    
-    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
-
-  } catch (error) {
-    console.error("❌ Error generating purchase insights:", error);
-    return {
-      executiveSummary: "Analysis unavailable",
-      marketTiming: "Unable to assess",
-      trendBasedRecommendations: ["Check market data"],
-      riskAssessment: "Analysis pending",
-      categoryOptimization: [],
-      confidenceAssessment: "Low confidence"
-    };
-  }
-}
-
-/**
  * Seasonal insights with pattern recognition
  */
 export async function generateSeasonalInsights(historicalData, currentSeason, userRole, agentId) {
@@ -1048,102 +1042,96 @@ export async function generateSeasonalInsights(historicalData, currentSeason, us
   }
 }
 
-/**
- * Validation for purchase adjustments
- */
-export async function validatePurchaseAdjustments(originalSuggestions, userAdjustments, brand) {
-  try {
-    // Validate brand
-    const validBrand = brand || 'Unknown Brand';
-    
-    // Only analyze adjusted items
-    const relevantSuggestions = originalSuggestions
-      .filter(s => userAdjustments.some(a => a.sku === s.sku))
-      .map(s => ({
-        sku: s.sku,
-        name: s.product_name || 'Unknown Product',
-        recommended: s.recommendedQuantity || 0,
-        userAdjusted: userAdjustments.find(a => a.sku === s.sku)?.quantity || 0
-      }));
+// Helper functions for parsing
+function extractBetween(text, key, delimiter = '"') {
+  const regex = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`, 'i');
+  const match = text.match(regex);
+  return match ? match[1] : null;
+}
 
-    const prompt = `
-      Validate purchase adjustments for ${validBrand}:
-      
-      Adjustments: ${JSON.stringify(relevantSuggestions)}
-      
-      Generate validation as JSON:
-      - adjustmentAssessment: Overall assessment
-      - potentialRisks: Array of risks
-      - improvements: Array of positive aspects
-      - alternativeSuggestions: Array of alternatives
-      - confidenceInAdjustments: Score 0-100
-      
-      Consider cash flow and inventory capacity.
-    `;
+function extractTrend(text) {
+  const trends = ['increasing', 'decreasing', 'stable', 'volatile'];
+  const lowerText = text.toLowerCase();
+  return trends.find(trend => lowerText.includes(trend)) || 'stable';
+}
 
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-    
-    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+function extractPriority(text) {
+  const priorities = ['high', 'medium', 'low'];
+  const lowerText = text.toLowerCase();
+  return priorities.find(priority => lowerText.includes(priority)) || 'medium';
+}
 
-  } catch (error) {
-    console.error("❌ Error validating adjustments:", error);
-    return {
-      adjustmentAssessment: "Validation unavailable",
-      potentialRisks: ["Manual review recommended"],
-      improvements: ["User expertise applied"],
-      alternativeSuggestions: [],
-      confidenceInAdjustments: 50
-    };
+function validateTrend(trend) {
+  const validTrends = ['increasing', 'decreasing', 'stable', 'volatile'];
+  return validTrends.includes(trend) ? trend : 'stable';
+}
+
+function validatePriority(priority) {
+  const validPriorities = ['low', 'medium', 'high'];
+  return validPriorities.includes(priority) ? priority : 'medium';
+}
+
+// Helper functions for metrics
+function createInsightFromMetrics(cardType, metrics, role) {
+  const insights = {
+    orders: `With ${metrics.ordersCount} orders worth £${metrics.ordersValue.toLocaleString()}, average order value is £${Math.round(metrics.avgValue)}.`,
+    revenue: `Revenue of £${metrics.revenue.toLocaleString()} from ${metrics.orderCount} orders shows ${metrics.percentOfTarget.toFixed(1)}% of target.`,
+    aov: `Average order value is £${Math.round(metrics.aov)}, ${metrics.percentOfTarget.toFixed(1)}% of £600 target.`,
+    invoices: `£${metrics.outstanding.toLocaleString()} outstanding with ${metrics.overdueCount} overdue invoices.`
+  };
+  return insights[cardType] || 'Data analysis complete.';
+}
+
+function determineTrendFromMetrics(metrics, cardType) {
+  switch (cardType) {
+    case 'orders':
+      return metrics.ordersCount > 20 ? 'increasing' : metrics.ordersCount < 10 ? 'decreasing' : 'stable';
+    case 'revenue':
+      return metrics.percentOfTarget > 90 ? 'increasing' : metrics.percentOfTarget < 70 ? 'decreasing' : 'stable';
+    case 'aov':
+      return metrics.percentOfTarget > 90 ? 'increasing' : metrics.percentOfTarget < 75 ? 'decreasing' : 'stable';
+    case 'invoices':
+      return metrics.overdueCount > 5 ? 'increasing' : 'stable';
+    default:
+      return 'stable';
   }
 }
 
-/**
- * Product purchase insights
- */
-export async function generateProductPurchaseInsights(product, suggestion, competitorData, searchTrends) {
-  try {
-    // Validate product data
-    if (!product) {
-      throw new Error('No product data provided');
-    }
+function createActionFromMetrics(cardType, metrics, role) {
+  const actions = {
+    orders: metrics.avgValue < 600 ? 
+      `Increase AOV by £${Math.round(600 - metrics.avgValue)} through bundling.` : 
+      'Focus on increasing order volume.',
+    revenue: `Target ${Math.round((100000 - metrics.revenue) / metrics.average)} more orders to reach £100k.`,
+    aov: `Implement strategies to increase AOV by £${Math.round(600 - metrics.aov)}.`,
+    invoices: `Contact ${metrics.overdueCount} customers to collect £${metrics.overdueValue.toLocaleString()}.`
+  };
+  return actions[cardType] || 'Review metrics and set improvement targets.';
+}
 
-    const productSummary = {
-      name: product.name || 'Unknown Product',
-      sku: product.sku || 'Unknown SKU',
-      currentStock: product.stock || 0,
-      suggestedQty: suggestion?.recommendedQuantity || 0
-    };
-
-    const prompt = `
-      Product purchase analysis:
-      
-      Product: ${JSON.stringify(productSummary)}
-      Competitors: ${JSON.stringify(competitorData?.slice(0, 3) || [])}
-      Search trend: ${searchTrends?.trend || 'Unknown'}
-      
-      Generate insights as JSON:
-      - purchaseRationale: Why stock this quantity
-      - seasonalConsiderations: Seasonal factors
-      - competitiveAdvantage: Market positioning
-      - targetCustomers: Customer segments
-      - pricingStrategy: Pricing approach
-      - displaySuggestions: Merchandising tips
-      
-      Be specific and actionable.
-    `;
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-    
-    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
-
-  } catch (error) {
-    console.error("❌ Error generating product insights:", error);
-    return null;
+function determinePriorityFromMetrics(metrics, cardType) {
+  switch (cardType) {
+    case 'orders':
+      return metrics.ordersCount < 10 || metrics.avgValue < 450 ? 'high' : metrics.avgValue < 550 ? 'medium' : 'low';
+    case 'revenue':
+      return metrics.percentOfTarget < 70 ? 'high' : metrics.percentOfTarget < 90 ? 'medium' : 'low';
+    case 'aov':
+      return metrics.percentOfTarget < 75 ? 'high' : metrics.percentOfTarget < 90 ? 'medium' : 'low';
+    case 'invoices':
+      return metrics.overdueValue > 10000 ? 'high' : metrics.overdueValue > 5000 ? 'medium' : 'low';
+    default:
+      return 'medium';
   }
+}
+
+function createImpactFromMetrics(cardType, metrics) {
+  const impacts = {
+    orders: `Improving AOV to £600 could add £${Math.round((600 - metrics.avgValue) * metrics.ordersCount).toLocaleString()} revenue.`,
+    revenue: `Reaching target would add £${(100000 - metrics.revenue).toLocaleString()} revenue.`,
+    aov: `Each £10 AOV increase generates £${(10 * metrics.totalOrders).toLocaleString()} additional revenue.`,
+    invoices: `Collecting overdue improves cash flow by £${metrics.overdueValue.toLocaleString()}.`
+  };
+  return impacts[cardType] || 'Quantified impact pending further analysis.';
 }
 
 // Export utility functions for external use
