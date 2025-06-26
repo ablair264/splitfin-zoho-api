@@ -332,58 +332,120 @@ export function getTokenInfo() {
 }
 
 export async function createInventoryContact(contactData) {
-  const token = await getAccessToken();
-  
-  // Prepare the payload according to Zoho Inventory's contact structure
-  const payload = {
-    contact_name: contactData.contact_name,
-    company_name: contactData.company_name || '',
-    contact_type: 'customer',
-    customer_sub_type: contactData.customer_sub_type || 'business',
-    email: contactData.email,
-    phone: contactData.phone || '',
-    currency_code: contactData.currency_code || 'GBP',
-    payment_terms: contactData.payment_terms || 30,
-    credit_limit: contactData.credit_limit || 5000,
-    billing_address: contactData.billing_address,
-    shipping_address: contactData.shipping_address || contactData.billing_address,
-    // Add custom fields if needed
-    custom_fields: contactData.custom_fields || []
-  };
-
-  // Remove empty fields that might cause issues
-  Object.keys(payload).forEach(key => {
-    if (payload[key] === '' || payload[key] === null || payload[key] === undefined) {
-      delete payload[key];
-    }
-  });
-
   try {
-    console.log('Creating contact in Zoho Inventory:', payload.email);
+    // Get access token
+    const token = await getAccessToken();
     
+    // Validate required fields
+    if (!contactData.contact_name) {
+      throw new Error('Contact name is required');
+    }
+    
+    // Build the payload with defaults and overrides
+    const payload = {
+      // Spread contactData first
+      ...contactData,
+      
+      // Then apply defaults and ensure critical fields
+      contact_type: 'customer', // Always override to ensure it's a customer
+      customer_sub_type: contactData.customer_sub_type || (contactData.company_name ? 'business' : 'individual'),
+      currency_code: contactData.currency_code || 'GBP',
+      payment_terms: contactData.payment_terms || 30,
+      credit_limit: contactData.credit_limit || 5000,
+      
+      // Ensure billing and shipping addresses
+      billing_address: contactData.billing_address || {},
+      shipping_address: contactData.shipping_address || contactData.billing_address || {},
+      
+      // Ensure these fields have defaults if empty
+      company_name: contactData.company_name || '',
+      email: contactData.email || '',
+      phone: contactData.phone || '',
+      mobile: contactData.mobile || '',
+      website: contactData.website || '',
+      notes: contactData.notes || '',
+    };
+    
+    // Clean up empty fields that might cause issues
+    const cleanedPayload = Object.entries(payload).reduce((acc, [key, value]) => {
+      // Keep the field if it has a meaningful value
+      if (value !== '' && value !== null && value !== undefined) {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+    
+    // Log the request
+    console.log('📤 Creating contact in Zoho Inventory:', {
+      name: cleanedPayload.contact_name,
+      email: cleanedPayload.email || 'No email',
+      type: cleanedPayload.contact_type,
+      subType: cleanedPayload.customer_sub_type
+    });
+    
+    // Make the API request
     const response = await axios.post(
       `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
-      JSON.stringify(payload),
+      cleanedPayload,
       {
         headers: {
           'Authorization': `Zoho-oauthtoken ${token}`,
           'Content-Type': 'application/json',
           'X-com-zoho-inventory-organizationid': ZOHO_CONFIG.orgId
-        }
+        },
+        timeout: 30000 // 30 second timeout
       }
     );
-
+    
+    // Check for Zoho-specific error code
     if (response.data.code !== 0) {
       throw new Error(response.data.message || 'Failed to create contact in Zoho Inventory');
     }
-
-    console.log('✅ Contact created in Zoho Inventory:', response.data.contact.contact_id);
+    
+    // Extract the created contact
+    const createdContact = response.data.contact;
+    
+    // Enhanced success logging
+    console.log('✅ Contact successfully created in Zoho Inventory:', {
+      contact_id: createdContact.contact_id,
+      contact_name: createdContact.contact_name,
+      contact_type: createdContact.contact_type,
+      customer_sub_type: createdContact.customer_sub_type,
+      is_customer: createdContact.contact_type === 'customer',
+      status: createdContact.status,
+      zoho_message: response.data.message
+    });
+    
+    // Additional confirmation for customer creation
+    if (createdContact.contact_type === 'customer') {
+      console.log(`✅ CUSTOMER "${createdContact.contact_name}" created with ID: ${createdContact.contact_id}`);
+    } else {
+      console.warn(`⚠️ Contact created but NOT as customer. Type: ${createdContact.contact_type}`);
+    }
+    
+    // Return the full response
     return response.data;
+    
   } catch (error) {
-    console.error('❌ Failed to create Inventory contact:', error.response?.data || error.message);
+    // Enhanced error logging
+    console.error('❌ Failed to create Inventory contact:', {
+      message: error.message,
+      zohoError: error.response?.data?.message,
+      statusCode: error.response?.status,
+      contactName: contactData.contact_name,
+      email: contactData.email
+    });
+    
+    // Log full error details in development
     if (error.response?.data) {
       console.error('Zoho error details:', JSON.stringify(error.response.data, null, 2));
     }
+    
+    // Re-throw with more context
+    if (error.response?.data?.message) {
+      throw new Error(`Zoho Error: ${error.response.data.message}`);
+    }
+    
     throw error;
   }
 }

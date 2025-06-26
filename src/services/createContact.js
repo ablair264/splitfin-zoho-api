@@ -1,23 +1,28 @@
-import { createInventoryContact } from '../api/zoho.js';
-
 export async function createZohoContact(req, res) {
   try {
     const contactData = req.body;
     
-    // Validate required fields
-    if (!contactData.contact_name || !contactData.email) {
+    // Validate required fields (only contact_name is required)
+    if (!contactData.contact_name) {
       return res.status(400).json({
         success: false,
-        message: 'Contact name and email are required'
+        message: 'Contact name is required'
       });
     }
-
-    console.log('Creating Zoho contact:', contactData.email);
-    const result = await createInventoryContact(contactData);
+    
+    // Ensure contact_type is set
+    const zohoPayload = {
+      contact_type: 'customer', // Always set this!
+      ...contactData
+    };
+    
+    console.log('Creating Zoho contact with payload:', zohoPayload);
+    const result = await createInventoryContact(zohoPayload);
     
     res.json({
       success: true,
       contact: result.contact,
+      contactId: result.contact?.contact_id,
       message: 'Contact created successfully in Zoho Inventory'
     });
   } catch (error) {
