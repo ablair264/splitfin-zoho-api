@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import { createZohoSalesOrder } from './services/salesOrder.js';
 import { syncCustomerWithZoho, syncAllCustomers } from './services/customerSync.js';
 import { createZohoContact } from './services/createContact.js';
+import { getAccessToken, fetchPaginatedData, createInventoryContact } from './api/zoho.js';
 
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
@@ -156,6 +157,13 @@ app.post('/api/customers/enrich', async (req, res) => {
   }
 });
 
+The error shows that ZOHO_CONFIG is not defined in the test endpoint. We need to fix the import. Here's the corrected test endpoint:
+1. First, update your server's index.js to add the proper imports:
+javascript// server/src/index.js - Add this import at the top with other imports
+import { getAccessToken, fetchPaginatedData, createInventoryContact } from './api/zoho.js';
+import axios from 'axios';
+
+// Then add this test endpoint (make sure it's after your other routes but before the 404 handler)
 app.post('/api/zoho/test/contact-creation', async (req, res) => {
   const results = {
     timestamp: new Date().toISOString(),
@@ -163,9 +171,13 @@ app.post('/api/zoho/test/contact-creation', async (req, res) => {
   };
   
   try {
+    // Get the access token first
     const token = await getAccessToken();
     
-    // Test 1: Create a simple contact
+    // Get org ID from environment
+    const orgId = process.env.ZOHO_ORG_ID;
+    
+    // Test 1: Create a simple contact using the existing function
     const testContact = {
       contact_name: `API Test ${Date.now()}`,
       contact_type: 'customer',
@@ -174,96 +186,106 @@ app.post('/api/zoho/test/contact-creation', async (req, res) => {
     
     console.log('Creating test contact:', testContact);
     
-    const createResponse = await axios.post(
-      `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
-      testContact,
-      {
-        headers: {
-          'Authorization': `Zoho-oauthtoken ${token}`,
-          'Content-Type': 'application/json',
-          'X-com-zoho-inventory-organizationid': ZOHO_CONFIG.orgId
+    try {
+      const createResult = await createInventoryContact(testContact);
+      
+      results.tests.push({
+        test: 'create',
+        success: true,
+        response: createResult
+      });
+      
+      // If we got a contact ID, try to verify it exists
+      if (createResult.contact?.contact_id) {
+        const contactId = createResult.contact.contact_id;
+        
+        // Wait a moment for Zoho to process
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Try to fetch the contact
+        try {
+          const fetchResponse = await axios.get(
+            `https://www.zohoapis.eu/inventory/v1/contacts/${contactId}`,
+            {
+              headers: {
+                'Authorization': `Zoho-oauthtoken ${token}`,
+                'X-com-zoho-inventory-organizationid': orgId
+              }
+            }
+          );
+          
+          results.tests.push({
+            test: 'fetch',
+            success: true,
+            found: true,
+            contact: fetchResponse.data.contact
+          });
+        } catch (fetchError) {
+          results.tests.push({
+            test: 'fetch',
+            success: false,
+            error: fetchError.response?.data || fetchError.message
+          });
         }
       }
-    );
-    
-    results.tests.push({
-      test: 'create',
-      success: createResponse.data.code === 0,
-      response: createResponse.data
-    });
-    
-    // Test 2: If created, try to fetch it
-    if (createResponse.data.contact?.contact_id) {
-      const contactId = createResponse.data.contact.contact_id;
       
-      // Wait a moment for Zoho to process
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      try {
-        const fetchResponse = await axios.get(
-          `${ZOHO_CONFIG.baseUrls.inventory}/contacts/${contactId}`,
-          {
-            headers: {
-              'Authorization': `Zoho-oauthtoken ${token}`,
-              'X-com-zoho-inventory-organizationid': ZOHO_CONFIG.orgId
-            }
-          }
-        );
-        
-        results.tests.push({
-          test: 'fetch',
-          success: true,
-          found: true,
-          contact: fetchResponse.data.contact
-        });
-      } catch (fetchError) {
-        results.tests.push({
-          test: 'fetch',
-          success: false,
-          error: fetchError.response?.data || fetchError.message
-        });
-      }
+    } catch (createError) {
+      results.tests.push({
+        test: 'create',
+        success: false,
+        error: createError.message,
+        details: createError.response?.data
+      });
     }
     
-    // Test 3: List all contacts to see our test contact
-    const listResponse = await axios.get(
-      `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
-      {
-        params: {
-          sort_column: 'created_time',
-          sort_order: 'D',
-          per_page: 10
-        },
-        headers: {
-          'Authorization': `Zoho-oauthtoken ${token}`,
-          'X-com-zoho-inventory-organizationid': ZOHO_CONFIG.orgId
+    // Test 3: List recent contacts
+    try {
+      const listResponse = await axios.get(
+        'https://www.zohoapis.eu/inventory/v1/contacts',
+        {
+          params: {
+            sort_column: 'created_time',
+            sort_order: 'D',
+            per_page: 10
+          },
+          headers: {
+            'Authorization': `Zoho-oauthtoken ${token}`,
+            'X-com-zoho-inventory-organizationid': orgId
+          }
         }
-      }
-    );
-    
-    results.tests.push({
-      test: 'list',
-      totalContacts: listResponse.data.page_context?.total || 0,
-      recentContacts: listResponse.data.contacts?.map(c => ({
-        id: c.contact_id,
-        name: c.contact_name,
-        email: c.email,
-        created: c.created_time
-      }))
-    });
+      );
+      
+      results.tests.push({
+        test: 'list',
+        success: true,
+        totalContacts: listResponse.data.page_context?.total || 0,
+        recentContacts: listResponse.data.contacts?.slice(0, 5).map(c => ({
+          id: c.contact_id,
+          name: c.contact_name,
+          email: c.email,
+          created: c.created_time
+        }))
+      });
+    } catch (listError) {
+      results.tests.push({
+        test: 'list',
+        success: false,
+        error: listError.message
+      });
+    }
     
     res.json({
       success: true,
-      orgId: ZOHO_CONFIG.orgId,
+      orgId: orgId,
       results: results
     });
     
   } catch (error) {
+    console.error('Test error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data,
-      orgId: ZOHO_CONFIG.orgId
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
