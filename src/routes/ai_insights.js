@@ -680,6 +680,113 @@ router.get('/usage-stats', validateUserForAI, (req, res) => {
   }
 });
 
+router.post('/enhanced-card-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { cardType, cardData, fullDashboardData } = req.body;
+    
+    console.log(`🧠 Generating enhanced insights for ${cardType}`);
+    
+    const insights = await generateEnhancedCardInsights(
+      cardType, 
+      cardData, 
+      fullDashboardData
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      analysisType: 'enhanced_card_analysis',
+      includedAnalysis: [
+        'historical_comparison',
+        'trend_analysis',
+        'predictive_insights',
+        'actionable_recommendations'
+      ],
+      generatedAt: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error in enhanced card insights:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Enhanced analysis temporarily unavailable'
+    });
+  }
+});
+
+// Search trends endpoint
+router.post('/search-trends', validateUserForAI, async (req, res) => {
+  try {
+    const { brand, products } = req.body;
+    
+    const trends = await fetchSearchTrends(brand);
+    
+    res.json({
+      success: true,
+      data: trends,
+      brand,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching search trends:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Search trends unavailable'
+    });
+  }
+});
+
+// Enhanced forecast endpoint
+router.post('/enhanced-forecast', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { dashboardData } = req.body;
+    
+    const forecast = await generateEnhancedForecast(dashboardData);
+    
+    res.json({
+      success: true,
+      data: forecast,
+      analysisType: 'comprehensive_forecast',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error generating forecast:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Forecast generation failed'
+    });
+  }
+});
+
+// Agent insights endpoint
+router.post('/agent-insights', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { agentData, performanceHistory, customerBase } = req.body;
+    
+    const insights = await generateAgentInsights(
+      agentData,
+      performanceHistory,
+      customerBase
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      agentId: agentData.uid,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error generating agent insights:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Agent analysis failed'
+    });
+  }
+});
+
 /**
  * Test endpoint
  */

@@ -1,149 +1,121 @@
 // server/src/routes/email.js
 import express from 'express';
-import { sendEmail } from '../services/emailService.js';
+import postmark from 'postmark';
 
 const router = express.Router();
 
-// Send notification when customer signs up
-router.post('/customer-signup-notification', async (req, res) => {
-  try {
-    const { to, pendingCustomer, pendingCustomerId } = req.body;
-    
-    const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #1a1f2a;">New Customer Signup Request</h2>
-        <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>Company:</strong> ${pendingCustomer.companyName}</p>
-          <p><strong>Contact:</strong> ${pendingCustomer.contactName}</p>
-          <p><strong>Email:</strong> ${pendingCustomer.email}</p>
-          <p><strong>Phone:</strong> ${pendingCustomer.phone}</p>
-          <p><strong>Address:</strong> ${pendingCustomer.address}</p>
-          ${pendingCustomer.vatNumber ? `<p><strong>VAT Number:</strong> ${pendingCustomer.vatNumber}</p>` : ''}
-          ${pendingCustomer.website ? `<p><strong>Website:</strong> ${pendingCustomer.website}</p>` : ''}
-          ${pendingCustomer.message ? `<p><strong>Message:</strong> ${pendingCustomer.message}</p>` : ''}
-        </div>
-        <a href="${process.env.APP_URL}/customers/approvals" 
-           style="display: inline-block; background: #6366f1; color: white; padding: 12px 24px; 
-                  text-decoration: none; border-radius: 6px; margin-top: 20px;">
-          Review Request
-        </a>
-      </div>
-    `;
-    
-    await sendEmail({
-      to,
-      subject: 'New Customer Signup Request - Action Required',
-      html: emailHtml
-    });
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Email error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+// Initialize Postmark client
+const client = new postmark.ServerClient(process.env.POSTMARK_SERVER_TOKEN);
 
-// Send approval/rejection email to customer
-router.post('/customer-approval', async (req, res) => {
+router.post('/send-login-details', async (req, res) => {
   try {
-    const { to, status, tempPassword, loginUrl, message } = req.body;
+    const { email, password, customerName } = req.body;
     
-    let subject, emailHtml;
-    
-    if (status === 'approved') {
-      subject = 'Welcome to Splitfin - Your Account is Approved!';
-      emailHtml = `
+    const emailData = {
+      From: process.env.POSTMARK_FROM_EMAIL || 'noreply@splitfin.com',
+      To: email,
+      Subject: 'Your Splitfin Account Has Been Created',
+      HtmlBody: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #10b981;">Your Splitfin Account Has Been Approved!</h2>
-          <p>Welcome to Splitfin! We're excited to have you as our customer.</p>
-          <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>Your Login Details:</h3>
-            <p><strong>Login URL:</strong> <a href="${loginUrl}">${loginUrl}</a></p>
-            <p><strong>Email:</strong> ${to}</p>
-            <p><strong>Temporary Password:</strong> <code style="background: #e5e5e5; padding: 4px 8px; border-radius: 4px;">${tempPassword}</code></p>
+          <h1 style="color: #1a1f2a;">Welcome to Splitfin!</h1>
+          <p>Dear ${customerName},</p>
+          <p>Your account has been created successfully. You can now log in to track your orders and manage your account.</p>
+          
+          <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h2 style="color: #1a1f2a; margin-top: 0;">Your Login Details</h2>
+            <p><strong>Email:</strong> ${email}</p>
+            <p><strong>Temporary Password:</strong> ${password}</p>
           </div>
-          <p style="color: #ef4444;"><strong>Important:</strong> Please login and change your password immediately for security.</p>
-          <a href="${loginUrl}" 
-             style="display: inline-block; background: #6366f1; color: white; padding: 12px 24px; 
-                    text-decoration: none; border-radius: 6px; margin-top: 20px;">
-            Login to Your Account
-          </a>
+          
+          <p>For security reasons, please change your password after your first login.</p>
+          
+          <div style="margin: 30px 0;">
+            <a href="${process.env.APP_URL}/customer/login" 
+               style="background: #79d5e9; color: white; padding: 12px 30px; text-decoration: none; border-radius: 8px; display: inline-block;">
+              Login to Your Account
+            </a>
+          </div>
+          
+          <p>If you have any questions, please don't hesitate to contact our support team.</p>
+          
+          <p>Best regards,<br>The Splitfin Team</p>
         </div>
-      `;
-    } else if (status === 'declined') {
-      subject = 'Splitfin Account Application Update';
-      emailHtml = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #ef4444;">Account Application Update</h2>
-          <p>Thank you for your interest in Splitfin.</p>
-          <p>Unfortunately, we are unable to approve your account at this time.</p>
-          ${message ? `
-            <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-              <p><strong>Message from our team:</strong></p>
-              <p>${message}</p>
-            </div>
-          ` : ''}
-          <p>If you have any questions, please contact our sales team.</p>
-        </div>
-      `;
-    } else if (status === 'pending') {
-      subject = 'Splitfin Account Application - Pending Review';
-      emailHtml = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #fbbf24;">Account Application Update</h2>
-          <p>Thank you for your patience. Your application is still under review.</p>
-          ${message ? `
-            <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-              <p><strong>Message from our team:</strong></p>
-              <p>${message}</p>
-            </div>
-          ` : ''}
-          <p>We'll contact you as soon as a decision has been made.</p>
-        </div>
-      `;
-    }
+      `,
+      TextBody: `
+        Welcome to Splitfin!
+        
+        Dear ${customerName},
+        
+        Your account has been created successfully. You can now log in to track your orders and manage your account.
+        
+        Your Login Details:
+        Email: ${email}
+        Temporary Password: ${password}
+        
+        For security reasons, please change your password after your first login.
+        
+        Login to your account: ${process.env.APP_URL}/customer/login
+        
+        If you have any questions, please don't hesitate to contact our support team.
+        
+        Best regards,
+        The Splitfin Team
+      `,
+      MessageStream: 'outbound'
+    };
     
-    await sendEmail({
-      to,
-      subject,
-      html: emailHtml
+    const result = await client.sendEmail(emailData);
+    
+    res.json({ 
+      success: true, 
+      message: 'Login details sent successfully',
+      messageId: result.MessageID 
     });
-    
-    res.json({ success: true });
   } catch (error) {
-    console.error('Email error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error sending email:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 
-router.post('/order-confirmation', async (req, res) => {
+// Optional: Send order confirmation email
+router.post('/send-order-confirmation', async (req, res) => {
   try {
-    const { to, orderNumber, customerName, items, total, deliveryAddress } = req.body;
+    const { email, customerName, orderNumber, orderTotal, items } = req.body;
     
     const itemsHtml = items.map(item => `
       <tr>
-        <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.name}</td>
-        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
-        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">£${(item.price * item.quantity).toFixed(2)}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.product.name}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${item.qty}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">£${item.total.toFixed(2)}</td>
       </tr>
     `).join('');
     
-    const addressHtml = deliveryAddress.map(line => `${line}<br>`).join('');
-    
-    const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #10b981;">Order Confirmed!</h2>
-        <p>Dear ${customerName},</p>
-        <p>Your order #${orderNumber} has been confirmed and is being processed.</p>
-        
-        <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <h3>Order Details</h3>
+    const emailData = {
+      From: process.env.POSTMARK_FROM_EMAIL || 'orders@splitfin.com',
+      To: email,
+      Subject: `Order Confirmation - ${orderNumber}`,
+      HtmlBody: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h1 style="color: #1a1f2a;">Order Confirmation</h1>
+          <p>Dear ${customerName},</p>
+          <p>Thank you for your order! We've received your order and it's being processed.</p>
+          
+          <div style="background: #f9fafb; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h2 style="color: #1a1f2a; margin-top: 0;">Order Details</h2>
+            <p><strong>Order Number:</strong> ${orderNumber}</p>
+            <p><strong>Order Date:</strong> ${new Date().toLocaleDateString()}</p>
+          </div>
+          
+          <h3>Items Ordered:</h3>
           <table style="width: 100%; border-collapse: collapse;">
             <thead>
-              <tr>
-                <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd;">Item</th>
-                <th style="text-align: center; padding: 8px; border-bottom: 2px solid #ddd;">Qty</th>
-                <th style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd;">Total</th>
+              <tr style="background: #f9fafb;">
+                <th style="padding: 8px; text-align: left;">Item</th>
+                <th style="padding: 8px; text-align: center;">Quantity</th>
+                <th style="padding: 8px; text-align: right;">Price</th>
               </tr>
             </thead>
             <tbody>
@@ -151,119 +123,41 @@ router.post('/order-confirmation', async (req, res) => {
             </tbody>
             <tfoot>
               <tr>
-                <td colspan="2" style="padding: 8px; text-align: right; font-weight: bold;">Total (inc. VAT):</td>
-                <td style="padding: 8px; text-align: right; font-weight: bold;">£${total.toFixed(2)}</td>
+                <td colspan="2" style="padding: 8px; text-align: right; font-weight: bold;">Total:</td>
+                <td style="padding: 8px; text-align: right; font-weight: bold;">£${orderTotal.toFixed(2)}</td>
               </tr>
             </tfoot>
           </table>
+          
+          <p style="margin-top: 30px;">You can track your order status by logging into your account.</p>
+          
+          <div style="margin: 30px 0;">
+            <a href="${process.env.APP_URL}/customer/orders" 
+               style="background: #79d5e9; color: white; padding: 12px 30px; text-decoration: none; border-radius: 8px; display: inline-block;">
+              Track Your Order
+            </a>
+          </div>
+          
+          <p>Best regards,<br>The Splitfin Team</p>
         </div>
-        
-        <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <h3>Delivery Address</h3>
-          <p>${addressHtml}</p>
-        </div>
-        
-        <p>We'll send you another email when your order has been dispatched.</p>
-        <p>If you have any questions, please don't hesitate to contact us.</p>
-      </div>
-    `;
+      `,
+      MessageStream: 'outbound'
+    };
     
-    await sendEmail({
-      to,
-      subject: `Order Confirmation - #${orderNumber}`,
-      html: emailHtml
+    const result = await client.sendEmail(emailData);
+    
+    res.json({ 
+      success: true, 
+      message: 'Order confirmation sent successfully',
+      messageId: result.MessageID 
     });
-    
-    res.json({ success: true });
   } catch (error) {
-    console.error('Email error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error sending order confirmation:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 
-router.post('/password-reset', async (req, res) => {
-  try {
-    const { to, customerName, newPassword, loginUrl } = req.body;
-    
-    const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #6366f1;">Password Reset</h2>
-        <p>Dear ${customerName},</p>
-        <p>Your password has been reset by an administrator.</p>
-        
-        <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <h3>New Login Details:</h3>
-          <p><strong>Email:</strong> ${to}</p>
-          <p><strong>New Password:</strong> <code style="background: #e5e5e5; padding: 4px 8px; border-radius: 4px;">${newPassword}</code></p>
-        </div>
-        
-        <p style="color: #ef4444;"><strong>Important:</strong> Please login and change your password immediately for security.</p>
-        
-        <a href="${loginUrl}" 
-           style="display: inline-block; background: #6366f1; color: white; padding: 12px 24px; 
-                  text-decoration: none; border-radius: 6px; margin-top: 20px;">
-          Login to Your Account
-        </a>
-      </div>
-    `;
-    
-    await sendEmail({
-      to,
-      subject: 'Your Splitfin Password Has Been Reset',
-      html: emailHtml
-    });
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Email error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.post('/password-reset-link', async (req, res) => {
-  try {
-    const { to, customerName, resetUrl } = req.body;
-    
-    // In a real implementation, you'd generate a secure token
-    const resetToken = Math.random().toString(36).substring(2, 15);
-    const fullResetUrl = `${resetUrl}?token=${resetToken}&email=${encodeURIComponent(to)}`;
-    
-    const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #6366f1;">Reset Your Password</h2>
-        <p>Dear ${customerName},</p>
-        <p>We received a request to reset your password. Click the button below to create a new password:</p>
-        
-        <a href="${fullResetUrl}" 
-           style="display: inline-block; background: #6366f1; color: white; padding: 12px 24px; 
-                  text-decoration: none; border-radius: 6px; margin: 20px 0;">
-          Reset Password
-        </a>
-        
-        <p style="color: #666; font-size: 14px;">
-          If you didn't request a password reset, please ignore this email. 
-          This link will expire in 24 hours.
-        </p>
-        
-        <p style="color: #666; font-size: 12px;">
-          If the button doesn't work, copy and paste this link into your browser:<br>
-          <a href="${fullResetUrl}">${fullResetUrl}</a>
-        </p>
-      </div>
-    `;
-    
-    await sendEmail({
-      to,
-      subject: 'Reset Your Splitfin Password',
-      html: emailHtml
-    });
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Email error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ADD THIS LINE - This is what's missing!
 export default router;
