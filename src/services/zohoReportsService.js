@@ -1059,7 +1059,7 @@ async getSalesOrderById(salesOrderId) {
     console.error(`Error fetching sales order ${salesOrderId}:`, error);
     return null;
   }
-},
+}
 
 async getCustomerById(customerId) {
   try {
