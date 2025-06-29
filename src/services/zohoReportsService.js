@@ -1048,6 +1048,32 @@ async getCustomers(dateRange = 'all', customDateRange = null) {
   }
 }
 
+async getSalesOrderById(salesOrderId) {
+  try {
+    const response = await this.makeZohoRequest(
+      `/salesorders/${salesOrderId}`,
+      'GET'
+    );
+    return response.salesorder;
+  } catch (error) {
+    console.error(`Error fetching sales order ${salesOrderId}:`, error);
+    return null;
+  }
+},
+
+async getCustomerById(customerId) {
+  try {
+    const response = await this.makeZohoRequest(
+      `/contacts/${customerId}`,
+      'GET'
+    );
+    return response.contact;
+  } catch (error) {
+    console.error(`Error fetching customer ${customerId}:`, error);
+    return null;
+  }
+}
+
 /**
  * Sync customers from Zoho Inventory to Firestore and enrich with order data
  */
