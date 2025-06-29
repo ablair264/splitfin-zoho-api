@@ -10,7 +10,12 @@ import {
   generateCustomerInsights,
   generatePurchaseOrderInsights,
   generateProductPurchaseInsights,
-  validatePurchaseAdjustments
+  validatePurchaseAdjustments,
+  // Add these missing imports:
+  generateEnhancedCardInsights,
+  fetchSearchTrends,
+  generateEnhancedForecast,
+  generateAgentInsights
 } from '../services/aiAnalyticsService.js';
 import { fetchComprehensiveData } from '../api/zoho.js';
 

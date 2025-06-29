@@ -1,74 +1,32 @@
-// src/services/aiAnalyticsService.ts
+// server/src/services/aiAnalyticsService.js
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { 
-  collection, 
-  query, 
-  where, 
-  getDocs, 
-  orderBy, 
-  limit,
-  Timestamp 
-} from 'firebase/firestore';
-import { db } from '../firebase';
+import admin from 'firebase-admin';
 
-// Initialize Gemini AI with proper environment variable
-const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GOOGLE_API_KEY || '');
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
 const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
 
-// Define interfaces
-interface CardData {
-  count?: number;
-  totalOrders?: number;
-  totalValue?: number;
-  revenue?: number;
-  averageValue?: number;
-  aov?: number;
-  current?: number;
-  orders?: number;
-  orderCount?: number;
-  average?: number;
-}
-
-interface DashboardData {
-  userId?: string;
-  dateRange: string;
-  performance?: {
-    top_items?: any[];
-    brands?: any[];
-    top_customers?: any[];
-  };
-}
-
-interface HistoricalData {
-  lastPeriod: any;
-  lastYear: any;
-  seasonal: any;
-}
-
-// Utility functions that were referenced but not defined
-export function estimateTokens(text: string): number {
-  // Simple token estimation (roughly 4 chars per token)
+// Utility functions
+export function estimateTokens(text) {
   return Math.ceil(text.length / 4);
 }
 
-export function summarizeData(data: any, maxLength: number = 1000): string {
+export function summarizeData(data, maxLength = 1000) {
   const stringified = JSON.stringify(data);
   if (stringified.length <= maxLength) return stringified;
-  
-  // Truncate and add summary
   return stringified.substring(0, maxLength - 20) + '... [truncated]';
 }
 
-// Context Manager for maintaining conversation context
 export class ContextManager {
-  private context: Map<string, any> = new Map();
+  constructor() {
+    this.context = new Map();
+  }
   
-  set(key: string, value: any) {
+  set(key, value) {
     this.context.set(key, value);
   }
   
-  get(key: string) {
+  get(key) {
     return this.context.get(key);
   }
   
@@ -77,89 +35,177 @@ export class ContextManager {
   }
 }
 
-// Prompt Builder for consistent prompt formatting
 export class PromptBuilder {
-  private sections: string[] = [];
+  constructor() {
+    this.sections = [];
+  }
   
-  addSection(title: string, content: string) {
+  addSection(title, content) {
     this.sections.push(`${title}:\n${content}\n`);
     return this;
   }
   
-  build(): string {
+  build() {
     return this.sections.join('\n');
   }
 }
 
 /**
- * Enhanced MetricCard Insights with Deep Analysis
+ * Parse AI response with error handling
  */
-export async function generateEnhancedCardInsights(
-  cardType: string, 
-  cardData: CardData, 
-  fullDashboardData: DashboardData
-) {
+function parseAIResponse(text) {
+  try {
+    const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    return JSON.parse(cleanText);
+  } catch (error) {
+    console.error('Error parsing AI response:', error);
+    return {
+      insight: 'Analysis in progress',
+      trend: 'stable',
+      action: 'Continue monitoring',
+      priority: 'medium'
+    };
+  }
+}
+
+/**
+ * Generate fallback insights when AI fails
+ */
+function generateFallbackInsight(type, data) {
+  const value = data?.current || data?.revenue || data?.totalValue || 0;
+  const count = data?.count || data?.totalOrders || 0;
+  
+  return {
+    insight: `Current ${type}: ${count > 0 ? count : '£' + value}`,
+    trend: 'stable',
+    action: 'Monitor performance',
+    priority: 'medium',
+    impact: 'Normal operations'
+  };
+}
+
+/**
+ * Generate comprehensive dashboard insights
+ */
+export async function generateAIInsights(dashboardData) {
+  try {
+    const prompt = `
+      Analyze comprehensive dashboard data for DM Brands luxury imports.
+      
+      DATA:
+      ${JSON.stringify(dashboardData, null, 2).slice(0, 3000)}
+      
+      Provide executive-level analysis including:
+      1. Key performance indicators summary
+      2. Critical business trends
+      3. Strategic recommendations
+      4. Risk alerts
+      5. Growth opportunities
+      
+      Return as JSON with:
+      - summary: Executive summary
+      - keyDrivers: Array of key performance drivers
+      - recommendations: Array of strategic recommendations
+      - criticalAlerts: Array of urgent issues
+      - opportunities: Array of growth opportunities
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error generating dashboard insights:', error);
+    return {
+      summary: "Dashboard analysis temporarily unavailable",
+      keyDrivers: ["Unable to analyze at this time"],
+      recommendations: ["Please try again later"],
+      criticalAlerts: [],
+      opportunities: []
+    };
+  }
+}
+
+/**
+ * Generate card-specific insights
+ */
+export async function generateCardInsights(cardType, cardData, dashboardData) {
+  try {
+    const prompt = new PromptBuilder()
+      .addSection('CONTEXT', `Analyzing ${cardType} metrics for DM Brands luxury imports`)
+      .addSection('CARD DATA', JSON.stringify(cardData))
+      .addSection('DASHBOARD CONTEXT', summarizeData(dashboardData, 2000))
+      .addSection('ANALYSIS REQUEST', `
+        Provide actionable insights for the ${cardType} metric including:
+        - Current performance analysis
+        - Trend identification
+        - Recommended actions
+        - Business impact assessment
+        
+        Return as JSON with: insight, trend, action, priority, impact
+      `)
+      .build();
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error(`Error generating ${cardType} insights:`, error);
+    return generateFallbackInsight(cardType, cardData);
+  }
+}
+
+/**
+ * Enhanced card insights with deep analysis
+ */
+export async function generateEnhancedCardInsights(cardType, cardData, fullDashboardData) {
   try {
     console.log('🧠 Generating enhanced insights for:', cardType);
-    
-    // Get historical data for comparison
-    const historicalData = await fetchHistoricalData(
-      fullDashboardData.userId || '',
-      fullDashboardData.dateRange,
-      cardType
-    );
     
     // Get detailed analysis based on card type
     switch (cardType) {
       case 'orders':
       case 'total_orders':
-        return await analyzeTotalOrders(cardData, fullDashboardData, historicalData);
+        return await analyzeTotalOrders(cardData, fullDashboardData);
         
       case 'revenue':
       case 'total_revenue':
       case 'order_value':
-        return await analyzeRevenue(cardData, fullDashboardData, historicalData);
+        return await analyzeRevenue(cardData, fullDashboardData);
         
       case 'aov':
       case 'average_order_value':
-        return await analyzeAOV(cardData, fullDashboardData, historicalData);
+        return await analyzeAOV(cardData, fullDashboardData);
         
       case 'invoices':
       case 'outstanding_invoices':
-        return await analyzeInvoices(cardData, fullDashboardData, historicalData);
-        
-      case 'orders_vs_last_year':
-        return await analyzeYearOverYear(cardData, fullDashboardData, 'orders');
-        
-      case 'value_vs_last_year':
-        return await analyzeYearOverYear(cardData, fullDashboardData, 'value');
+        return await analyzeInvoices(cardData, fullDashboardData);
         
       case 'customers':
-        return await analyzeCustomers(cardData, fullDashboardData, historicalData);
+        return await analyzeCustomers(cardData, fullDashboardData);
         
       case 'agents':
-        return await analyzeAgents(cardData, fullDashboardData, historicalData);
+        return await analyzeAgents(cardData, fullDashboardData);
         
       case 'brands':
-        return await analyzeBrands(cardData, fullDashboardData, historicalData);
+        return await analyzeBrands(cardData, fullDashboardData);
         
       default:
         return await generateCardInsights(cardType, cardData, fullDashboardData);
     }
   } catch (error) {
     console.error('Error in enhanced card insights:', error);
-    throw error;
+    return generateFallbackInsight(cardType, cardData);
   }
 }
 
 /**
  * Analyze Total Orders with deep insights
  */
-async function analyzeTotalOrders(
-  cardData: CardData, 
-  dashboardData: DashboardData, 
-  historicalData: HistoricalData | null
-) {
+async function analyzeTotalOrders(cardData, dashboardData) {
   const prompt = `
     You are analyzing order data for DM Brands, a UK luxury import company.
     
@@ -172,9 +218,6 @@ async function analyzeTotalOrders(
     ITEM ANALYSIS:
     ${JSON.stringify(dashboardData.performance?.top_items?.slice(0, 10) || [])}
     
-    HISTORICAL COMPARISON:
-    ${JSON.stringify(historicalData)}
-    
     ANALYZE:
     1. Item Variety & Trends:
        - Is there a specific item more popular than others?
@@ -182,11 +225,10 @@ async function analyzeTotalOrders(
        - Any items showing declining popularity?
     
     2. Order Value Analysis:
-       - How does average order value compare to historical data?
+       - How does average order value compare to targets?
        - What can be done to improve/maintain AOV?
     
     3. Order Volume Trends:
-       - How do total orders compare to historical trends?
        - Analyze seasonal patterns
        - Monthly comparisons within the date range
     
@@ -221,8 +263,6 @@ async function analyzeTotalOrders(
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const text = response.text();
-    
-    // Parse JSON with error handling
     return parseAIResponse(text);
   } catch (error) {
     console.error('Error analyzing total orders:', error);
@@ -233,11 +273,7 @@ async function analyzeTotalOrders(
 /**
  * Analyze Revenue with comprehensive insights
  */
-async function analyzeRevenue(
-  cardData: CardData, 
-  dashboardData: DashboardData, 
-  historicalData: HistoricalData | null
-) {
+async function analyzeRevenue(cardData, dashboardData) {
   const prompt = `
     Analyze revenue performance for DM Brands luxury imports.
     
@@ -251,9 +287,6 @@ async function analyzeRevenue(
     
     CUSTOMER SEGMENTS:
     ${JSON.stringify(dashboardData.performance?.top_customers?.slice(0, 10) || [])}
-    
-    HISTORICAL DATA:
-    ${JSON.stringify(historicalData)}
     
     ANALYZE:
     1. Revenue trends and patterns
@@ -269,13 +302,16 @@ async function analyzeRevenue(
     - growthDrivers: Key factors
     - recommendations: Specific actions
     - forecast: Next period prediction
+    - trend: increasing/decreasing/stable
+    - action: Primary recommendation
+    - priority: high/medium/low
+    - impact: Business impact
   `;
   
   try {
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const text = response.text();
-    
     return parseAIResponse(text);
   } catch (error) {
     console.error('Error analyzing revenue:', error);
@@ -284,207 +320,474 @@ async function analyzeRevenue(
 }
 
 /**
- * Parse AI response with error handling
+ * Analyze Average Order Value
  */
-function parseAIResponse(text: string): any {
-  try {
-    // Remove markdown code blocks
-    const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleanText);
-  } catch (error) {
-    console.error('Error parsing AI response:', error);
-    return {
-      insight: 'Analysis in progress',
-      trend: 'stable',
-      action: 'Continue monitoring',
-      priority: 'medium'
-    };
-  }
-}
-
-/**
- * Generate fallback insights when AI fails
- */
-function generateFallbackInsight(type: string, data: CardData): any {
-  const value = data.current || data.revenue || data.totalValue || 0;
-  const count = data.count || data.totalOrders || 0;
+async function analyzeAOV(cardData, dashboardData) {
+  const prompt = `
+    Analyze Average Order Value for DM Brands.
+    
+    CURRENT AOV: £${cardData.averageValue || cardData.aov || 0}
+    TARGET AOV: £600
+    
+    ANALYZE:
+    1. What's driving current AOV?
+    2. Which products/brands contribute most?
+    3. Customer behavior patterns
+    4. Improvement strategies
+    
+    Return JSON with insight, trend, action, priority, impact
+  `;
   
-  return {
-    insight: `Current ${type}: ${count > 0 ? count : '£' + value}`,
-    trend: 'stable',
-    action: 'Monitor performance',
-    priority: 'medium',
-    impact: 'Normal operations'
-  };
-}
-
-/**
- * Fetch historical data for comparison
- */
-async function fetchHistoricalData(
-  userId: string, 
-  currentRange: string, 
-  metricType: string
-): Promise<HistoricalData | null> {
   try {
-    // Calculate comparison periods
-    const periods = calculateComparisonPeriods(currentRange);
-    
-    // Fetch data from Firebase for each period
-    const historicalData: HistoricalData = {
-      lastPeriod: await fetchPeriodData(userId, periods.lastPeriod, metricType),
-      lastYear: await fetchPeriodData(userId, periods.lastYear, metricType),
-      seasonal: await fetchSeasonalData(userId, metricType)
-    };
-    
-    return historicalData;
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
   } catch (error) {
-    console.error('Error fetching historical data:', error);
-    return null;
+    return generateFallbackInsight('aov', cardData);
   }
 }
 
 /**
- * Calculate comparison periods based on current range
+ * Analyze Invoices
  */
-function calculateComparisonPeriods(currentRange: string) {
-  const now = new Date();
-  const [start, end] = currentRange.split(' to ').map(d => new Date(d));
-  const daysDiff = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+async function analyzeInvoices(cardData, dashboardData) {
+  const prompt = `
+    Analyze invoice data for DM Brands.
+    
+    INVOICE DATA:
+    ${JSON.stringify(cardData)}
+    
+    Focus on:
+    - Outstanding amounts and aging
+    - Payment patterns
+    - Customer risk assessment
+    - Cash flow impact
+    
+    Return JSON with insight, trend, action, priority, impact
+  `;
   
-  return {
-    lastPeriod: {
-      start: new Date(start.getTime() - daysDiff * 24 * 60 * 60 * 1000),
-      end: new Date(end.getTime() - daysDiff * 24 * 60 * 60 * 1000)
-    },
-    lastYear: {
-      start: new Date(start.getFullYear() - 1, start.getMonth(), start.getDate()),
-      end: new Date(end.getFullYear() - 1, end.getMonth(), end.getDate())
-    }
-  };
-}
-
-/**
- * Fetch data for a specific period
- */
-async function fetchPeriodData(
-  userId: string, 
-  period: { start: Date; end: Date }, 
-  metricType: string
-) {
   try {
-    const ordersRef = collection(db, 'salesorders');
-    const q = query(
-      ordersRef,
-      where('date', '>=', Timestamp.fromDate(period.start)),
-      where('date', '<=', Timestamp.fromDate(period.end)),
-      orderBy('date', 'desc')
-    );
-    
-    const snapshot = await getDocs(q);
-    const orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    
-    // Calculate metrics based on type
-    switch (metricType) {
-      case 'orders':
-        return {
-          count: orders.length,
-          value: orders.reduce((sum, o) => sum + (o.total || 0), 0)
-        };
-      case 'revenue':
-        return {
-          total: orders.reduce((sum, o) => sum + (o.total || 0), 0),
-          average: orders.length > 0 ? 
-            orders.reduce((sum, o) => sum + (o.total || 0), 0) / orders.length : 0
-        };
-      default:
-        return { orders };
-    }
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
   } catch (error) {
-    console.error('Error fetching period data:', error);
-    return null;
+    return generateFallbackInsight('invoices', cardData);
   }
 }
 
 /**
- * Fetch seasonal data
+ * Analyze Customers
  */
-async function fetchSeasonalData(userId: string, metricType: string) {
-  // This would fetch seasonal patterns from historical data
-  // For now, returning placeholder
-  return {
-    pattern: 'Higher sales in Q4',
-    peakMonth: 'December',
-    lowMonth: 'February'
-  };
-}
-
-// Placeholder functions for missing implementations
-async function analyzeAOV(cardData: CardData, dashboardData: DashboardData, historicalData: HistoricalData | null) {
-  return generateFallbackInsight('aov', cardData);
-}
-
-async function analyzeInvoices(cardData: CardData, dashboardData: DashboardData, historicalData: HistoricalData | null) {
-  return generateFallbackInsight('invoices', cardData);
-}
-
-async function analyzeYearOverYear(cardData: CardData, dashboardData: DashboardData, type: string) {
-  return generateFallbackInsight('yoy', cardData);
-}
-
-async function analyzeCustomers(cardData: CardData, dashboardData: DashboardData, historicalData: HistoricalData | null) {
+async function analyzeCustomers(cardData, dashboardData) {
   return generateFallbackInsight('customers', cardData);
 }
 
-async function analyzeAgents(cardData: CardData, dashboardData: DashboardData, historicalData: HistoricalData | null) {
+/**
+ * Analyze Agents
+ */
+async function analyzeAgents(cardData, dashboardData) {
   return generateFallbackInsight('agents', cardData);
 }
 
-async function analyzeBrands(cardData: CardData, dashboardData: DashboardData, historicalData: HistoricalData | null) {
+/**
+ * Analyze Brands
+ */
+async function analyzeBrands(cardData, dashboardData) {
   return generateFallbackInsight('brands', cardData);
 }
 
-async function generateCardInsights(cardType: string, cardData: CardData, dashboardData: DashboardData) {
-  return generateFallbackInsight(cardType, cardData);
+/**
+ * Generate drill-down insights
+ */
+export async function generateDrillDownInsights(viewType, detailData, summaryData, userRole, userId) {
+  try {
+    const prompt = `
+      Analyze detailed ${viewType} data for DM Brands.
+      
+      VIEW TYPE: ${viewType}
+      DETAIL DATA: ${summarizeData(detailData, 2000)}
+      SUMMARY: ${summarizeData(summaryData, 1000)}
+      
+      Provide deep operational insights including patterns, anomalies, and recommendations.
+      
+      Return JSON with detailed analysis.
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error in drill-down insights:', error);
+    return { analysis: 'Drill-down analysis temporarily unavailable' };
+  }
 }
 
-// Export all functions
-export {
-  generateEnhancedPurchaseInsights,
-  generateEnhancedForecast,
-  generateAgentInsights,
-  fetchSearchTrends
-};
-
-// Placeholder implementations for exported functions
-export async function generateEnhancedPurchaseInsights(brand: string, suggestions: any, comprehensiveData: any) {
-  // Implementation would go here
-  return {
-    insights: 'Purchase analysis',
-    recommendations: []
-  };
+/**
+ * Generate comparative insights
+ */
+export async function generateComparativeInsights(currentData, previousData, comparisonType, userRole, userId) {
+  try {
+    const prompt = `
+      Compare performance data for DM Brands.
+      
+      COMPARISON TYPE: ${comparisonType}
+      CURRENT PERIOD: ${summarizeData(currentData, 1500)}
+      PREVIOUS PERIOD: ${summarizeData(previousData, 1500)}
+      
+      Analyze:
+      - Key changes and trends
+      - Performance drivers
+      - Areas of concern
+      - Opportunities
+      
+      Return comprehensive comparison analysis as JSON.
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error in comparative insights:', error);
+    return { comparison: 'Comparative analysis temporarily unavailable' };
+  }
 }
 
-export async function generateEnhancedForecast(dashboardData: any) {
-  // Implementation would go here
-  return {
-    forecast: 'Next period prediction',
-    confidence: 'medium'
-  };
+/**
+ * Generate seasonal insights
+ */
+export async function generateSeasonalInsights(historicalData, season, userRole, userId) {
+  try {
+    const prompt = `
+      Analyze seasonal patterns for DM Brands luxury imports.
+      
+      SEASON: ${season}
+      HISTORICAL DATA: ${summarizeData(historicalData, 2000)}
+      
+      Provide:
+      - Seasonal trends for luxury gift items
+      - Product recommendations
+      - Inventory planning advice
+      - Marketing opportunities
+      
+      Return as JSON with seasonal analysis.
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error in seasonal insights:', error);
+    return { seasonal: 'Seasonal analysis temporarily unavailable' };
+  }
 }
 
-export async function generateAgentInsights(agentData: any, performanceHistory: any, customerBase: any) {
-  // Implementation would go here
-  return {
-    performance: 'Agent analysis',
-    recommendations: []
-  };
+/**
+ * Generate customer insights
+ */
+export async function generateCustomerInsights(customer, orderHistory, userRole, agentId) {
+  try {
+    const prompt = `
+      Analyze customer data for DM Brands.
+      
+      CUSTOMER: ${JSON.stringify(customer)}
+      ORDER HISTORY: ${summarizeData(orderHistory, 1500)}
+      
+      Provide:
+      - Customer profile analysis
+      - Purchase patterns
+      - Relationship opportunities
+      - Risk assessment
+      
+      Return as JSON.
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error in customer insights:', error);
+    return {
+      customerProfile: "Analysis unavailable",
+      orderTrends: {},
+      opportunities: [],
+      riskFactors: []
+    };
+  }
 }
 
-export async function fetchSearchTrends(brand: string) {
-  // Implementation would go here
-  return {
-    trends: [],
-    volume: 0
-  };
+/**
+ * Generate purchase order insights
+ */
+export async function generatePurchaseOrderInsights(brand, suggestions, historicalSales, marketData) {
+  try {
+    const prompt = `
+      Comprehensive purchase order analysis for ${brand}.
+      
+      SUGGESTIONS: ${JSON.stringify(suggestions)}
+      HISTORICAL SALES: ${summarizeData(historicalSales, 2000)}
+      MARKET DATA: ${JSON.stringify(marketData)}
+      
+      PROVIDE DEEP ANALYSIS:
+      1. Executive Summary
+      2. Market Timing Assessment
+      3. Risk Assessment
+      4. Category Optimization
+      5. Cash Flow Impact
+      6. Customer Impact
+      7. Channel Strategy
+      8. Inventory Optimization
+      9. Confidence Assessment
+      
+      Include trend-based recommendations and alternative strategies.
+      
+      Return comprehensive JSON analysis.
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error in purchase order insights:', error);
+    return {
+      executiveSummary: "AI analysis temporarily unavailable",
+      marketTiming: "Unable to assess",
+      riskAssessment: "Analysis pending",
+      categoryOptimization: [],
+      cashFlowImpact: "Unknown",
+      customerImpact: "Unable to determine",
+      channelStrategy: "Review channel performance",
+      inventoryOptimization: "Check stock levels",
+      confidenceAssessment: "Low confidence due to error"
+    };
+  }
+}
+
+/**
+ * Generate product purchase insights
+ */
+export async function generateProductPurchaseInsights(product, suggestion, competitorData, searchTrends) {
+  try {
+    const prompt = `
+      Analyze purchase recommendation for specific product.
+      
+      PRODUCT: ${JSON.stringify(product)}
+      SUGGESTION: ${JSON.stringify(suggestion)}
+      COMPETITOR DATA: ${JSON.stringify(competitorData)}
+      SEARCH TRENDS: ${JSON.stringify(searchTrends)}
+      
+      Provide:
+      - Purchase rationale
+      - Target customers
+      - Seasonal considerations
+      - Competitive advantage
+      - Pricing strategy
+      - Display suggestions
+      
+      Return as JSON.
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error in product insights:', error);
+    return {
+      purchaseRationale: "Analysis pending",
+      targetCustomers: "Premium UK retailers",
+      seasonalConsiderations: "Standard seasonality",
+      competitiveAdvantage: "Unique positioning",
+      pricingStrategy: "Competitive pricing",
+      displaySuggestions: "Premium display"
+    };
+  }
+}
+
+/**
+ * Validate purchase adjustments
+ */
+export async function validatePurchaseAdjustments(originalSuggestions, userAdjustments, brand) {
+  try {
+    const prompt = `
+      Validate user adjustments to purchase suggestions for ${brand}.
+      
+      ORIGINAL: ${JSON.stringify(originalSuggestions)}
+      ADJUSTMENTS: ${JSON.stringify(userAdjustments)}
+      
+      Assess:
+      - Adjustment rationale
+      - Potential risks
+      - Improvements
+      - Alternative suggestions
+      - Confidence level
+      
+      Return as JSON.
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error validating adjustments:', error);
+    return {
+      adjustmentAssessment: "Unable to validate",
+      potentialRisks: [],
+      improvements: [],
+      alternativeSuggestions: [],
+      confidenceInAdjustments: 50
+    };
+  }
+}
+
+/**
+ * Fetch search trends
+ */
+export async function fetchSearchTrends(brand) {
+  try {
+    // This would integrate with Google Trends API or similar
+    // For now, returning mock data
+    return {
+      brandTrend: {
+        interest: 75,
+        direction: 'rising',
+        seasonality: 'high in Q4'
+      },
+      productTrends: [
+        {
+          keyword: `${brand} candles`,
+          volume: 2400,
+          trend: 'rising',
+          competition: 'medium'
+        },
+        {
+          keyword: `${brand} home decor`,
+          volume: 1800,
+          trend: 'stable',
+          competition: 'high'
+        }
+      ],
+      relatedSearches: [
+        'luxury home accessories',
+        'scandinavian design',
+        'sustainable homeware'
+      ]
+    };
+  } catch (error) {
+    console.error('Error fetching search trends:', error);
+    return { trends: [], volume: 0 };
+  }
+}
+
+/**
+ * Generate enhanced forecast
+ */
+export async function generateEnhancedForecast(dashboardData) {
+  try {
+    const prompt = `
+      Generate comprehensive business forecast for DM Brands.
+      
+      DASHBOARD DATA: ${summarizeData(dashboardData, 3000)}
+      
+      PROVIDE:
+      1. 3-Month Revenue Forecast
+      2. Seasonal Trend Analysis
+      3. Customer Behavior Predictions
+      4. Agent Performance Optimization
+      5. Risk Factors & Mitigation
+      
+      Return detailed forecast with specific numbers and recommendations.
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error generating forecast:', error);
+    return {
+      forecast: 'Forecast generation failed',
+      confidence: 'low'
+    };
+  }
+}
+
+/**
+ * Generate agent insights
+ */
+export async function generateAgentInsights(agentData, performanceHistory, customerBase) {
+  try {
+    const prompt = `
+      Deep analysis of sales agent performance for ${agentData.name}.
+      
+      CURRENT PERFORMANCE:
+      - Revenue: £${agentData.totalRevenue || 0}
+      - Orders: ${agentData.totalOrders || 0}
+      - Customers: ${agentData.customerCount || 0}
+      - Brands: ${JSON.stringify(agentData.brandsAssigned)}
+      
+      HISTORICAL PERFORMANCE:
+      ${JSON.stringify(performanceHistory)}
+      
+      CUSTOMER BASE ANALYSIS:
+      ${JSON.stringify(customerBase)}
+      
+      ANALYZE:
+      1. Performance Overview
+      2. Performance Trends
+      3. Customer Insights
+      4. Growth Opportunities
+      5. Actionable Recommendations
+      6. Efficiency Score
+      
+      Return comprehensive analysis as JSON:
+      {
+        "performanceOverview": "string",
+        "performanceTrends": {
+          "revenueTrend": "increasing|decreasing|stable",
+          "orderFrequency": "string",
+          "customerRetention": "string"
+        },
+        "customerInsights": {
+          "summary": "string",
+          "segments": []
+        },
+        "opportunities": [],
+        "recommendations": [
+          {
+            "title": "string",
+            "description": "string",
+            "priority": "high|medium|low"
+          }
+        ],
+        "efficiencyScore": {
+          "score": number,
+          "analysis": "string",
+          "factors": []
+        }
+      }
+    `;
+    
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error generating agent insights:', error);
+    return {
+      performanceOverview: 'Analysis failed',
+      performanceTrends: {},
+      customerInsights: {},
+      opportunities: [],
+      recommendations: [],
+      efficiencyScore: { score: 0, analysis: 'Unable to calculate' }
+    };
+  }
 }
