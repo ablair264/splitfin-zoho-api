@@ -51,19 +51,40 @@ export class PromptBuilder {
 }
 
 /**
- * Parse AI response with error handling
+ * Parse AI response with better error handling
  */
 function parseAIResponse(text) {
   try {
-    const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleanText);
+    // First, try to extract JSON from the response
+    let jsonStr = text;
+    
+    // Remove markdown code blocks if present
+    jsonStr = jsonStr.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+    
+    // Try to find JSON object in the text
+    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[0];
+    }
+    
+    // Clean up any remaining markdown or formatting
+    jsonStr = jsonStr.trim();
+    
+    // Parse the JSON
+    const parsed = JSON.parse(jsonStr);
+    return parsed;
   } catch (error) {
     console.error('Error parsing AI response:', error);
+    console.error('Raw response:', text);
+    
+    // Return a fallback response
     return {
-      insight: 'Analysis in progress',
+      insight: 'Analysis completed but response format was invalid',
       trend: 'stable',
-      action: 'Continue monitoring',
-      priority: 'medium'
+      action: 'Please review the data manually',
+      priority: 'medium',
+      impact: 'Analysis available with limitations',
+      error: 'Response parsing failed'
     };
   }
 }
@@ -95,19 +116,18 @@ export async function generateAIInsights(dashboardData) {
       DATA:
       ${JSON.stringify(dashboardData, null, 2).slice(0, 3000)}
       
-      Provide executive-level analysis including:
-      1. Key performance indicators summary
-      2. Critical business trends
-      3. Strategic recommendations
-      4. Risk alerts
-      5. Growth opportunities
+      Provide executive-level analysis.
       
-      Return as JSON with:
-      - summary: Executive summary
-      - keyDrivers: Array of key performance drivers
-      - recommendations: Array of strategic recommendations
-      - criticalAlerts: Array of urgent issues
-      - opportunities: Array of growth opportunities
+      IMPORTANT: Return ONLY valid JSON in this exact format:
+      {
+        "summary": "Executive summary of the dashboard performance",
+        "keyDrivers": ["driver1", "driver2", "driver3"],
+        "recommendations": ["recommendation1", "recommendation2", "recommendation3"],
+        "criticalAlerts": ["alert1", "alert2"],
+        "opportunities": ["opportunity1", "opportunity2"]
+      }
+      
+      DO NOT include any markdown, explanations, or text outside the JSON object.
     `;
     
     const result = await model.generateContent(prompt);
@@ -132,20 +152,23 @@ export async function generateAIInsights(dashboardData) {
  */
 export async function generateCardInsights(cardType, cardData, dashboardData) {
   try {
-    const prompt = new PromptBuilder()
-      .addSection('CONTEXT', `Analyzing ${cardType} metrics for DM Brands luxury imports`)
-      .addSection('CARD DATA', JSON.stringify(cardData))
-      .addSection('DASHBOARD CONTEXT', summarizeData(dashboardData, 2000))
-      .addSection('ANALYSIS REQUEST', `
-        Provide actionable insights for the ${cardType} metric including:
-        - Current performance analysis
-        - Trend identification
-        - Recommended actions
-        - Business impact assessment
-        
-        Return as JSON with: insight, trend, action, priority, impact
-      `)
-      .build();
+    const prompt = `
+      Analyze ${cardType} metrics for DM Brands luxury imports.
+      
+      Card Data: ${JSON.stringify(cardData)}
+      Context: ${summarizeData(dashboardData, 1000)}
+      
+      IMPORTANT: Return ONLY valid JSON in this exact format:
+      {
+        "insight": "Specific analysis of the metric",
+        "trend": "increasing" or "decreasing" or "stable",
+        "action": "Recommended action to take",
+        "priority": "high" or "medium" or "low",
+        "impact": "Business impact description"
+      }
+      
+      DO NOT include any markdown or text outside the JSON.
+    `;
     
     const result = await model.generateContent(prompt);
     const response = await result.response;
@@ -207,34 +230,13 @@ export async function generateEnhancedCardInsights(cardType, cardData, fullDashb
  */
 async function analyzeTotalOrders(cardData, dashboardData) {
   const prompt = `
-    You are analyzing order data for DM Brands, a UK luxury import company.
+    Analyze order data for DM Brands, a UK luxury import company.
     
-    CURRENT DATA:
-    - Total Orders: ${cardData.count || cardData.totalOrders || 0}
-    - Order Value: £${cardData.totalValue || cardData.revenue || 0}
-    - Average Order Value: £${cardData.averageValue || cardData.aov || 0}
-    - Date Range: ${dashboardData.dateRange}
+    Total Orders: ${cardData.count || cardData.totalOrders || 0}
+    Order Value: £${cardData.totalValue || cardData.revenue || 0}
+    Average Order Value: £${cardData.averageValue || cardData.aov || 0}
     
-    ITEM ANALYSIS:
-    ${JSON.stringify(dashboardData.performance?.top_items?.slice(0, 10) || [])}
-    
-    ANALYZE:
-    1. Item Variety & Trends:
-       - Is there a specific item more popular than others?
-       - Are there new trending items?
-       - Any items showing declining popularity?
-    
-    2. Order Value Analysis:
-       - How does average order value compare to targets?
-       - What can be done to improve/maintain AOV?
-    
-    3. Order Volume Trends:
-       - Analyze seasonal patterns
-       - Monthly comparisons within the date range
-    
-    Provide specific, actionable insights with numbers and percentages.
-    
-    Return as JSON:
+    IMPORTANT: Return ONLY valid JSON in this exact format:
     {
       "insight": "Comprehensive analysis with specific findings",
       "itemTrends": {
@@ -243,7 +245,7 @@ async function analyzeTotalOrders(cardData, dashboardData) {
         "decliningItems": ["item1", "item2"]
       },
       "valueAnalysis": {
-        "currentAOV": number,
+        "currentAOV": 0,
         "historicalComparison": "percentage change",
         "recommendations": ["rec1", "rec2"]
       },
@@ -252,11 +254,13 @@ async function analyzeTotalOrders(cardData, dashboardData) {
         "seasonalPattern": "description",
         "monthlyTrend": "description"
       },
-      "trend": "increasing|decreasing|stable|volatile",
+      "trend": "increasing",
       "action": "Primary recommendation",
-      "priority": "high|medium|low",
+      "priority": "high",
       "impact": "Potential business impact"
     }
+    
+    DO NOT include any markdown or explanatory text.
   `;
   
   try {
@@ -277,35 +281,22 @@ async function analyzeRevenue(cardData, dashboardData) {
   const prompt = `
     Analyze revenue performance for DM Brands luxury imports.
     
-    CURRENT REVENUE DATA:
-    - Total Revenue: £${cardData.current || cardData.revenue || 0}
-    - Order Count: ${cardData.orders || cardData.orderCount || 0}
-    - Average per Order: £${cardData.average || 0}
+    Total Revenue: £${cardData.current || cardData.revenue || 0}
+    Order Count: ${cardData.orders || cardData.orderCount || 0}
     
-    BRAND PERFORMANCE:
-    ${JSON.stringify(dashboardData.performance?.brands || [])}
-    
-    CUSTOMER SEGMENTS:
-    ${JSON.stringify(dashboardData.performance?.top_customers?.slice(0, 10) || [])}
-    
-    ANALYZE:
-    1. Revenue trends and patterns
-    2. Brand/product contribution to revenue
-    3. Customer segment analysis
-    4. Growth opportunities
-    5. Risk factors
-    
-    Return comprehensive JSON with:
-    - insight: Main findings
-    - revenueBreakdown: By brand/product
-    - customerAnalysis: Segment performance
-    - growthDrivers: Key factors
-    - recommendations: Specific actions
-    - forecast: Next period prediction
-    - trend: increasing/decreasing/stable
-    - action: Primary recommendation
-    - priority: high/medium/low
-    - impact: Business impact
+    IMPORTANT: Return ONLY valid JSON:
+    {
+      "insight": "Main findings",
+      "revenueBreakdown": "By brand/product analysis",
+      "customerAnalysis": "Segment performance",
+      "growthDrivers": "Key factors",
+      "recommendations": ["action1", "action2"],
+      "forecast": "Next period prediction",
+      "trend": "increasing",
+      "action": "Primary recommendation",
+      "priority": "high",
+      "impact": "Business impact"
+    }
   `;
   
   try {
@@ -325,17 +316,16 @@ async function analyzeRevenue(cardData, dashboardData) {
 async function analyzeAOV(cardData, dashboardData) {
   const prompt = `
     Analyze Average Order Value for DM Brands.
+    Current AOV: £${cardData.averageValue || cardData.aov || 0}
     
-    CURRENT AOV: £${cardData.averageValue || cardData.aov || 0}
-    TARGET AOV: £600
-    
-    ANALYZE:
-    1. What's driving current AOV?
-    2. Which products/brands contribute most?
-    3. Customer behavior patterns
-    4. Improvement strategies
-    
-    Return JSON with insight, trend, action, priority, impact
+    Return ONLY JSON:
+    {
+      "insight": "AOV analysis",
+      "trend": "stable",
+      "action": "Recommendation",
+      "priority": "medium",
+      "impact": "Impact description"
+    }
   `;
   
   try {
@@ -355,16 +345,14 @@ async function analyzeInvoices(cardData, dashboardData) {
   const prompt = `
     Analyze invoice data for DM Brands.
     
-    INVOICE DATA:
-    ${JSON.stringify(cardData)}
-    
-    Focus on:
-    - Outstanding amounts and aging
-    - Payment patterns
-    - Customer risk assessment
-    - Cash flow impact
-    
-    Return JSON with insight, trend, action, priority, impact
+    Return ONLY JSON:
+    {
+      "insight": "Invoice analysis",
+      "trend": "stable",
+      "action": "Recommendation",
+      "priority": "high",
+      "impact": "Cash flow impact"
+    }
   `;
   
   try {
@@ -406,13 +394,13 @@ export async function generateDrillDownInsights(viewType, detailData, summaryDat
     const prompt = `
       Analyze detailed ${viewType} data for DM Brands.
       
-      VIEW TYPE: ${viewType}
-      DETAIL DATA: ${summarizeData(detailData, 2000)}
-      SUMMARY: ${summarizeData(summaryData, 1000)}
-      
-      Provide deep operational insights including patterns, anomalies, and recommendations.
-      
-      Return JSON with detailed analysis.
+      Return ONLY JSON:
+      {
+        "analysis": "Detailed analysis",
+        "patterns": ["pattern1", "pattern2"],
+        "anomalies": ["anomaly1"],
+        "recommendations": ["rec1", "rec2"]
+      }
     `;
     
     const result = await model.generateContent(prompt);
@@ -433,17 +421,14 @@ export async function generateComparativeInsights(currentData, previousData, com
     const prompt = `
       Compare performance data for DM Brands.
       
-      COMPARISON TYPE: ${comparisonType}
-      CURRENT PERIOD: ${summarizeData(currentData, 1500)}
-      PREVIOUS PERIOD: ${summarizeData(previousData, 1500)}
-      
-      Analyze:
-      - Key changes and trends
-      - Performance drivers
-      - Areas of concern
-      - Opportunities
-      
-      Return comprehensive comparison analysis as JSON.
+      Return ONLY JSON:
+      {
+        "comparison": "Period comparison analysis",
+        "keyChanges": ["change1", "change2"],
+        "trends": ["trend1", "trend2"],
+        "concerns": ["concern1"],
+        "opportunities": ["opp1", "opp2"]
+      }
     `;
     
     const result = await model.generateContent(prompt);
@@ -462,18 +447,16 @@ export async function generateComparativeInsights(currentData, previousData, com
 export async function generateSeasonalInsights(historicalData, season, userRole, userId) {
   try {
     const prompt = `
-      Analyze seasonal patterns for DM Brands luxury imports.
+      Analyze seasonal patterns for DM Brands luxury imports in ${season}.
       
-      SEASON: ${season}
-      HISTORICAL DATA: ${summarizeData(historicalData, 2000)}
-      
-      Provide:
-      - Seasonal trends for luxury gift items
-      - Product recommendations
-      - Inventory planning advice
-      - Marketing opportunities
-      
-      Return as JSON with seasonal analysis.
+      Return ONLY JSON:
+      {
+        "seasonal": "Seasonal analysis",
+        "trends": ["trend1", "trend2"],
+        "productRecommendations": ["product1", "product2"],
+        "inventoryAdvice": "Inventory planning advice",
+        "marketingOpportunities": ["opp1", "opp2"]
+      }
     `;
     
     const result = await model.generateContent(prompt);
@@ -494,16 +477,21 @@ export async function generateCustomerInsights(customer, orderHistory, userRole,
     const prompt = `
       Analyze customer data for DM Brands.
       
-      CUSTOMER: ${JSON.stringify(customer)}
-      ORDER HISTORY: ${summarizeData(orderHistory, 1500)}
-      
-      Provide:
-      - Customer profile analysis
-      - Purchase patterns
-      - Relationship opportunities
-      - Risk assessment
-      
-      Return as JSON.
+      Return ONLY JSON:
+      {
+        "customerProfile": "Profile analysis",
+        "orderTrends": {
+          "frequency": "Order frequency",
+          "averageValue": "Average value",
+          "seasonalPatterns": "Patterns",
+          "brandPreferences": ["brand1", "brand2"]
+        },
+        "opportunities": ["opp1", "opp2"],
+        "riskFactors": ["risk1"],
+        "recommendedActions": ["action1", "action2"],
+        "relationshipStrategy": "Strategy",
+        "nextSteps": ["step1", "step2"]
+      }
     `;
     
     const result = await model.generateContent(prompt);
@@ -527,26 +515,23 @@ export async function generateCustomerInsights(customer, orderHistory, userRole,
 export async function generatePurchaseOrderInsights(brand, suggestions, historicalSales, marketData) {
   try {
     const prompt = `
-      Comprehensive purchase order analysis for ${brand}.
+      Analyze purchase order for ${brand}.
+      ${suggestions.length} products suggested.
       
-      SUGGESTIONS: ${JSON.stringify(suggestions)}
-      HISTORICAL SALES: ${summarizeData(historicalSales, 2000)}
-      MARKET DATA: ${JSON.stringify(marketData)}
-      
-      PROVIDE DEEP ANALYSIS:
-      1. Executive Summary
-      2. Market Timing Assessment
-      3. Risk Assessment
-      4. Category Optimization
-      5. Cash Flow Impact
-      6. Customer Impact
-      7. Channel Strategy
-      8. Inventory Optimization
-      9. Confidence Assessment
-      
-      Include trend-based recommendations and alternative strategies.
-      
-      Return comprehensive JSON analysis.
+      Return ONLY JSON:
+      {
+        "executiveSummary": "Summary of purchase recommendations",
+        "marketTiming": "Market timing assessment",
+        "riskAssessment": "Risk analysis",
+        "categoryOptimization": ["optimization1", "optimization2"],
+        "cashFlowImpact": "Cash flow analysis",
+        "customerImpact": "Customer impact analysis",
+        "channelStrategy": "Channel recommendations",
+        "inventoryOptimization": "Inventory strategy",
+        "confidenceAssessment": "Overall confidence level",
+        "trendBasedRecommendations": ["rec1", "rec2"],
+        "alternativeStrategies": ["alt1", "alt2"]
+      }
     `;
     
     const result = await model.generateContent(prompt);
@@ -575,22 +560,17 @@ export async function generatePurchaseOrderInsights(brand, suggestions, historic
 export async function generateProductPurchaseInsights(product, suggestion, competitorData, searchTrends) {
   try {
     const prompt = `
-      Analyze purchase recommendation for specific product.
+      Analyze purchase for ${product.name} (${product.sku}).
       
-      PRODUCT: ${JSON.stringify(product)}
-      SUGGESTION: ${JSON.stringify(suggestion)}
-      COMPETITOR DATA: ${JSON.stringify(competitorData)}
-      SEARCH TRENDS: ${JSON.stringify(searchTrends)}
-      
-      Provide:
-      - Purchase rationale
-      - Target customers
-      - Seasonal considerations
-      - Competitive advantage
-      - Pricing strategy
-      - Display suggestions
-      
-      Return as JSON.
+      Return ONLY JSON:
+      {
+        "purchaseRationale": "Why to purchase this product",
+        "targetCustomers": "Target customer segments",
+        "seasonalConsiderations": "Seasonal factors",
+        "competitiveAdvantage": "Competitive positioning",
+        "pricingStrategy": "Pricing recommendations",
+        "displaySuggestions": "Display and merchandising tips"
+      }
     `;
     
     const result = await model.generateContent(prompt);
@@ -616,19 +596,16 @@ export async function generateProductPurchaseInsights(product, suggestion, compe
 export async function validatePurchaseAdjustments(originalSuggestions, userAdjustments, brand) {
   try {
     const prompt = `
-      Validate user adjustments to purchase suggestions for ${brand}.
+      Validate adjustments for ${brand} purchase order.
       
-      ORIGINAL: ${JSON.stringify(originalSuggestions)}
-      ADJUSTMENTS: ${JSON.stringify(userAdjustments)}
-      
-      Assess:
-      - Adjustment rationale
-      - Potential risks
-      - Improvements
-      - Alternative suggestions
-      - Confidence level
-      
-      Return as JSON.
+      Return ONLY JSON:
+      {
+        "adjustmentAssessment": "Overall assessment",
+        "potentialRisks": ["risk1", "risk2"],
+        "improvements": ["improvement1"],
+        "alternativeSuggestions": ["alt1"],
+        "confidenceInAdjustments": 85
+      }
     `;
     
     const result = await model.generateContent(prompt);
@@ -692,18 +669,17 @@ export async function fetchSearchTrends(brand) {
 export async function generateEnhancedForecast(dashboardData) {
   try {
     const prompt = `
-      Generate comprehensive business forecast for DM Brands.
+      Generate business forecast for DM Brands.
       
-      DASHBOARD DATA: ${summarizeData(dashboardData, 3000)}
-      
-      PROVIDE:
-      1. 3-Month Revenue Forecast
-      2. Seasonal Trend Analysis
-      3. Customer Behavior Predictions
-      4. Agent Performance Optimization
-      5. Risk Factors & Mitigation
-      
-      Return detailed forecast with specific numbers and recommendations.
+      Return ONLY valid JSON:
+      {
+        "overview": "Forecast overview",
+        "revenueForecast": "3-month revenue projection",
+        "seasonalAnalysis": "Seasonal trends analysis", 
+        "customerForecast": "Customer behavior predictions",
+        "agentForecast": "Agent performance forecast",
+        "riskAssessment": "Risk factors and mitigation"
+      }
     `;
     
     const result = await model.generateContent(prompt);
@@ -713,8 +689,12 @@ export async function generateEnhancedForecast(dashboardData) {
   } catch (error) {
     console.error('Error generating forecast:', error);
     return {
-      forecast: 'Forecast generation failed',
-      confidence: 'low'
+      overview: 'Forecast generation failed',
+      revenueForecast: 'Unable to project',
+      seasonalAnalysis: 'Analysis unavailable',
+      customerForecast: 'Prediction unavailable',
+      agentForecast: 'Unable to forecast',
+      riskAssessment: 'Risk analysis pending'
     };
   }
 }
@@ -725,52 +705,39 @@ export async function generateEnhancedForecast(dashboardData) {
 export async function generateAgentInsights(agentData, performanceHistory, customerBase) {
   try {
     const prompt = `
-      Deep analysis of sales agent performance for ${agentData.name}.
+      Analyze sales agent ${agentData.name} performance.
+      Revenue: £${agentData.totalRevenue || 0}
+      Orders: ${agentData.totalOrders || 0}
       
-      CURRENT PERFORMANCE:
-      - Revenue: £${agentData.totalRevenue || 0}
-      - Orders: ${agentData.totalOrders || 0}
-      - Customers: ${agentData.customerCount || 0}
-      - Brands: ${JSON.stringify(agentData.brandsAssigned)}
-      
-      HISTORICAL PERFORMANCE:
-      ${JSON.stringify(performanceHistory)}
-      
-      CUSTOMER BASE ANALYSIS:
-      ${JSON.stringify(customerBase)}
-      
-      ANALYZE:
-      1. Performance Overview
-      2. Performance Trends
-      3. Customer Insights
-      4. Growth Opportunities
-      5. Actionable Recommendations
-      6. Efficiency Score
-      
-      Return comprehensive analysis as JSON:
+      Return ONLY JSON:
       {
-        "performanceOverview": "string",
+        "performanceOverview": "Overall performance summary",
         "performanceTrends": {
-          "revenueTrend": "increasing|decreasing|stable",
-          "orderFrequency": "string",
-          "customerRetention": "string"
+          "revenueTrend": "increasing",
+          "orderFrequency": "Weekly average",
+          "customerRetention": "Retention rate"
         },
         "customerInsights": {
-          "summary": "string",
-          "segments": []
+          "summary": "Customer base summary",
+          "segments": [
+            {
+              "name": "VIP Customers",
+              "description": "High-value repeat customers"
+            }
+          ]
         },
-        "opportunities": [],
+        "opportunities": ["opportunity1", "opportunity2"],
         "recommendations": [
           {
-            "title": "string",
-            "description": "string",
-            "priority": "high|medium|low"
+            "title": "Focus on VIP retention",
+            "description": "Increase touchpoints with top customers",
+            "priority": "high"
           }
         ],
         "efficiencyScore": {
-          "score": number,
-          "analysis": "string",
-          "factors": []
+          "score": 85,
+          "analysis": "Above average efficiency",
+          "factors": ["Strong customer relationships", "Good product knowledge"]
         }
       }
     `;
