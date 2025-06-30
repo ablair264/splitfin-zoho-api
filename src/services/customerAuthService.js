@@ -1,9 +1,8 @@
 // server/src/services/customerAuthService.js
 import admin from 'firebase-admin';
-import { getAuth } from 'firebase-admin/auth';
 
 const db = admin.firestore();
-const auth = getAuth();
+const auth = admin.auth();
 
 /**
  * Generate a secure random password
@@ -82,8 +81,8 @@ export async function createCustomerAuth(customerId) {
       role: 'customer',
       customer_id: customerData.customer_id || '', // Zoho customer ID
       firebase_customer_doc_id: customerId, // Reference to customer_data doc
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      lastSeen: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: new Date().toISOString(),
+      lastSeen: new Date().toISOString(),
       isOnline: false,
       
       // Additional customer fields
@@ -109,32 +108,14 @@ export async function createCustomerAuth(customerId) {
     });
     console.log('✅ Updated customer_data with Firebase UID');
     
-    // Send password reset email so customer can set their own password
-    try {
-      const resetLink = await auth.generatePasswordResetLink(email);
-      console.log('✅ Generated password reset link');
-      
-      // You can send this via your email service
-      // For now, return it in the response
-      return {
-        success: true,
-        uid: authUser.uid,
-        email: email,
-        resetLink: resetLink,
-        tempPassword: tempPassword, // Only for initial setup
-        message: 'Customer authentication created successfully'
-      };
-    } catch (emailError) {
-      console.warn('Could not generate reset link:', emailError);
-      // Still return success even if email fails
-      return {
-        success: true,
-        uid: authUser.uid,
-        email: email,
-        tempPassword: tempPassword,
-        message: 'Customer authentication created (email pending)'
-      };
-    }
+    // Return success without trying to generate reset link for now
+    return {
+      success: true,
+      uid: authUser.uid,
+      email: email,
+      tempPassword: tempPassword,
+      message: 'Customer authentication created successfully'
+    };
     
   } catch (error) {
     console.error('❌ Error creating customer auth:', error);
@@ -202,4 +183,4 @@ export async function createAuthForAllCustomers() {
     console.error('❌ Bulk auth error:', error);
     throw error;
   }
-customerAuthService.js
+}
