@@ -339,6 +339,29 @@ router.post('/create-order', validateOrderData, getUserAgentContext, async (req,
     }
 });
 
+router.post('/create-customer-auth/:customerId', authenticateWebhook, async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    
+    // Import the function at the top of webhooks.js
+    const { createCustomerAuth } = await import('../services/customerAuthService.js');
+    
+    const result = await createCustomerAuth(customerId);
+    
+    res.json({
+      success: true,
+      ...result
+    });
+    
+  } catch (error) {
+    console.error('❌ Customer auth error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Enhanced endpoint to get order status with agent filtering
 router.get('/order-status/:id', async (req, res) => {
     try {
