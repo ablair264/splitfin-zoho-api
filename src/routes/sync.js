@@ -3,6 +3,7 @@ import express from 'express';
 import admin from 'firebase-admin';
 import firestoreSyncService from '../firestoreSyncService.js';
 import { syncInventory, syncCustomersFromCRM } from '../syncInventory.js';
+import zohoInventoryService from '../services/zohoInventoryService.js';
 
 const router = express.Router();
 
@@ -37,7 +38,7 @@ router.get('/changes', async (req, res) => {
   }
 });
 
-router.post('/sync/products-full', async (req, res) => {
+router.post('/products-full', async (req, res) => {  // Remove the /sync prefix
   try {
     console.log('🚀 Starting full product sync...');
     
