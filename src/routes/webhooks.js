@@ -4,6 +4,7 @@ import { createSalesOrder } from '../api/zoho.js';
 import admin from 'firebase-admin';
 import cronDataSyncService from '../services/cronDataSyncService.js';
 import zohoReportsService from '../services/zohoReportsService.js';
+import { createCustomerAuth } from '../services/customerAuthService.js';
 
 const router = express.Router();
 
