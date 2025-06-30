@@ -342,6 +342,248 @@ class ZohoInventoryService {
       throw error;
     }
   }
+  
+  async syncProductsWithChangeDetection() {
+  console.log('🔄 Starting product sync with change detection...');
+  
+  try {
+    const startTime = Date.now();
+    const stats = {
+      total: 0,
+      updated: 0,
+      new: 0,
+      deactivated: 0,
+      errors: 0
+    };
+    
+    // Get all current items from Firebase
+    const firebaseItemsSnapshot = await this.db.collection('items').get();
+    const firebaseItemsMap = new Map();
+    
+    firebaseItemsSnapshot.forEach(doc => {
+      firebaseItemsMap.set(doc.id, doc.data());
+    });
+    
+    console.log(`📊 Found ${firebaseItemsMap.size} items in Firebase`);
+    
+    // Fetch all products from Zoho
+    const zohoProducts = await this.fetchAllProducts();
+    console.log(`📊 Found ${zohoProducts.length} items in Zoho`);
+    
+    // Track which Zoho items we've seen
+    const zohoItemIds = new Set();
+    
+    let batch = this.db.batch();
+    let batchCount = 0;
+    
+    // Process each Zoho product
+    for (const zohoProduct of zohoProducts) {
+      stats.total++;
+      zohoItemIds.add(zohoProduct.item_id);
+      
+      const firebaseItem = firebaseItemsMap.get(zohoProduct.item_id);
+      
+      // Prepare the updated product data
+      const updatedProduct = {
+        item_id: zohoProduct.item_id,
+        name: zohoProduct.name || '',
+        item_name: zohoProduct.name || '', // Some queries use item_name
+        sku: zohoProduct.sku || '',
+        ean: zohoProduct.ean || zohoProduct.upc || '',
+        
+        // Pricing
+        rate: parseFloat(zohoProduct.rate || 0),
+        selling_price: parseFloat(zohoProduct.rate || 0), // Alias for compatibility
+        purchase_rate: parseFloat(zohoProduct.purchase_rate || 0),
+        
+        // Manufacturer/Brand (ensure compatibility with your brand queries)
+        Manufacturer: zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || '',
+        manufacturer: (zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || '').toLowerCase(),
+        vendor_id: zohoProduct.vendor_id || '',
+        vendor_name: zohoProduct.vendor_name || '',
+        
+        // Stock levels
+        available_stock: parseInt(zohoProduct.available_for_sale_stock || 0),
+        actual_available_stock: parseInt(zohoProduct.actual_available_for_sale_stock || 0),
+        stock_on_hand: parseInt(zohoProduct.stock_on_hand || 0),
+        reorder_level: parseInt(zohoProduct.reorder_level || 0),
+        
+        // Product details
+        description: zohoProduct.description || '',
+        category: zohoProduct.category_name || '',
+        status: zohoProduct.status || 'active',
+        unit: zohoProduct.unit || '',
+        
+        // Images
+        imageUrl: zohoProduct.image_url || '',
+        image_document_id: zohoProduct.image_document_id || '',
+        
+        // Timestamps
+        created_time: zohoProduct.created_time,
+        last_modified_time: zohoProduct.last_modified_time,
+        _source: 'zoho_inventory',
+        _synced_at: admin.firestore.FieldValue.serverTimestamp()
+      };
+      
+      // Check if this is a new item or an update
+      if (!firebaseItem) {
+        stats.new++;
+        console.log(`✨ New item: ${zohoProduct.name} (${zohoProduct.sku})`);
+      } else {
+        // Check for changes
+        const hasChanges = this.detectProductChanges(firebaseItem, updatedProduct);
+        
+        if (hasChanges) {
+          stats.updated++;
+          console.log(`📝 Updated item: ${zohoProduct.name} - Changes detected`);
+          
+          // Log specific status changes
+          if (firebaseItem.status !== updatedProduct.status) {
+            console.log(`   Status changed: ${firebaseItem.status} → ${updatedProduct.status}`);
+            if (updatedProduct.status === 'inactive') {
+              stats.deactivated++;
+            }
+          }
+        }
+      }
+      
+      // Add to batch
+      const docRef = this.db.collection('items').doc(zohoProduct.item_id);
+      batch.set(docRef, updatedProduct, { merge: true });
+      batchCount++;
+      
+      // Commit batch if needed
+      if (batchCount >= 400) {
+        await batch.commit();
+        batch = this.db.batch();
+        batchCount = 0;
+        console.log(`💾 Committed batch of 400 items...`);
+      }
+    }
+    
+    // Commit remaining items
+    if (batchCount > 0) {
+      await batch.commit();
+    }
+    
+    // Check for items that exist in Firebase but not in Zoho (possibly deleted)
+    const missingInZoho = [];
+    firebaseItemsMap.forEach((item, itemId) => {
+      if (!zohoItemIds.has(itemId) && item.status === 'active') {
+        missingInZoho.push({
+          item_id: itemId,
+          name: item.name,
+          sku: item.sku
+        });
+      }
+    });
+    
+    // Mark missing items as inactive
+    if (missingInZoho.length > 0) {
+      console.log(`⚠️  Found ${missingInZoho.length} items in Firebase that are missing in Zoho`);
+      
+      batch = this.db.batch();
+      batchCount = 0;
+      
+      for (const item of missingInZoho) {
+        console.log(`   Marking as inactive: ${item.name} (${item.sku})`);
+        const docRef = this.db.collection('items').doc(item.item_id);
+        batch.update(docRef, {
+          status: 'inactive',
+          _deactivated_reason: 'Not found in Zoho Inventory',
+          _deactivated_at: admin.firestore.FieldValue.serverTimestamp()
+        });
+        stats.deactivated++;
+        batchCount++;
+        
+        if (batchCount >= 400) {
+          await batch.commit();
+          batch = this.db.batch();
+          batchCount = 0;
+        }
+      }
+      
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+    }
+    
+    // Update sync metadata
+    await this.db.collection('sync_metadata').doc('products_sync').set({
+      lastSync: admin.firestore.FieldValue.serverTimestamp(),
+      duration: Date.now() - startTime,
+      stats: stats,
+      status: 'completed'
+    });
+    
+    console.log('\n✅ Product sync completed!');
+    console.log(`📊 Summary:`);
+    console.log(`   Total processed: ${stats.total}`);
+    console.log(`   New items: ${stats.new}`);
+    console.log(`   Updated items: ${stats.updated}`);
+    console.log(`   Deactivated items: ${stats.deactivated}`);
+    console.log(`   Duration: ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
+    
+    return { success: true, stats };
+    
+  } catch (error) {
+    console.error('❌ Product sync failed:', error);
+    
+    // Update sync metadata with error
+    await this.db.collection('sync_metadata').doc('products_sync').set({
+      lastSync: admin.firestore.FieldValue.serverTimestamp(),
+      status: 'failed',
+      error: error.message
+    }, { merge: true });
+    
+    throw error;
+  }
+}
+
+/**
+ * Detect changes between Firebase and Zoho product data
+ */
+detectProductChanges(firebaseItem, zohoItem) {
+  // Fields to check for changes
+  const fieldsToCheck = [
+    'name',
+    'sku',
+    'status',
+    'rate',
+    'selling_price',
+    'available_stock',
+    'actual_available_stock',
+    'stock_on_hand',
+    'vendor_name',
+    'description',
+    'category',
+    'reorder_level'
+  ];
+  
+  for (const field of fieldsToCheck) {
+    // Handle numeric comparisons
+    if (['rate', 'selling_price', 'available_stock', 'actual_available_stock', 'stock_on_hand', 'reorder_level'].includes(field)) {
+      const fbValue = parseFloat(firebaseItem[field] || 0);
+      const zohoValue = parseFloat(zohoItem[field] || 0);
+      
+      if (Math.abs(fbValue - zohoValue) > 0.01) {
+        return true;
+      }
+    } else {
+      // String comparison
+      if ((firebaseItem[field] || '') !== (zohoItem[field] || '')) {
+        return true;
+      }
+    }
+  }
+  
+  // Check if last_modified_time is different
+  if (firebaseItem.last_modified_time !== zohoItem.last_modified_time) {
+    return true;
+  }
+  
+  return false;
+}
 
   /**
    * Get purchase orders
