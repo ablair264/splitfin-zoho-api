@@ -156,6 +156,7 @@ router.get('/health', (req, res) => {
         endpoints: {
             'POST /api/webhooks/create-order': 'Create sales order with proper agent tracking',
             'POST /api/webhooks/sync-customer': 'Sync customer from Zoho to Firebase',
+            'POST /api/webhooks/sync-customers': 'Sync all customers from Zoho to Firebase',
             'POST /api/webhooks/sync-order': 'Sync order from Zoho to Firebase',
             'POST /api/webhooks/trigger-sync': 'Trigger manual sync process',
             'GET /api/webhooks/order-status/:id': 'Get order status',
@@ -467,6 +468,41 @@ router.get('/user-orders/:userId', async (req, res) => {
         res.status(500).json({
             success: false,
             error: error.message
+        });
+    }
+});
+
+router.post('/sync-customers', authenticateWebhook, async (req, res) => {
+    try {
+        const { 
+            dateRange = '7_days',
+            customDateRange = null 
+        } = req.body;
+        
+        console.log(`👥 Customer sync webhook triggered for ${dateRange}`);
+        
+        // Call the sync function from zohoReportsService
+        const result = await zohoReportsService.syncCustomers(dateRange);
+        
+        console.log(`✅ Customer sync completed: ${result.synced} synced, ${result.enriched} enriched`);
+        
+        res.json({
+            success: true,
+            message: 'Customer sync completed successfully',
+            data: {
+                synced: result.synced,
+                enriched: result.enriched,
+                dateRange: dateRange,
+                timestamp: new Date().toISOString()
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Customer sync webhook error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to sync customers',
+            details: error.message
         });
     }
 });
