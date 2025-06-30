@@ -97,9 +97,6 @@ app.post('/api/zoho/salesorder', createZohoSalesOrder);
 app.post('/api/customers/sync', syncCustomerWithZoho);
 app.post('/api/customers/sync-all', syncAllCustomers);
 
-// Legacy webhook route (kept for backward compatibility)
-app.use('/api', webhookRoutes);
-
 // ── Root & Health Endpoints ─────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({

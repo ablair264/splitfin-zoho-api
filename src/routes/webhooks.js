@@ -6,6 +6,31 @@ import cronDataSyncService from '../services/cronDataSyncService.js';
 import zohoReportsService from '../services/zohoReportsService.js';
 
 const router = express.Router();
+
+/**
+ * Webhook authentication middleware
+ */
+function authenticateWebhook(req, res, next) {
+    const webhookSecret = req.headers['x-webhook-secret'];
+    
+    // Skip auth if no secret is configured (for testing)
+    if (!process.env.WEBHOOK_SECRET) {
+        console.warn('⚠️  No WEBHOOK_SECRET configured - webhook auth disabled');
+        return next();
+    }
+    
+    // Check if secret matches
+    if (webhookSecret !== process.env.WEBHOOK_SECRET) {
+        console.warn(`Webhook auth failed from IP: ${req.ip}`);
+        return res.status(401).json({ 
+            success: false,
+            error: 'Unauthorized - Invalid webhook secret' 
+        });
+    }
+    
+    next();
+}
+
 /**
  * Enhanced validation middleware with agent ID handling
  */
@@ -56,7 +81,7 @@ function validateOrderData(req, res, next) {
 }
 
 /**
- * NEW: Middleware to get user context and agent IDs
+ * Middleware to get user context and agent IDs
  */
 async function getUserAgentContext(req, res, next) {
     try {
@@ -129,13 +154,21 @@ router.get('/health', (req, res) => {
         message: 'Webhook service is healthy',
         timestamp: new Date().toISOString(),
         endpoints: {
-            'POST /api/create-order': 'Create sales order with proper agent tracking',
-            'GET /api/order-status/:id': 'Get order status',
-            'GET /api/test': 'Test endpoint'
+            'POST /api/webhooks/create-order': 'Create sales order with proper agent tracking',
+            'POST /api/webhooks/sync-customer': 'Sync customer from Zoho to Firebase',
+            'POST /api/webhooks/sync-order': 'Sync order from Zoho to Firebase',
+            'POST /api/webhooks/trigger-sync': 'Trigger manual sync process',
+            'GET /api/webhooks/order-status/:id': 'Get order status',
+            'GET /api/webhooks/user-orders/:userId': 'Get user recent orders',
+            'GET /api/webhooks/test': 'Test endpoint',
+            'GET /api/webhooks/health': 'Health check'
         },
-        agentIdHandling: {
-            crmId: 'Used for customer assignment and Firebase tracking',
-            inventoryId: 'Used for Inventory API sales order creation'
+        syncTypes: {
+            high: 'Sync last hour data',
+            medium: 'Sync last 24 hours',
+            low: 'Sync last 7 days + cleanup',
+            customers: 'Sync only customers',
+            orders: 'Sync only orders'
         }
     });
 });
@@ -382,7 +415,7 @@ router.get('/order-status/:id', async (req, res) => {
     }
 });
 
-// NEW: Endpoint to get user's recent orders
+// Endpoint to get user's recent orders
 router.get('/user-orders/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
@@ -434,6 +467,251 @@ router.get('/user-orders/:userId', async (req, res) => {
         res.status(500).json({
             success: false,
             error: error.message
+        });
+    }
+});
+
+/**
+ * Handle Make.com webhook after customer creation in Zoho
+ */
+router.post('/sync-customer', authenticateWebhook, async (req, res) => {
+    try {
+        const { 
+            firebase_doc_id, 
+            zoho_customer_id,
+            zoho_contact_data 
+        } = req.body;
+
+        console.log('📥 Received customer sync request:', {
+            firebase_doc_id,
+            zoho_customer_id
+        });
+
+        if (!firebase_doc_id || !zoho_customer_id) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Missing required fields: firebase_doc_id or zoho_customer_id' 
+            });
+        }
+
+        const db = admin.firestore();
+        
+        // Prepare update data matching your existing structure
+        const updateData = {
+            customer_id: zoho_customer_id,
+            sync_status: 'synced',
+            _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+            last_modified_time: new Date().toISOString()
+        };
+
+        // If full Zoho contact data is provided, add it
+        if (zoho_contact_data) {
+            updateData.zoho_data = JSON.stringify(zoho_contact_data);
+            updateData._source = 'make_webhook';
+            
+            // Extract key fields to top level for easier querying
+            updateData.customer_name = zoho_contact_data.contact_name || zoho_contact_data.customer_name;
+            updateData.company_name = zoho_contact_data.company_name || '';
+            updateData.email = zoho_contact_data.email || '';
+            updateData.phone = zoho_contact_data.phone || '';
+            updateData.currency_code = zoho_contact_data.currency_code || 'GBP';
+            updateData.payment_terms = zoho_contact_data.payment_terms || 30;
+            updateData.status = zoho_contact_data.status || 'active';
+            updateData.outstanding_receivable_amount = zoho_contact_data.outstanding_receivable_amount || 0;
+            
+            // Handle addresses
+            if (zoho_contact_data.billing_address) {
+                updateData.billing_address = zoho_contact_data.billing_address;
+            }
+            if (zoho_contact_data.shipping_address) {
+                updateData.shipping_address = zoho_contact_data.shipping_address;
+            }
+        }
+
+        // Update the Firebase document
+        await db.collection('customer_data').doc(firebase_doc_id).update(updateData);
+
+        console.log(`✅ Customer ${zoho_customer_id} synced to Firebase doc ${firebase_doc_id}`);
+        
+        res.json({ 
+            success: true, 
+            message: 'Customer synced successfully',
+            firebase_doc_id,
+            zoho_customer_id,
+            sync_fields_updated: Object.keys(updateData).length
+        });
+        
+    } catch (error) {
+        console.error('❌ Customer sync error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to sync customer',
+            details: error.message 
+        });
+    }
+});
+
+/**
+ * Handle Make.com webhook after sales order creation in Zoho
+ */
+router.post('/sync-order', authenticateWebhook, async (req, res) => {
+    try {
+        const { 
+            salesorder_id,
+            salesorder_number,
+            customer_id,
+            refresh_from_zoho = true
+        } = req.body;
+
+        console.log('📥 Received order sync request:', {
+            salesorder_id,
+            salesorder_number,
+            customer_id
+        });
+
+        if (!salesorder_id) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Missing required field: salesorder_id' 
+            });
+        }
+
+        const db = admin.firestore();
+        
+        if (refresh_from_zoho) {
+            // Fetch the complete order from Zoho
+            const orderDetails = await zohoReportsService.getSalesOrderById(salesorder_id);
+            
+            if (orderDetails) {
+                // Enrich the order with UIDs
+                const enrichedOrders = await cronDataSyncService.enrichOrdersWithUIDs([orderDetails]);
+                const enrichedOrder = enrichedOrders[0];
+                
+                // Save to salesorders collection
+                await db.collection('salesorders').doc(salesorder_id).set({
+                    ...enrichedOrder,
+                    _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+                    _syncSource: 'webhook_make'
+                });
+                
+                // Process sales transactions
+                const transactions = await cronDataSyncService.processSalesTransactions(
+                    [enrichedOrder], 
+                    db
+                );
+                
+                // Save transactions using the batch write method
+                if (transactions.length > 0) {
+                    await cronDataSyncService._batchWrite(
+                        db, 
+                        'sales_transactions', 
+                        transactions, 
+                        'transaction_id'
+                    );
+                    
+                    // Update brand statistics
+                    await cronDataSyncService.updateBrandStatistics(transactions, '30_days');
+                }
+                
+                console.log(`✅ Sales order ${salesorder_id} synced with ${transactions.length} transactions`);
+                
+                res.json({ 
+                    success: true, 
+                    salesorder_id,
+                    salesorder_number: orderDetails.salesorder_number,
+                    transactions_created: transactions.length,
+                    sync_source: 'zoho_refresh'
+                });
+                
+            } else {
+                throw new Error('Could not fetch order details from Zoho');
+            }
+        } else {
+            // Just update the reference in existing order
+            const existingOrder = await db.collection('orders')
+                .where('zohoOrderID', '==', salesorder_id)
+                .limit(1)
+                .get();
+                
+            if (!existingOrder.empty) {
+                await existingOrder.docs[0].ref.update({
+                    zohoSynced: true,
+                    zohoSyncedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            }
+            
+            res.json({ 
+                success: true, 
+                salesorder_id,
+                sync_source: 'reference_update'
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Order sync error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to sync order',
+            details: error.message 
+        });
+    }
+});
+
+/**
+ * Trigger a manual sync
+ */
+router.post('/trigger-sync', authenticateWebhook, async (req, res) => {
+    try {
+        const { 
+            sync_type = 'high',
+            target_date = 'today' 
+        } = req.body;
+        
+        console.log(`🔄 Manual sync triggered: ${sync_type} for ${target_date}`);
+        
+        let result;
+        switch (sync_type) {
+            case 'high':
+                result = await cronDataSyncService.highFrequencySync();
+                break;
+            case 'medium':
+                result = await cronDataSyncService.mediumFrequencySync();
+                break;
+            case 'low':
+                result = await cronDataSyncService.lowFrequencySync();
+                break;
+            case 'customers':
+                result = await zohoReportsService.syncCustomers(target_date);
+                break;
+            case 'orders':
+                const orders = await zohoReportsService.getSalesOrders(target_date);
+                const enrichedOrders = await cronDataSyncService.enrichOrdersWithUIDs(orders);
+                await cronDataSyncService._batchWrite(
+                    admin.firestore(), 
+                    'salesorders', 
+                    enrichedOrders, 
+                    'salesorder_id'
+                );
+                result = { success: true, orders_synced: enrichedOrders.length };
+                break;
+            default:
+                return res.status(400).json({ 
+                    success: false,
+                    error: 'Invalid sync type. Valid types: high, medium, low, customers, orders' 
+                });
+        }
+        
+        res.json({
+            success: true,
+            sync_type,
+            result
+        });
+        
+    } catch (error) {
+        console.error('❌ Manual sync error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
         });
     }
 });
