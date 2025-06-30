@@ -37,6 +37,27 @@ router.get('/changes', async (req, res) => {
   }
 });
 
+router.post('/sync/products-full', async (req, res) => {
+  try {
+    console.log('🚀 Starting full product sync...');
+    
+    const result = await zohoInventoryService.syncProductsWithChangeDetection();
+    
+    res.json({
+      success: true,
+      message: 'Product sync completed',
+      stats: result.stats
+    });
+    
+  } catch (error) {
+    console.error('Product sync error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 /**
  * Mark specific changes as processed by the client
  */

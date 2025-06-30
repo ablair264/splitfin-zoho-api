@@ -901,14 +901,24 @@ async mediumFrequencySync() {
     const duration = Date.now() - startTime;
     console.log(`✅ Medium frequency sync completed in ${duration}ms`);
     
-    return { 
-      success: true, 
-      duration,
-      recordsProcessed: {
-        orders: uniqueOrders.length,
-        invoices: last24HourInvoices.length
-      }
-    };
+    console.log('📦 Checking for product updates...');
+const productSyncResult = await zohoInventoryService.syncProductsWithChangeDetection();
+console.log(`✅ Product sync: ${productSyncResult.stats.updated} updated, ${productSyncResult.stats.new} new`);
+    
+return { 
+  success: true, 
+  duration,
+  recordsProcessed: {
+    orders: uniqueOrders.length,
+    invoices: last24HourInvoices.length,
+    products: {
+      total: productSyncResult.stats.total,
+      updated: productSyncResult.stats.updated,
+      new: productSyncResult.stats.new,
+      deactivated: productSyncResult.stats.deactivated
+    }
+  }
+};
     
   } catch (error) {
     console.error('❌ Medium frequency sync failed:', error);
