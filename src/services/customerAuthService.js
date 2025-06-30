@@ -32,14 +32,23 @@ export async function createCustomerAuth(customerId) {
     
     const customerData = customerDoc.data();
     
-    // Check if customer already has a Firebase UID
-    if (customerData.firebase_uid) {
-      console.log('Customer already has Firebase auth:', customerData.firebase_uid);
-      return {
-        success: true,
-        uid: customerData.firebase_uid,
-        message: 'Customer already has authentication'
-      };
+    // Check if customer already has authentication using the account field
+    if (customerData.account === true) {
+      console.log('Customer already has authentication account');
+      
+      // Optionally verify the auth user still exists
+      if (customerData.auth_uid) {
+        try {
+          await auth.getUser(customerData.auth_uid);
+          return {
+            success: true,
+            uid: customerData.auth_uid,
+            message: 'Customer already has authentication'
+          };
+        } catch (e) {
+          console.log('Auth user not found, will recreate');
+        }
+      }
     }
     
     // Prepare user data
@@ -100,15 +109,18 @@ export async function createCustomerAuth(customerId) {
     await db.collection('users').doc(authUser.uid).set(userDocData, { merge: true });
     console.log('✅ Created users collection document');
     
-    // Update customer_data with Firebase UID
+    // Update customer_data with authentication info
     await db.collection('customer_data').doc(customerId).update({
-      firebase_uid: authUser.uid,
+      account: true,  // Mark that they now have authentication
+      auth_uid: authUser.uid,  // Store the auth UID
       has_login: true,
-      login_created_at: admin.firestore.FieldValue.serverTimestamp()
+      login_created_at: admin.firestore.FieldValue.serverTimestamp(),
+      temp_password: tempPassword, // Store temporarily for email sending
+      account_created_at: admin.firestore.FieldValue.serverTimestamp()
     });
-    console.log('✅ Updated customer_data with Firebase UID');
+    console.log('✅ Updated customer_data with account status');
     
-    // Return success without trying to generate reset link for now
+    // Return success
     return {
       success: true,
       uid: authUser.uid,
@@ -159,13 +171,24 @@ export async function createAuthForAllCustomers() {
   try {
     console.log('🔄 Starting bulk auth creation...');
     
-    // Get all customers without firebase_uid
+    // Get all customers without account or where account is false
     const customersSnapshot = await db.collection('customer_data')
-      .where('firebase_uid', '==', null)
+      .where('account', '!=', true)
       .limit(50) // Process in batches
       .get();
     
-    const customerIds = customersSnapshot.docs.map(doc => doc.id);
+    // Also get customers where account field doesn't exist
+    const noAccountFieldSnapshot = await db.collection('customer_data')
+      .where('account', '==', null)
+      .limit(50)
+      .get();
+    
+    // Combine both sets
+    const allDocs = [...customersSnapshot.docs, ...noAccountFieldSnapshot.docs];
+    
+    // Remove duplicates
+    const uniqueDocs = Array.from(new Map(allDocs.map(doc => [doc.id, doc])).values());
+    const customerIds = uniqueDocs.map(doc => doc.id);
     
     if (customerIds.length === 0) {
       return {
