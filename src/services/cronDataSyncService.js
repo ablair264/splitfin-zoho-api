@@ -5,6 +5,7 @@ import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 import productSyncService from './productSyncService.js';
+import zohoInventoryService from './zohoInventoryService.js'; // ← ADD THIS LINE
 
 class CronDataSyncService {
   constructor() {
