@@ -5,94 +5,43 @@ class ReportGeneratorService {
   constructor() {
     this.db = admin.firestore();
   }
-
-  /**
-   * Generate a report based on configuration
-   */
-  async generateReport(config, userContext) {
-    console.log(`📊 Generating ${config.reportType} report for ${userContext.role}: ${userContext.name}`);
-
-    // Get date range
-    const dateRange = this.getDateRange(config.dateRange, config.customDateRange);
-    
-    // Fetch base data
-    const baseData = await this.fetchBaseData(userContext, dateRange, config.filters);
-    
-    // Apply filters
-    const filteredData = this.applyFilters(baseData, config.filters);
-    
-    // Generate report based on type
-    let reportData;
-    switch (config.reportType) {
-      case 'agent_brand':
-        reportData = await this.generateAgentBrandReport(filteredData, config);
-        break;
-      case 'agent':
-        reportData = await this.generateAgentReport(filteredData, config);
-        break;
-      case 'brand':
-        reportData = await this.generateBrandReport(filteredData, config);
-        break;
-      case 'customer':
-        reportData = await this.generateCustomerReport(filteredData, config);
-        break;
-      case 'region':
-        reportData = await this.generateRegionReport(filteredData, config);
-        break;
-      case 'popular_items_brand':
-        reportData = await this.generatePopularItemsByBrandReport(filteredData, config);
-        break;
-      case 'popular_items_all':
-        reportData = await this.generatePopularItemsReport(filteredData, config);
-        break;
-      default:
-        throw new Error(`Unknown report type: ${config.reportType}`);
-    }
-
-    return {
-      config,
-      data: reportData,
-      metadata: {
-        generatedAt: new Date().toISOString(),
-        dataRange: {
-          start: dateRange.start.toISOString().split('T')[0],
-          end: dateRange.end.toISOString().split('T')[0]
-        },
-        recordCounts: {
-          orders: filteredData.orders.length,
-          invoices: filteredData.invoices.length,
-          customers: filteredData.customers.length,
-          transactions: filteredData.transactions?.length || 0
-        },
-        filters: {
-          excludedMarketplaceOrders: config.filters.excludeMarketplace ? 
-            baseData.orders.filter(o => this.isMarketplaceOrder(o)).length : 0,
-          appliedFilters: this.getAppliedFilters(config.filters)
-        }
-      }
-    };
-  }
-
-  /**
-   * Fetch base data from Firestore
-   */
   async fetchBaseData(userContext, dateRange, filters) {
     const { start, end } = dateRange;
     
-    // Fetch orders
+    // 1. Fetch salesorders with correct field names
     let ordersQuery = this.db.collection('salesorders')
       .where('date', '>=', start.toISOString().split('T')[0])
       .where('date', '<=', end.toISOString().split('T')[0]);
       
-    // Filter by agent for sales agents
+    // Filter by agent for sales agents using correct field
     if (userContext.role === 'salesAgent') {
-      ordersQuery = ordersQuery.where('salesperson_uid', '==', userContext.userId);
+      ordersQuery = ordersQuery.where('salesperson_id', '==', userContext.zohospID);
     }
     
     const ordersSnapshot = await ordersQuery.get();
     const orders = ordersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    // Fetch invoices
+    // 2. Fetch sales_transactions to get brand information
+    const salesOrderIds = orders.map(order => order.salesorder_id || order.id);
+    let transactions = [];
+    
+    if (salesOrderIds.length > 0) {
+      // Firestore 'in' queries are limited to 10 items, so we need to batch them
+      const transactionBatches = [];
+      for (let i = 0; i < salesOrderIds.length; i += 10) {
+        const batch = salesOrderIds.slice(i, i + 10);
+        const transactionQuery = this.db.collection('sales_transactions')
+          .where('order_id', 'in', batch);
+        transactionBatches.push(transactionQuery.get());
+      }
+      
+      const transactionSnapshots = await Promise.all(transactionBatches);
+      transactions = transactionSnapshots.flatMap(snapshot => 
+        snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      );
+    }
+
+    // 3. Fetch invoices
     let invoicesQuery = this.db.collection('invoices')
       .where('date', '>=', start.toISOString().split('T')[0])
       .where('date', '<=', end.toISOString().split('T')[0]);
@@ -100,53 +49,52 @@ class ReportGeneratorService {
     const invoicesSnapshot = await invoicesQuery.get();
     const invoices = invoicesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    // Fetch customers
+    // 4. Fetch customers
     const customersSnapshot = await this.db.collection('customer_data').get();
     const customers = customersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    // Fetch sales transactions if needed
-    let transactions = [];
-    try {
-      const transactionsSnapshot = await this.db.collection('sales_transactions')
-        .where('date', '>=', start.toISOString().split('T')[0])
-        .where('date', '<=', end.toISOString().split('T')[0])
-        .get();
-      transactions = transactionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    } catch (error) {
-      console.warn('Sales transactions collection not available:', error.message);
-    }
-
-    // Fetch users for agent information
+    // 5. Fetch users for agent information (using zohospID relationship)
     const usersSnapshot = await this.db.collection('users').get();
     const users = usersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    return { orders, invoices, customers, transactions, users };
+    return { orders, transactions, invoices, customers, users };
   }
 
   /**
-   * Apply filters to the data
+   * Apply filters with correct relationships
    */
   applyFilters(data, filters) {
-    let { orders, invoices, customers, transactions, users } = data;
+    let { orders, transactions, invoices, customers, users } = data;
 
-    // Exclude marketplace orders if specified
-    if (filters.excludeMarketplace) {
-      orders = orders.filter(order => !this.isMarketplaceOrder(order));
-    }
+    // Create lookup maps for efficient filtering
+    const transactionsByOrderId = new Map();
+    transactions.forEach(transaction => {
+      if (!transactionsByOrderId.has(transaction.order_id)) {
+        transactionsByOrderId.set(transaction.order_id, []);
+      }
+      transactionsByOrderId.get(transaction.order_id).push(transaction);
+    });
 
-    // Filter by brands
+    // Filter by brands using sales_transactions.brand_normalized
     if (filters.brands && filters.brands.length > 0) {
+      const ordersWithMatchingBrands = new Set();
+      
+      transactions.forEach(transaction => {
+        if (transaction.brand_normalized && 
+            filters.brands.includes(transaction.brand_normalized.toLowerCase())) {
+          ordersWithMatchingBrands.add(transaction.order_id);
+        }
+      });
+      
       orders = orders.filter(order => 
-        order.line_items?.some(item => 
-          filters.brands.includes(item.brand?.toLowerCase())
-        )
+        ordersWithMatchingBrands.has(order.salesorder_id || order.id)
       );
     }
 
-    // Filter by agents
+    // Filter by agents using correct relationship (salesperson_id -> users.zohospID)
     if (filters.agents && filters.agents.length > 0) {
       orders = orders.filter(order => 
-        filters.agents.includes(order.salesperson_uid)
+        filters.agents.includes(order.salesperson_id)
       );
     }
 
@@ -156,99 +104,111 @@ class ReportGeneratorService {
         filters.invoiceStatus.includes(invoice.status)
       );
       
-      // Filter orders that have invoices with these statuses
       const invoiceOrderIds = invoices.map(inv => inv.salesorder_id);
-      orders = orders.filter(order => invoiceOrderIds.includes(order.id));
+      orders = orders.filter(order => invoiceOrderIds.includes(order.salesorder_id || order.id));
     }
 
-    // Filter by shipping status
-    if (filters.shippingStatus && filters.shippingStatus.length > 0) {
-      orders = orders.filter(order => 
-        filters.shippingStatus.includes(order.shipped_status)
-      );
-    }
-
-    // Filter by customer segments
+    // Filter by customer segments (when the field becomes available)
     if (filters.customerSegments && filters.customerSegments.length > 0) {
       const filteredCustomerIds = customers
         .filter(customer => filters.customerSegments.includes(customer.segment))
-        .map(customer => customer.firebase_uid);
+        .map(customer => customer.id);
       
       orders = orders.filter(order => 
         filteredCustomerIds.includes(order.customer_id)
       );
     }
 
-    // Filter by regions
+    // Filter by regions using users.zohospID relationship
     if (filters.regions && filters.regions.length > 0) {
       const agentsInRegions = users.filter(user => 
         user.region && filters.regions.some(region => 
           user.region.includes(region)
         )
-      ).map(user => user.uid);
+      ).map(user => user.zohospID); // Use zohospID instead of uid
       
       orders = orders.filter(order => 
-        agentsInRegions.includes(order.salesperson_uid)
+        agentsInRegions.includes(order.salesperson_id)
       );
     }
 
-    return { orders, invoices, customers, transactions, users };
+    // Exclude marketplace orders if specified
+    if (filters.excludeMarketplace) {
+      orders = orders.filter(order => !this.isMarketplaceOrder(order));
+    }
+
+    return { orders, transactions, invoices, customers, users };
   }
 
   /**
-   * Generate Agent/Brand performance report
+   * Generate Brand performance report with correct data source
    */
-  async generateAgentBrandReport(data, config) {
-    const { orders, users } = data;
-    const agentBrandPerformance = new Map();
+  async generateBrandReport(data, config) {
+    const { orders, transactions, users } = data;
+    const brandPerformance = new Map();
+
+    // Create lookup for transactions by order_id
+    const transactionsByOrderId = new Map();
+    transactions.forEach(transaction => {
+      if (!transactionsByOrderId.has(transaction.order_id)) {
+        transactionsByOrderId.set(transaction.order_id, []);
+      }
+      transactionsByOrderId.get(transaction.order_id).push(transaction);
+    });
 
     orders.forEach(order => {
-      const agent = users.find(u => u.uid === order.salesperson_uid);
-      const agentName = agent?.name || 'Unknown Agent';
+      const orderTransactions = transactionsByOrderId.get(order.salesorder_id || order.id) || [];
       
-      order.line_items?.forEach(item => {
-        const brand = item.brand || 'Unknown Brand';
-        const key = `${agentName}|${brand}`;
+      orderTransactions.forEach(transaction => {
+        const brand = transaction.brand_normalized || 'Unknown Brand';
         
-        if (!agentBrandPerformance.has(key)) {
-          agentBrandPerformance.set(key, {
-            agentName,
-            brand,
+        if (!brandPerformance.has(brand)) {
+          brandPerformance.set(brand, {
+            brandName: brand,
             revenue: 0,
             orders: 0,
-            quantity: 0
+            quantity: 0,
+            customers: new Set()
           });
         }
         
-        const performance = agentBrandPerformance.get(key);
-        performance.revenue += item.item_total || (item.quantity * item.rate) || 0;
+        const performance = brandPerformance.get(brand);
+        performance.revenue += transaction.total_amount || transaction.amount || 0;
         performance.orders += 1;
-        performance.quantity += item.quantity || 0;
+        performance.quantity += transaction.quantity || 0;
+        performance.customers.add(order.customer_id);
       });
     });
 
+    // Convert customers set to count
+    brandPerformance.forEach(performance => {
+      performance.customers = performance.customers.size;
+    });
+
     return {
-      agentBrandPerformance: Array.from(agentBrandPerformance.values())
+      brandPerformance: Array.from(brandPerformance.values())
         .sort((a, b) => b.revenue - a.revenue),
-      summary: this.generateSummary(orders, 'agent_brand')
+      summary: this.generateSummary(orders, 'brand')
     };
   }
 
   /**
-   * Generate Agent performance report
+   * Generate Agent performance report with correct relationships
    */
   async generateAgentReport(data, config) {
     const { orders, users } = data;
     const agentPerformance = new Map();
 
     orders.forEach(order => {
-      const agent = users.find(u => u.uid === order.salesperson_uid);
+      // Find agent using salesperson_id -> users.zohospID relationship
+      const agent = users.find(u => u.zohospID === order.salesperson_id);
       const agentName = agent?.name || 'Unknown Agent';
       
-      if (!agentPerformance.has(order.salesperson_uid)) {
-        agentPerformance.set(order.salesperson_uid, {
+      if (!agentPerformance.has(order.salesperson_id)) {
+        agentPerformance.set(order.salesperson_id, {
           agentName,
-          agentId: order.salesperson_uid,
+          agentId: order.salesperson_id,
+          zohospID: agent?.zohospID,
           revenue: 0,
           orders: 0,
           customers: new Set(),
@@ -256,7 +216,7 @@ class ReportGeneratorService {
         });
       }
       
-      const performance = agentPerformance.get(order.salesperson_uid);
+      const performance = agentPerformance.get(order.salesperson_id);
       performance.revenue += order.total || 0;
       performance.orders += 1;
       performance.customers.add(order.customer_id);
@@ -276,44 +236,67 @@ class ReportGeneratorService {
   }
 
   /**
-   * Generate Brand performance report
+   * Get filter options with correct data sources
    */
-  async generateBrandReport(data, config) {
-    const { orders } = data;
-    const brandPerformance = new Map();
-
-    orders.forEach(order => {
-      order.line_items?.forEach(item => {
-        const brand = item.brand || 'Unknown Brand';
-        
-        if (!brandPerformance.has(brand)) {
-          brandPerformance.set(brand, {
-            brandName: brand,
-            revenue: 0,
-            orders: 0,
-            quantity: 0,
-            customers: new Set()
-          });
+  async getFilterOptions(userContext) {
+    try {
+      // Get brands from sales_transactions.brand_normalized
+      const transactionsSnapshot = await this.db.collection('sales_transactions').limit(1000).get();
+      const brandSet = new Set();
+      
+      transactionsSnapshot.docs.forEach(doc => {
+        const transaction = doc.data();
+        if (transaction.brand_normalized) {
+          brandSet.add(transaction.brand_normalized);
         }
-        
-        const performance = brandPerformance.get(brand);
-        performance.revenue += item.item_total || (item.quantity * item.rate) || 0;
-        performance.orders += 1;
-        performance.quantity += item.quantity || 0;
-        performance.customers.add(order.customer_id);
       });
-    });
 
-    // Convert customers set to count
-    brandPerformance.forEach(performance => {
-      performance.customers = performance.customers.size;
-    });
+      const brands = Array.from(brandSet).map(brand => ({
+        id: brand.toLowerCase(),
+        name: brand
+      }));
 
-    return {
-      brandPerformance: Array.from(brandPerformance.values())
-        .sort((a, b) => b.revenue - a.revenue),
-      summary: this.generateSummary(orders, 'brand')
-    };
+      // Get agents from users collection using zohospID
+      const usersSnapshot = await this.db.collection('users')
+        .where('role', '==', 'salesAgent')
+        .get();
+      
+      const agents = usersSnapshot.docs.map(doc => {
+        const user = doc.data();
+        return {
+          id: user.zohospID, // Use zohospID instead of doc.id
+          name: user.name || user.email
+        };
+      }).filter(agent => agent.id); // Filter out users without zohospID
+
+      // Get regions from users
+      const regionSet = new Set();
+      usersSnapshot.docs.forEach(doc => {
+        const user = doc.data();
+        if (user.region && Array.isArray(user.region)) {
+          user.region.forEach(r => regionSet.add(r));
+        }
+      });
+
+      const regions = Array.from(regionSet).map(region => ({
+        id: region,
+        name: region
+      }));
+
+      return {
+        brands,
+        agents,
+        regions
+      };
+
+    } catch (error) {
+      console.error('Error getting filter options:', error);
+      return {
+        brands: [],
+        agents: [],
+        regions: []
+      };
+    }
   }
 
   /**
