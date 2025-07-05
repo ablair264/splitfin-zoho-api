@@ -1,7 +1,7 @@
 // server/src/routes/webhooks.js
 import express from 'express';
 import { createSalesOrder } from '../api/zoho.js';
-import admin from 'firebase-admin';
+import { db, auth } from '../config/firebase.js';
 import cronDataSyncService from '../services/cronDataSyncService.js';
 import zohoReportsService from '../services/zohoReportsService.js';
 import { createCustomerAuth } from '../services/customerAuthService.js';
@@ -92,7 +92,7 @@ async function getUserAgentContext(req, res, next) {
             return next(); // Skip if no firebaseUID (validation will catch this)
         }
         
-        const db = admin.firestore();
+        const db = db;
         const userDoc = await db.collection('users').doc(firebaseUID).get();
         
         if (!userDoc.exists) {
@@ -226,7 +226,7 @@ router.post('/create-order', validateOrderData, getUserAgentContext, async (req,
         
         // ENHANCED: Store order in Firebase with both agent IDs for proper tracking
         if (result.success && result.salesorder) {
-            const db = admin.firestore();
+            const db = db;
             const orderDoc = {
                 // Zoho data
                 zohoOrderID: result.salesorder.salesorder_id,
@@ -245,15 +245,15 @@ router.post('/create-order', validateOrderData, getUserAgentContext, async (req,
                 status: result.salesorder.status || 'draft',
                 
                 // Timestamps
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+                createdAt: new Date(),
+                submittedAt: new Date(),
                 
                 // Source tracking
                 source: 'webhook',
                 isDraft: false,
                 needsZohoUpload: false,
                 zohoUploaded: true,
-                zohoUploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+                zohoUploadedAt: new Date(),
                 
                 // Enhanced response data
                 zohoResponse: {
@@ -377,7 +377,7 @@ router.get('/order-status/:id', async (req, res) => {
             });
         }
         
-        const db = admin.firestore();
+        const db = db;
         
         // Get order from Firebase
         const orderDoc = await db.collection('orders').doc(orderId).get();
@@ -446,7 +446,7 @@ router.get('/user-orders/:userId', async (req, res) => {
         const { userId } = req.params;
         const { limit = 10 } = req.query;
         
-        const db = admin.firestore();
+        const db = db;
         
         // Get user context first
         const userDoc = await db.collection('users').doc(userId).get();
@@ -554,13 +554,13 @@ router.post('/sync-customer', authenticateWebhook, async (req, res) => {
             });
         }
 
-        const db = admin.firestore();
+        const db = db;
         
         // Prepare update data matching your existing structure
         const updateData = {
             customer_id: zoho_customer_id,
             sync_status: 'synced',
-            _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+            _lastSynced: new Date(),
             last_modified_time: new Date().toISOString()
         };
 
@@ -636,7 +636,7 @@ router.post('/sync-order', authenticateWebhook, async (req, res) => {
             });
         }
 
-        const db = admin.firestore();
+        const db = db;
         
         if (refresh_from_zoho) {
             // Fetch the complete order from Zoho
@@ -650,7 +650,7 @@ router.post('/sync-order', authenticateWebhook, async (req, res) => {
                 // Save to salesorders collection
                 await db.collection('salesorders').doc(salesorder_id).set({
                     ...enrichedOrder,
-                    _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+                    _lastSynced: new Date(),
                     _syncSource: 'webhook_make'
                 });
                 
@@ -696,7 +696,7 @@ router.post('/sync-order', authenticateWebhook, async (req, res) => {
             if (!existingOrder.empty) {
                 await existingOrder.docs[0].ref.update({
                     zohoSynced: true,
-                    zohoSyncedAt: admin.firestore.FieldValue.serverTimestamp()
+                    zohoSyncedAt: new Date()
                 });
             }
             
@@ -747,7 +747,7 @@ router.post('/trigger-sync', authenticateWebhook, async (req, res) => {
                 const orders = await zohoReportsService.getSalesOrders(target_date);
                 const enrichedOrders = await cronDataSyncService.enrichOrdersWithUIDs(orders);
                 await cronDataSyncService._batchWrite(
-                    admin.firestore(), 
+                    db, 
                     'salesorders', 
                     enrichedOrders, 
                     'salesorder_id'

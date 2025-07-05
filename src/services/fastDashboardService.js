@@ -1,6 +1,6 @@
 // v2 - Updated to be consistent with zohoReportsService changes
 
-import admin from 'firebase-admin';
+import { db, auth } from '../config/firebase.js';
 import cronDataSyncService from './cronDataSyncService.js';
 import zohoReportsService from './zohoReportsService.js';
 import dataNormalizationService from './dataNormalizerService.js';
@@ -20,7 +20,7 @@ class FastDashboardService {
     try {
       console.log(`⚡ Fast dashboard data fetch for user ${userId}, range: ${dateRange}`);
 
-      const db = admin.firestore();
+      const db = db;
 
       const userDoc = await db.collection('users').doc(userId).get();
       if (!userDoc.exists) {

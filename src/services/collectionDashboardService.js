@@ -1,11 +1,11 @@
 // src/services/collectionDashboardService.js
 // Updated to use your actual collection structure
 
-import admin from 'firebase-admin';
+import { db, auth } from '../config/firebase.js';
 
 class CollectionDashboardService {
   constructor() {
-    this.db = admin.firestore();
+    this.db = db;
 
     // Bind methods
     this.getManagerDashboard = this.getManagerDashboard.bind(this);

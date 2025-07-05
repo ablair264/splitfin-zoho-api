@@ -1,6 +1,6 @@
 // server/src/routes/ai-insights.js
 import express from 'express';
-import admin from 'firebase-admin';
+import { db, auth } from '../config/firebase.js';
 import { 
   generateAIInsights, 
   generateCardInsights, 
@@ -80,11 +80,11 @@ async function validateUserForAI(req, res, next) {
       
       try {
         // Attempt to verify the Firebase token
-        const decodedToken = await admin.auth().verifyIdToken(token);
+        const decodedToken = await auth.verifyIdToken(token);
         req.userId = decodedToken.uid;
         
         // Get user context from Firestore
-        const db = admin.firestore();
+        const db = db;
         const userDoc = await db.collection('users').doc(req.userId).get();
         
         if (userDoc.exists) {
@@ -836,5 +836,4 @@ function getCurrentSeason() {
 }
 
 export default router;
-    
     

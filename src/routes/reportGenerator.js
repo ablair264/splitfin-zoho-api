@@ -1,6 +1,6 @@
 // server/src/routes/reportGenerator.js
 import express from 'express';
-import admin from 'firebase-admin';
+import { db, auth } from '../config/firebase.js';
 import reportGeneratorService from '../services/reportGeneratorService.js';
 import collectionDashboardService from '../services/collectionDashboardService.js';
 
@@ -20,7 +20,7 @@ async function authenticateUser(req, res, next) {
     }
 
     const token = authHeader.split('Bearer ')[1];
-    const decodedToken = await admin.auth().verifyIdToken(token);
+    const decodedToken = await auth.verifyIdToken(token);
     req.user = decodedToken;
     next();
   } catch (error) {
@@ -46,7 +46,7 @@ async function getUserContext(req, res, next) {
       });
     }
 
-    const db = admin.firestore();
+    const db = db;
     const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
