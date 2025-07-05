@@ -1,5 +1,5 @@
 // server/src/syncInventory.js
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 import crypto from 'crypto';
 import { getInventoryContactIdByEmail, fetchProductsFromInventory, fetchCustomersFromCRM } from './api/zoho.js';
 import productSyncService from './services/productSyncService.js';

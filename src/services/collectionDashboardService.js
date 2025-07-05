@@ -1,7 +1,7 @@
 // src/services/collectionDashboardService.js
 // Updated to use your actual collection structure
 
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 
 class CollectionDashboardService {
   constructor() {

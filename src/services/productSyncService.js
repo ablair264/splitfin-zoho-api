@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { db } from '../config/firebase.js';
+import { db } from './config/firebase.js';
 import { getAccessToken } from '../api/zoho.js';
 
 // Rate Limiter Class

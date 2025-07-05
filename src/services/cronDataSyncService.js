@@ -1,7 +1,7 @@
 // src/services/cronDataSyncService.js
 // Cleaned up version with proper incremental syncing and brand handling
 
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 import zohoReportsService from './zohoReportsService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 import productSyncService from './productSyncService.js';

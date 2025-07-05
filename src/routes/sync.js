@@ -1,6 +1,6 @@
 // server/src/routes/sync.js
 import express from 'express';
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 import firestoreSyncService from '../firestoreSyncService.js';
 import { syncInventory, syncCustomersFromCRM } from '../syncInventory.js';
 import zohoInventoryService from '../services/zohoInventoryService.js';

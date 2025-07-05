@@ -1,6 +1,6 @@
 // server/src/routes/ai-insights.js
 import express from 'express';
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 import { 
   generateAIInsights, 
   generateCardInsights, 
