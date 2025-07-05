@@ -5,7 +5,7 @@ import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import * as tf from '@tensorflow/tfjs-node';
 import NodeCache from 'node-cache';
-import { db, auth } from './config/firebase.js';
+import { db, auth } from '../config/firebase.js';
 import zohoReportsService from './zohoReportsService.js';
 import axios from 'axios';
 

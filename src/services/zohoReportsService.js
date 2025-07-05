@@ -1,6 +1,6 @@
 // server/src/services/zohoReportsService.js
 import axios from 'axios';
-import { db, auth } from './config/firebase.js';
+import { db, auth } from '../config/firebase.js';
 import { getAccessToken } from '../api/zoho.js';
 import zohoInventoryService from './zohoInventoryService.js';
 

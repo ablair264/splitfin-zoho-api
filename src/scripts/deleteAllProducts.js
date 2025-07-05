@@ -1,6 +1,6 @@
 // server/src/scripts/deleteAllProducts.js
 import admin from 'firebase-admin';
-import './config/firebase.js'; // Your Firebase initialization
+import '../config/firebase.js'; // Your Firebase initialization
 
 async function deleteAllProducts() {
   const db = admin.firestore();
