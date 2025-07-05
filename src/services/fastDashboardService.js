@@ -1,6 +1,6 @@
 // v2 - Updated to be consistent with zohoReportsService changes
 
-import { db, auth } from './config/firebase.js';
+import { db, auth } from '../config/firebase.js';
 import cronDataSyncService from './cronDataSyncService.js';
 import zohoReportsService from './zohoReportsService.js';
 import dataNormalizationService from './dataNormalizerService.js';

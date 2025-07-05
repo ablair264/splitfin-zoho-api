@@ -1,5 +1,5 @@
 import productSyncService from '../services/productSyncService.js';
-import './config/firebase.js'; // Your Firebase initialization
+import '../config/firebase.js'; // Your Firebase initialization
 
 async function runProductSync() {
   console.log('🚀 Starting product sync process...');

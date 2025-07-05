@@ -3,7 +3,7 @@
 // Run with: node src/scripts/migrateToNewUserStructure.js
 
 import admin from 'firebase-admin';
-import './config/firebase.js';
+import '../config/firebase.js';
 import { Timestamp } from 'firebase-admin/firestore';
 
 const db = admin.firestore();

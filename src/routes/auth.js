@@ -1,7 +1,7 @@
 // server/src/routes/auth.js
 import express from 'express';
 import axios from 'axios';
-import { db, auth } from './config/firebase.js';
+import { db, auth } from '../config/firebase.js';
 
 const router = express.Router();
 

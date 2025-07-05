@@ -1,5 +1,4 @@
 // server/src/services/firestoreSyncService.js
-import { db } from './config/firebase.js'; // <-- IMPORT DB
 import { db, auth } from './config/firebase.js';
 
 class FirestoreSyncService {
