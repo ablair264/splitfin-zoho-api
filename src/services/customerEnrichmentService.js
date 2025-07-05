@@ -1,10 +1,10 @@
 // src/services/customerEnrichmentService.js
-import { db, auth } from '../config/firebase.js';
+import admin from 'firebase-admin';
 import axios from 'axios';
 
 class CustomerEnrichmentService {
   constructor() {
-    this.db = db;
+    this.db = admin.firestore();
     this.GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || 'AIzaSyB3fpUZexx1zRETMigOVtWFUNDe9Xe_sfs';
     
     // UK Region mapping based on coordinates
@@ -186,7 +186,7 @@ class CustomerEnrichmentService {
       
       // Update customer if there are changes
       if (Object.keys(updates).length > 0) {
-        updates._enriched_at = new Date();
+        updates._enriched_at = admin.firestore.FieldValue.serverTimestamp();
         await this.db.collection('customers').doc(customerId).update(updates);
         console.log(`✅ Enriched customer ${customer.customer_name}`);
         return updates;

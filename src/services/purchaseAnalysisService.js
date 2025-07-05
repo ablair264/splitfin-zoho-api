@@ -5,7 +5,7 @@ import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import * as tf from '@tensorflow/tfjs-node';
 import NodeCache from 'node-cache';
-import { db, auth } from '../config/firebase.js';
+import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
 import axios from 'axios';
 
@@ -312,7 +312,7 @@ class PurchaseAnalysisService {
   }
 
   async saveCompetitorData(results) {
-    const db = db;
+    const db = admin.firestore();
     const batch = db.batch();
     
     results.forEach(result => {
@@ -328,7 +328,7 @@ class PurchaseAnalysisService {
   console.log(`🔄 Analyzing brand ${brandId}`);
   
   try {
-    const db = db;
+    const db = admin.firestore();
     
     // 1. First verify the brand exists
     const brandDoc = await db.collection('brands').doc(brandId).get();
@@ -470,7 +470,7 @@ class PurchaseAnalysisService {
     await db.collection('purchase_analyses').doc(analysisId).set({
       brandId,
       brandName,
-      timestamp: new Date(),
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
       predictions: predictions.filter(p => p.recommendedQuantity > 0),
       searchData,
       competitorDataSummary: competitorData.length,
@@ -492,7 +492,7 @@ class PurchaseAnalysisService {
 }
 
 async getSalesHistory(skus) {
-  const db = db;
+  const db = admin.firestore();
   const salesMap = new Map();
   
   // Get last 90 days of sales
@@ -727,7 +727,7 @@ async getSalesHistory(skus) {
   }
 
   async getLatestAnalysis(brandId) {
-  const db = db;
+  const db = admin.firestore();
   
   try {
     const snapshot = await db.collection('purchase_analyses')

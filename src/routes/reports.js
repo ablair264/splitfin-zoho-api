@@ -1,7 +1,7 @@
 // server/src/routes/reports.js - UPDATED TO USE COLLECTION-BASED SERVICE
 import express from 'express';
 import zohoReportsService from '../services/zohoReportsService.js';
-import { db, auth } from '../config/firebase.js';
+import admin from 'firebase-admin';
 import collectionDashboardService from '../services/collectionDashboardService.js';
 
 const router = express.Router();
@@ -46,7 +46,7 @@ async function getUserContext(req, res, next) {
       });
     }
     
-    const db = db;
+    const db = admin.firestore();
     const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
@@ -254,7 +254,7 @@ router.get('/collections/:collection', validateDateRange, getUserContext, async 
       });
     }
     
-    const db = db;
+    const db = admin.firestore();
     const customDateRange = dateRange === 'custom' 
       ? { start: startDate, end: endDate }
       : null;
@@ -356,7 +356,7 @@ router.get('/purchase-orders',
  */
 router.get('/sync-status', getUserContext, async (req, res) => {
   try {
-    const db = db;
+    const db = admin.firestore();
     
     // Get last sync metadata
     const syncMeta = await db.collection('sync_metadata').doc('last_full_sync').get();

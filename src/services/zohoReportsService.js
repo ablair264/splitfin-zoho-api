@@ -1,6 +1,6 @@
 // server/src/services/zohoReportsService.js
 import axios from 'axios';
-import { db, auth } from '../config/firebase.js';
+import admin from 'firebase-admin';
 import { getAccessToken } from '../api/zoho.js';
 import zohoInventoryService from './zohoInventoryService.js';
 
@@ -172,7 +172,7 @@ class ZohoReportsService {
    */
   async getAgentPerformance(dateRange = '30_days', customDateRange = null) {
     try {
-      const db = db;
+      const db = admin.firestore();
       
       // Get all sales orders for the period
       const salesOrders = await this.getSalesOrders(dateRange, customDateRange);
@@ -281,7 +281,7 @@ class ZohoReportsService {
    */
  async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
   try {
-    const db = db;
+    const db = admin.firestore();
     const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
     
     // Brand mappings
@@ -382,7 +382,7 @@ class ZohoReportsService {
    */
   async getCustomerAnalytics(dateRange = '30_days', customDateRange = null, agentId = null) {
     try {
-      const db = db;
+      const db = admin.firestore();
       const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
       
       // Get customers that have ordered in the date range
@@ -570,7 +570,7 @@ class ZohoReportsService {
    */
   async getAgentInvoices(agentId, dateRange = '30_days', customDateRange = null) {
     try {
-      const db = db;
+      const db = admin.firestore();
       
       // First, get all invoices
       const allInvoices = await this.getInvoices(dateRange, customDateRange);
@@ -623,7 +623,7 @@ class ZohoReportsService {
   async getRevenueAnalysis(dateRange = '30_days', customDateRange = null) {
     try {
       console.log(`📊 Calculating revenue analysis from Firestore for ${dateRange}...`);
-      const db = db;
+      const db = admin.firestore();
       
       // Get date range
       const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
@@ -776,7 +776,7 @@ class ZohoReportsService {
    */
   async getSalesOrderDetail(salesorder_id) {
     try {
-      const db = db;
+      const db = admin.firestore();
       const url = `${ZOHO_CONFIG.baseUrls.inventory}/salesorders/${salesorder_id}`;
       const token = await getAccessToken();
       
@@ -836,7 +836,7 @@ class ZohoReportsService {
     try {
       console.log(`📊 Fetching dashboard data for user ${userId}, range: ${dateRange}`);
       
-      const db = db;
+      const db = admin.firestore();
       const userDoc = await db.collection('users').doc(userId).get();
       
       if (!userDoc.exists) {
@@ -984,6 +984,7 @@ class ZohoReportsService {
       .slice(0, 10);
   }
 
+
 // Add this to zohoReportsService.js
 
 /**
@@ -1079,7 +1080,7 @@ async getCustomerById(customerId) {
 async syncCustomers(dateRange = '7_days') {
   try {
     console.log('👥 Syncing customers from Zoho Inventory...');
-    const db = db;
+    const db = admin.firestore();
     
     // 1. Fetch customers from Zoho Inventory
     const zohoCustomers = await this.getCustomers(dateRange);
@@ -1137,7 +1138,7 @@ async syncCustomers(dateRange = '7_days') {
         first_order_date: firstOrderDate ? firstOrderDate.toISOString() : null,
         last_order_date: lastOrderDate ? lastOrderDate.toISOString() : null,
         segment,
-        _lastSynced: new Date(),
+        _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
         _source: 'zoho_inventory'
       };
     });

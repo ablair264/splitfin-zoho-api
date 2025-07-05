@@ -1,6 +1,6 @@
 // server/src/index.js - Cleaned and organized version
+import admin from 'firebase-admin';
 import './config/firebase.js';
-import { db, auth } from './config/firebase.js';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -26,6 +26,7 @@ import emailRoutes from './routes/email.js';
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
 import { updateZohoContact } from './services/updateContact.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -281,8 +282,9 @@ app.post('/api/zoho/test/contact-creation', async (req, res) => {
 app.get('/health', async (req, res) => {
   try {
     // Basic health check
+    const db = admin.firestore();
     await db.collection('_health').doc('check').set({
-      timestamp: new Date()
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
 
     // Get sync status

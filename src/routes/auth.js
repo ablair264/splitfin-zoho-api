@@ -1,7 +1,7 @@
 // server/src/routes/auth.js
 import express from 'express';
 import axios from 'axios';
-import { db, auth } from '../config/firebase.js';
+import admin from 'firebase-admin';
 
 const router = express.Router();
 
@@ -256,7 +256,7 @@ router.post('/create-customer', async (req, res) => {
     const { email, password } = req.body;
     
     // Create Firebase Auth user
-    const userRecord = await auth.createUser({
+    const userRecord = await admin.auth().createUser({
       email,
       password,
       emailVerified: true

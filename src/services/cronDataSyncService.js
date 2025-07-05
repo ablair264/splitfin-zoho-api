@@ -1,7 +1,7 @@
 // src/services/cronDataSyncService.js
 // Cleaned up version with proper incremental syncing and brand handling
 
-import { db, auth } from '../config/firebase.js';
+import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 import productSyncService from './productSyncService.js';
@@ -36,7 +36,7 @@ class CronDataSyncService {
    */
   async getSyncMetadata(syncType) {
     try {
-      const db = db;
+      const db = admin.firestore();
       const doc = await db.collection('sync_metadata').doc(syncType).get();
       
       if (doc.exists) {
@@ -55,11 +55,11 @@ class CronDataSyncService {
    */
   async updateSyncMetadata(syncType, data) {
     try {
-      const db = db;
+      const db = admin.firestore();
       await db.collection('sync_metadata').doc(syncType).set({
         ...data,
         lastSync: new Date().toISOString(),
-        updatedAt: new Date()
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
     } catch (error) {
       console.error(`Error updating sync metadata for ${syncType}:`, error);
@@ -153,7 +153,7 @@ transactions.push({
   salesperson_name: order.salesperson_name || '',
   is_marketplace_order: isMarketplaceOrder,
   created_at: order.date,
-  last_modified: new Date()
+  last_modified: admin.firestore.FieldValue.serverTimestamp()
 });
       });
     }
@@ -166,7 +166,7 @@ transactions.push({
  * Update brand backorder information from purchase orders
  */
 async updateBrandBackorders() {
-  const db = db;
+  const db = admin.firestore();
   
   try {
     console.log('📦 Calculating brand backorders from purchase orders...');
@@ -256,7 +256,7 @@ async updateBrandBackorders() {
           backorder_value: 0,
           items_in_transit: 0,
           backorder_details: [],
-          last_updated: new Date()
+          last_updated: admin.firestore.FieldValue.serverTimestamp()
         }
       });
       count++;
@@ -286,9 +286,9 @@ async updateBrandBackorders() {
           items_in_transit: backorderInfo.items_in_transit,
           backorder_details: topBackorders,
           total_backorder_items: backorderInfo.backorder_details.length,
-          last_updated: new Date()
+          last_updated: admin.firestore.FieldValue.serverTimestamp()
         },
-        last_backorder_update: new Date()
+        last_backorder_update: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
       
       count++;
@@ -336,7 +336,7 @@ async updateBrandBackorders() {
  * Get detailed backorder report for a specific brand
  */
 async getBrandBackorderDetails(brandNormalized) {
-  const db = db;
+  const db = admin.firestore();
   
   try {
     const brandDoc = await db.collection('brands').doc(brandNormalized).get();
@@ -390,7 +390,7 @@ async getBrandBackorderDetails(brandNormalized) {
 }
 
 async updateBrandStatistics(transactions, dateRange = '30_days') {
-  const db = db;
+  const db = admin.firestore();
   console.log('📊 Updating brand statistics from sales transactions...');
   
   try {
@@ -553,10 +553,10 @@ async updateBrandStatistics(transactions, dateRange = '30_days') {
           best_selling_item: bestSellingItem,
           top_selling_items: topSellingItems,
           top_revenue_items: topRevenueItems,
-          last_updated: new Date()
+          last_updated: admin.firestore.FieldValue.serverTimestamp()
         },
         
-        last_updated: new Date()
+        last_updated: admin.firestore.FieldValue.serverTimestamp()
       };
       
       // Use the specific Firebase document ID
@@ -605,7 +605,7 @@ async updateBrandStatistics(transactions, dateRange = '30_days') {
  * Get active product counts by brand
  */
 async getActiveProductCounts() {
-  const db = db;
+  const db = admin.firestore();
   
   try {
     // Brand name mappings for items collection
@@ -682,7 +682,7 @@ getDateRange(dateRange) {
 }
 
 async enrichOrdersWithUIDs(orders) {
-  const db = db;
+  const db = admin.firestore();
   
   // Get user mappings
   const usersSnapshot = await db.collection('users').get();
@@ -739,7 +739,7 @@ async highFrequencySync() {
   
   this.isRunning.set(jobType, true);
   const startTime = Date.now();
-  const db = db; // Add this
+  const db = admin.firestore(); // Add this
   
   try {
     console.log('🚀 Starting high frequency sync...');
@@ -843,7 +843,7 @@ async mediumFrequencySync() {
   
   this.isRunning.set(jobType, true);
   const startTime = Date.now();
-  const db = db;
+  const db = admin.firestore();
   
   try {
     console.log('🔄 Starting medium frequency sync (last 24 hours)...');
@@ -943,7 +943,7 @@ return {
 
   this.isRunning.set(jobType, true);
   const startTime = Date.now();
-  const db = db;
+  const db = admin.firestore();
 
   try {
     console.log('🔄 Starting low frequency sync (weekly cleanup)...');
@@ -1045,13 +1045,15 @@ return {
   }
 }
 
+
+
   /**
    * Sync and normalize invoices
    */
   async syncAndNormalizeInvoices(invoices) {
     console.log(`🔄 Processing ${invoices.length} invoices...`);
     try {
-      const db = db;
+      const db = admin.firestore();
       
       // Get user mappings
       const usersSnapshot = await db.collection('users').get();
@@ -1102,8 +1104,8 @@ return {
           salesAgent_uid: salesAgentUid,
           date: invoice.date || invoice.invoice_date,
           _source: 'zoho_api',
-          _lastSynced: new Date(),
-          _normalized_at: new Date()
+          _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+          _normalized_at: admin.firestore.FieldValue.serverTimestamp()
         };
       });
       
@@ -1157,7 +1159,7 @@ return {
         const docRef = collectionRef.doc(cleanDocId);
         const itemWithMetadata = {
           ...item,
-          _lastSynced: new Date(),
+          _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
           _syncSource: 'zoho_api'
         };
         
