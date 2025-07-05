@@ -1,6 +1,6 @@
 // server/src/routes/sync.js
 import express from 'express';
-import admin from 'firebase-admin';
+import { db, auth } from '../config/firebase.js';
 import firestoreSyncService from '../firestoreSyncService.js';
 import { syncInventory, syncCustomersFromCRM } from '../syncInventory.js';
 import zohoInventoryService from '../services/zohoInventoryService.js';
@@ -140,7 +140,7 @@ router.post('/force/:collection', async (req, res) => {
     }
     
     // Get all documents from the collection and broadcast as changes
-    const db = admin.firestore();
+    const db = db;
     const snapshot = await db.collection(collection).get();
     
     const changes = snapshot.docs.map(doc => ({
@@ -273,7 +273,6 @@ router.post('/batch', async (req, res) => {
     });
   }
 });
-
 
 // POST /api/sync
 router.post('/', async (req, res) => {

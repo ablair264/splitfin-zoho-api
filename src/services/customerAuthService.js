@@ -1,8 +1,5 @@
 // server/src/services/customerAuthService.js
-import admin from 'firebase-admin';
-
-const db = admin.firestore();
-const auth = admin.auth();
+import { db, auth } from '../config/firebase.js';
 
 /**
  * Generate a secure random password
@@ -114,9 +111,9 @@ export async function createCustomerAuth(customerId) {
       account: true,  // Mark that they now have authentication
       auth_uid: authUser.uid,  // Store the auth UID
       has_login: true,
-      login_created_at: admin.firestore.FieldValue.serverTimestamp(),
+      login_created_at: new Date(),
       temp_password: tempPassword, // Store temporarily for email sending
-      account_created_at: admin.firestore.FieldValue.serverTimestamp()
+      account_created_at: new Date()
     });
     console.log('✅ Updated customer_data with account status');
     

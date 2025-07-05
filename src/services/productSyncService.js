@@ -1,5 +1,5 @@
 import axios from 'axios';
-import admin from 'firebase-admin';
+import { db } from '../config/firebase.js';
 import { getAccessToken } from '../api/zoho.js';
 
 // Rate Limiter Class
@@ -105,7 +105,7 @@ async function withExponentialBackoff(fn, maxRetries = 5, initialDelay = 1000) {
 
 class ProductSyncService {
   constructor() {
-    this.db = admin.firestore();
+    this.db = db;
     this.baseUrl = 'https://www.zohoapis.eu/inventory/v1';
     this.orgId = process.env.ZOHO_ORG_ID;
     // Create rate limiter - 8 requests per second to be safe
@@ -286,7 +286,7 @@ class ProductSyncService {
           created_time: zohoProduct.created_time,
           last_modified_time: zohoProduct.last_modified_time,
           _source: 'zoho_inventory',
-          _synced_at: admin.firestore.FieldValue.serverTimestamp()
+          _synced_at: new Date()
         };
         
         // Use item_id as document ID
@@ -311,7 +311,7 @@ class ProductSyncService {
       
       // Update sync metadata
       await this.db.collection('sync_metadata').doc('products_sync').set({
-        lastSync: admin.firestore.FieldValue.serverTimestamp(),
+        lastSync: new Date(),
         productCount: count,
         status: 'completed'
       });
@@ -323,7 +323,7 @@ class ProductSyncService {
       
       // Update sync metadata with error
       await this.db.collection('sync_metadata').doc('products_sync').set({
-        lastSync: admin.firestore.FieldValue.serverTimestamp(),
+        lastSync: new Date(),
         status: 'failed',
         error: error.message
       }, { merge: true });

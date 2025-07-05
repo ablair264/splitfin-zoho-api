@@ -1,6 +1,6 @@
 // server/src/services/firestoreSyncService.js
 import { db } from './config/firebase.js'; // <-- IMPORT DB
-import admin from 'firebase-admin';
+import { db, auth } from '../config/firebase.js';
 
 class FirestoreSyncService {
   constructor() {
@@ -314,7 +314,7 @@ class FirestoreSyncService {
           collection,
           changeType: change.changeType,
           documentId: change.id,
-          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          timestamp: new Date(),
           processed: false
         };
         
@@ -368,7 +368,7 @@ class FirestoreSyncService {
         collection,
         changeCount,
         message: `${changeCount} ${collection} have been updated. Please sync to get latest data.`,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        timestamp: new Date(),
         processed: false
       };
       
@@ -503,7 +503,7 @@ class FirestoreSyncService {
         const docRef = this.db.collection('sync_queue').doc(changeId);
         batch.update(docRef, { 
           processed: true,
-          processedAt: admin.firestore.FieldValue.serverTimestamp()
+          processedAt: new Date()
         });
       });
 
@@ -523,7 +523,7 @@ class FirestoreSyncService {
     try {
       await this.db.collection('sync_notifications').doc(notificationId).update({
         processed: true,
-        processedAt: admin.firestore.FieldValue.serverTimestamp()
+        processedAt: new Date()
       });
       console.log(`✅ Marked notification ${notificationId} as processed`);
     } catch (error) {
@@ -588,7 +588,7 @@ class FirestoreSyncService {
       this.initialSyncCompleted.set(collection, true);
       await this.db.collection('sync_metadata').doc(collection).set({
         initialSyncCompleted: true,
-        initialSyncDate: admin.firestore.FieldValue.serverTimestamp()
+        initialSyncDate: new Date()
       }, { merge: true });
       console.log(`✅ Marked initial sync complete for ${collection}`);
     } catch (error) {

@@ -1,6 +1,6 @@
 // server/src/services/zohoInventoryService.js
 import axios from 'axios';
-import admin from 'firebase-admin';
+import { db } from '../config/firebase.js';
 import { getAccessToken } from '../api/zoho.js';
 
 const ZOHO_CONFIG = {
@@ -18,7 +18,7 @@ const ZOHO_CONFIG = {
 
 class ZohoInventoryService {
   constructor() {
-    this.db = admin.firestore();
+    this.db = db;
     this.baseUrl = ZOHO_CONFIG.baseUrls.inventory;
     this.organizationId = ZOHO_CONFIG.orgId;
     this.cache = new Map();
@@ -267,7 +267,7 @@ class ZohoInventoryService {
           created_time: zohoProduct.created_time,
           last_modified_time: zohoProduct.last_modified_time,
           _source: 'zoho_inventory',
-          _synced_at: admin.firestore.FieldValue.serverTimestamp()
+          _synced_at: new Date()
         };
         
         const docRef = this.db.collection('items').doc(zohoProduct.item_id);
@@ -288,7 +288,7 @@ class ZohoInventoryService {
       console.log(`✅ Successfully synced ${count} products to Firebase`);
       
       await this.db.collection('sync_metadata').doc('products_sync').set({
-        lastSync: admin.firestore.FieldValue.serverTimestamp(),
+        lastSync: new Date(),
         productCount: count,
         status: 'completed'
       });
@@ -422,7 +422,7 @@ class ZohoInventoryService {
         created_time: zohoProduct.created_time,
         last_modified_time: zohoProduct.last_modified_time,
         _source: 'zoho_inventory',
-        _synced_at: admin.firestore.FieldValue.serverTimestamp()
+        _synced_at: new Date()
       };
       
       // Check if this is a new item or an update
@@ -491,7 +491,7 @@ class ZohoInventoryService {
         batch.update(docRef, {
           status: 'inactive',
           _deactivated_reason: 'Not found in Zoho Inventory',
-          _deactivated_at: admin.firestore.FieldValue.serverTimestamp()
+          _deactivated_at: new Date()
         });
         stats.deactivated++;
         batchCount++;
@@ -510,7 +510,7 @@ class ZohoInventoryService {
     
     // Update sync metadata
     await this.db.collection('sync_metadata').doc('products_sync').set({
-      lastSync: admin.firestore.FieldValue.serverTimestamp(),
+      lastSync: new Date(),
       duration: Date.now() - startTime,
       stats: stats,
       status: 'completed'
@@ -531,7 +531,7 @@ class ZohoInventoryService {
     
     // Update sync metadata with error
     await this.db.collection('sync_metadata').doc('products_sync').set({
-      lastSync: admin.firestore.FieldValue.serverTimestamp(),
+      lastSync: new Date(),
       status: 'failed',
       error: error.message
     }, { merge: true });

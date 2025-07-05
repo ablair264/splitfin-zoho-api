@@ -1,11 +1,10 @@
 // server/src/syncInventory.js
-import admin from 'firebase-admin';
+import { db, auth } from '../config/firebase.js';
 import crypto from 'crypto';
 import { getInventoryContactIdByEmail, fetchProductsFromInventory, fetchCustomersFromCRM } from './api/zoho.js';
 import productSyncService from './services/productSyncService.js';
 import zohoInventoryService from './services/zohoInventoryService.js';
 import dotenv from 'dotenv';
-import { db } from './config/firebase.js'
 import { fileURLToPath } from 'url';
 
 // Load environment variables
@@ -172,13 +171,13 @@ async function processProductBatch(products) {
       imageURL: product.Product_Image || '',
       
       // Sync metadata
-      lastModified: admin.firestore.FieldValue.serverTimestamp(),
-      syncedAt: admin.firestore.FieldValue.serverTimestamp(),
-      lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+      lastModified: new Date(),
+      syncedAt: new Date(),
+      lastSynced: new Date(),
       source: 'CRM',
       
       // Keep date added if exists, otherwise set current date
-      dateAdded: doc.exists && doc.data().dateAdded ? doc.data().dateAdded : admin.firestore.FieldValue.serverTimestamp()
+      dateAdded: doc.exists && doc.data().dateAdded ? doc.data().dateAdded : new Date()
     };
 
     const newHash = computeProductHash(productData);
@@ -232,8 +231,8 @@ async function processBatch(items) {
     if (!doc.exists) {
       batch.set(db.collection('products').doc(item.item_id), {
         ...item,
-        lastModified: admin.firestore.FieldValue.serverTimestamp(),
-        syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastModified: new Date(),
+        syncedAt: new Date(),
         dataHash: newHash
       });
       addedCount++;
@@ -242,8 +241,8 @@ async function processBatch(items) {
       if (existingData.dataHash !== newHash) {
         batch.update(doc.ref, {
           ...item,
-          lastModified: admin.firestore.FieldValue.serverTimestamp(),
-          syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastModified: new Date(),
+          syncedAt: new Date(),
           dataHash: newHash
         });
         updatedCount++;
@@ -316,8 +315,8 @@ async function processCustomerBatch(accounts) {
       Billing_Street: account.Billing_Street,
       Primary_First_Name: account.Primary_First_Name,
       Primary_Last_Name: account.Primary_Last_Name,
-      lastModified: admin.firestore.FieldValue.serverTimestamp(),
-      syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastModified: new Date(),
+      syncedAt: new Date(),
     };
 
     const newHash = computeCustomerHash(customerData);
@@ -398,7 +397,7 @@ export async function syncCustomersFromCRM(forceFullSync = false) {
 
     // Update sync metadata
     await db.collection('sync_metadata').doc('customers').set({
-      lastSync: admin.firestore.FieldValue.serverTimestamp(),
+      lastSync: new Date(),
       customersProcessed: accounts.length,
       added: totalAdded,
       updated: totalUpdated,
@@ -444,7 +443,7 @@ export async function syncInventoryCustomerIds() {
         if (inventoryId) {
           batch.update(doc.ref, {
             zohoInventoryId: inventoryId,
-            inventoryIdSyncedAt: admin.firestore.FieldValue.serverTimestamp()
+            inventoryIdSyncedAt: new Date()
           });
           processedCount++;
           console.log(`📋 Mapped ${customer.Account_Name} to Inventory ID: ${inventoryId}`);
