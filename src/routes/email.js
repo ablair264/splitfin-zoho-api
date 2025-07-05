@@ -4,19 +4,8 @@ import postmark from 'postmark';
 
 const router = express.Router();
 
-// Lazy initialization of Postmark client
-let client = null;
-
-function getPostmarkClient() {
-  if (!client) {
-    const token = process.env.POSTMARK_SERVER_TOKEN;
-    if (!token) {
-      throw new Error('POSTMARK_SERVER_TOKEN environment variable is not set');
-    }
-    client = new postmark.ServerClient(token);
-  }
-  return client;
-}
+// Initialize Postmark client
+const client = new postmark.ServerClient(process.env.POSTMARK_SERVER_TOKEN);
 
 router.post('/send-login-details', async (req, res) => {
   try {
@@ -75,7 +64,7 @@ router.post('/send-login-details', async (req, res) => {
       MessageStream: 'outbound'
     };
     
-    const result = await getPostmarkClient().sendEmail(emailData);
+    const result = await client.sendEmail(emailData);
     
     res.json({ 
       success: true, 
@@ -155,7 +144,7 @@ router.post('/send-order-confirmation', async (req, res) => {
       MessageStream: 'outbound'
     };
     
-    const result = await getPostmarkClient().sendEmail(emailData);
+    const result = await client.sendEmail(emailData);
     
     res.json({ 
       success: true, 

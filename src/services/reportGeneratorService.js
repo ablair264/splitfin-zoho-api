@@ -1,9 +1,9 @@
 // server/src/services/reportGeneratorService.js
-import { db, auth } from '../config/firebase.js';
+import admin from 'firebase-admin';
 
 class ReportGeneratorService {
   constructor() {
-    this.db = db;
+    this.db = admin.firestore();
   }
   async fetchBaseData(userContext, dateRange, filters) {
     const { start, end } = dateRange;

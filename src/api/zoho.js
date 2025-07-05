@@ -1,7 +1,7 @@
 // server/src/api/zoho.js
 import axios from 'axios';
 import dotenv from 'dotenv';
-import { db, auth } from '../config/firebase.js';
+import admin from 'firebase-admin';
 
 dotenv.config();
 
@@ -275,7 +275,7 @@ export async function createInventoryContact(contactData) {
 
 export async function fetchComprehensiveData(brandId, brandName) {
   try {
-    const db = db;
+    const db = admin.firestore();
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
     

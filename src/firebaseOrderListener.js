@@ -1,7 +1,8 @@
 // server/src/firebaseOrderListener.js
 import { db } from './config/firebase.js'; // <-- IMPORT DB
 import { createSalesOrder } from './api/zoho.js';
-import { db, auth } from './config/firebase.js';
+import admin from 'firebase-admin';
+
 
 class FirebaseOrderListener {
   constructor() {
@@ -138,7 +139,7 @@ class FirebaseOrderListener {
       zohoUploaded: true,
       zohoOrderID: zohoResponse.salesorder.salesorder_id,
       zohoOrderNumber: zohoResponse.salesorder.salesorder_number,
-      zohoUploadedAt: new Date(),
+      zohoUploadedAt: admin.firestore.FieldValue.serverTimestamp(),
       zohoResponse: zohoResponse
     };
 
@@ -154,7 +155,7 @@ class FirebaseOrderListener {
       needsZohoUpload: false,
       zohoUploadError: true,
       zohoUploadErrorMessage: errorMessage,
-      zohoUploadErrorAt: new Date()
+      zohoUploadErrorAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
     await this.db.collection('orders').doc(orderId).update(updateData);
