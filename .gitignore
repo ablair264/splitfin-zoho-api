@@ -3,6 +3,7 @@
 src/.DS_Store
 
 # Node modules
+node_modules/
 server/node_modules/
 
 # Build output
