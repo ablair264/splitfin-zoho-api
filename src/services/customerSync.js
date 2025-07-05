@@ -1,6 +1,6 @@
 // server/src/services/customerSync.js
 import { getAccessToken } from '../api/zoho.js';
-import admin from '../config/firebase.js';
+import admin from './config/firebase.js';
 import axios from 'axios';
 
 const db = admin.firestore();

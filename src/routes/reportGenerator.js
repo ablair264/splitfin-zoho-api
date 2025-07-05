@@ -1,6 +1,6 @@
 // server/src/routes/reportGenerator.js
 import express from 'express';
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 import reportGeneratorService from '../services/reportGeneratorService.js';
 import collectionDashboardService from '../services/collectionDashboardService.js';
 

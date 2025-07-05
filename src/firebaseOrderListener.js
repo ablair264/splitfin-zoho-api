@@ -1,7 +1,7 @@
 // server/src/firebaseOrderListener.js
 import { db } from './config/firebase.js'; // <-- IMPORT DB
 import { createSalesOrder } from './api/zoho.js';
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 
 class FirebaseOrderListener {
   constructor() {

@@ -1,5 +1,5 @@
 // server/src/services/customerAuthService.js
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 
 /**
  * Generate a secure random password

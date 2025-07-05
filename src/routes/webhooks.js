@@ -1,7 +1,7 @@
 // server/src/routes/webhooks.js
 import express from 'express';
 import { createSalesOrder } from '../api/zoho.js';
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 import cronDataSyncService from '../services/cronDataSyncService.js';
 import zohoReportsService from '../services/zohoReportsService.js';
 import { createCustomerAuth } from '../services/customerAuthService.js';

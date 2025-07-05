@@ -1,7 +1,7 @@
 // server/src/routes/reports.js - UPDATED TO USE COLLECTION-BASED SERVICE
 import express from 'express';
 import zohoReportsService from '../services/zohoReportsService.js';
-import { db, auth } from '../config/firebase.js';
+import { db, auth } from './config/firebase.js';
 import collectionDashboardService from '../services/collectionDashboardService.js';
 
 const router = express.Router();
