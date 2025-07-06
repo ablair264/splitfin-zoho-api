@@ -1,0 +1,704 @@
+// DM Brands Advanced Analytics Functions
+// Additional sophisticated analyses for strategic decision making
+// server/src/services/dmBrandsAdvancedAnalytics.js
+
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { DM_BRANDS_CONTEXT } from './dmBrandsAIService.js';
+
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
+
+const flashModel = genAI.getGenerativeModel({ 
+  model: 'gemini-1.5-flash',
+  generationConfig: {
+    temperature: 0.7,
+    topP: 0.8,
+    maxOutputTokens: 2048,
+  }
+});
+
+const proModel = genAI.getGenerativeModel({ 
+  model: 'gemini-1.5-pro',
+  generationConfig: {
+    temperature: 0.8,
+    topP: 0.9,
+    maxOutputTokens: 4096,
+  }
+});
+
+// Enhanced response parser with validation
+function parseAIResponse(text, expectedFormat = null) {
+  try {
+    // Clean the response
+    let cleaned = text
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/gi, '')
+      .trim();
+    
+    // Find JSON in response
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in response');
+    }
+    
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    // Validate against expected format if provided
+    if (expectedFormat) {
+      for (const key of Object.keys(expectedFormat)) {
+        if (!(key in parsed)) {
+          console.warn(`Missing expected key: ${key}`);
+          parsed[key] = expectedFormat[key];
+        }
+      }
+    }
+    
+    return parsed;
+  } catch (error) {
+    console.error('Parse error:', error);
+    throw error;
+  }
+}
+
+// Cross-Selling & Basket Analysis
+export async function analyzeCrossSelling(transactionData, productCatalog) {
+  const prompt = `Analyze cross-selling patterns for DM Brands' product portfolio.
+
+BUSINESS CONTEXT:
+We distribute multiple complementary brands. Understanding purchase patterns helps optimize:
+- Agent recommendations
+- Warehouse picking efficiency  
+- Bundle opportunities
+- Brand portfolio synergies
+
+TRANSACTION DATA (Sample):
+${JSON.stringify(transactionData.slice(0, 30), null, 2)}
+
+PRODUCT CATALOG INFO:
+${JSON.stringify({
+  brands: DM_BRANDS_CONTEXT.distributorBrands,
+  categories: Object.keys(DM_BRANDS_CONTEXT.productCategories)
+}, null, 2)}
+
+ANALYSIS NEEDED:
+1. Which products are frequently bought together?
+2. Brand combinations that work well
+3. Missed cross-selling opportunities
+4. Seasonal basket patterns
+5. Customer type preferences
+
+PROVIDE INSIGHTS (JSON):
+{
+  "basketAnalysis": {
+    "commonCombinations": [
+      {
+        "products": ["Product A", "Product B"],
+        "frequency": "X% of orders",
+        "brands": ["Brand1", "Brand2"],
+        "avgBasketValue": "£X",
+        "customerTypes": ["Gift Shops", "Boutiques"]
+      }
+    ],
+    "brandSynergies": [
+      {
+        "primaryBrand": "Elvang",
+        "complementaryBrands": ["Rader", "My Flame"],
+        "rationale": "Textiles pair well with decorative items",
+        "crossSellRate": "X%"
+      }
+    ],
+    "missedOpportunities": [
+      {
+        "whenBuying": "Relaxound soundboxes",
+        "suggest": "My Flame candles",
+        "rationale": "Create complete ambiance package",
+        "potentialUplift": "£X per order"
+      }
+    ]
+  },
+  "bundleRecommendations": [
+    {
+      "name": "Cozy Living Bundle",
+      "products": ["Elvang throw", "My Flame candle", "Rader vase"],
+      "targetPrice": "£89.99",
+      "margin": "45%",
+      "targetCustomer": "Interior Designers"
+    }
+  ],
+  "agentGuidance": {
+    "topCombos": ["Always suggest X with Y", "Z pairs perfectly with W"],
+    "byCustomerType": {
+      "giftShops": "Focus on gift sets",
+      "cafes": "Tableware + decorative items"
+    }
+  }
+}`;
+
+  try {
+    const result = await flashModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    console.error('Cross-selling analysis error:', error);
+    return { basketAnalysis: { error: "Analysis unavailable" } };
+  }
+}
+
+// Brand Cannibalization Analysis
+export async function analyzeBrandCannibalization(salesData, productOverlaps) {
+  const prompt = `Analyze potential brand cannibalization within DM Brands portfolio.
+
+CONTEXT: 
+We represent multiple brands that may have overlapping products. Need to understand if brands compete with each other or complement each other.
+
+SALES DATA BY BRAND:
+${JSON.stringify(salesData, null, 2)}
+
+PRODUCT OVERLAPS:
+${JSON.stringify(productOverlaps, null, 2)}
+
+Example overlaps:
+- Candles: My Flame vs PPD
+- Kitchen items: GEFU vs Remember  
+- Home decor: Blomus vs Rader vs Remember
+
+ANALYZE:
+1. Are brands cannibalizing each other's sales?
+2. Which overlaps are healthy competition vs problematic?
+3. How to position each brand uniquely?
+4. Opportunities for better differentiation
+
+PROVIDE STRATEGIC INSIGHTS (JSON):
+{
+  "cannibalalizationAssessment": {
+    "overall": "minimal|moderate|significant",
+    "concerns": [
+      {
+        "category": "Candles",
+        "brands": ["My Flame", "PPD"],
+        "impact": "£X potential lost sales",
+        "customerConfusion": "low|medium|high"
+      }
+    ]
+  },
+  "brandPositioning": {
+    "recommendations": [
+      {
+        "brand": "My Flame",
+        "uniquePosition": "Premium scented candles for gifting",
+        "avoidOverlap": "Basic unscented candles",
+        "targetSegment": "Gift shops, boutiques"
+      },
+      {
+        "brand": "PPD", 
+        "uniquePosition": "Decorative candles and paper goods",
+        "avoidOverlap": "Scented gift sets",
+        "targetSegment": "Homeware stores"
+      }
+    ]
+  },
+  "synergyOpportunities": [
+    {
+      "brands": ["GEFU", "Remember"],
+      "strategy": "Position as complementary - GEFU for serious cooking, Remember for casual dining",
+      "benefit": "Increase total kitchen category sales"
+    }
+  ],
+  "actionPlan": {
+    "immediate": ["Clear positioning guidelines for agents"],
+    "shortTerm": ["Adjust product selection to minimize overlap"],
+    "longTerm": ["Develop exclusive ranges per brand"]
+  }
+}`;
+
+  try {
+    const result = await proModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    return { cannibalalizationAssessment: { overall: "analysis pending" } };
+  }
+}
+
+// Geographic Performance Intelligence
+export async function analyzeGeographicPerformance(salesByRegion, agentTerritories, demographics) {
+  const prompt = `Analyze geographic sales performance across the UK for DM Brands.
+
+REGIONAL SALES DATA:
+${JSON.stringify(salesByRegion, null, 2)}
+
+AGENT TERRITORIES:
+${JSON.stringify(agentTerritories, null, 2)}
+
+DEMOGRAPHIC CONTEXT:
+${JSON.stringify(demographics, null, 2)}
+
+ANALYSIS REQUIRED:
+1. Which regions perform best/worst?
+2. Correlation with demographics
+3. Agent territory optimization
+4. Untapped geographic opportunities
+5. Regional product preferences
+
+PROVIDE INSIGHTS (JSON):
+{
+  "regionalPerformance": {
+    "topRegions": [
+      {
+        "region": "South East",
+        "revenue": "£X",
+        "growthRate": "+X%",
+        "keyDrivers": ["High disposable income", "Many boutiques"],
+        "topBrands": ["Blomus", "Elvang"]
+      }
+    ],
+    "underperforming": [
+      {
+        "region": "Region name",
+        "revenue": "£X", 
+        "issues": ["Low agent coverage", "Few target retailers"],
+        "potential": "Could grow to £Y with focus"
+      }
+    ]
+  },
+  "territoryOptimization": {
+    "recommendations": [
+      {
+        "action": "Split London territory",
+        "rationale": "Too large for one agent",
+        "expectedImpact": "+£X revenue"
+      }
+    ]
+  },
+  "demographicInsights": {
+    "correlations": [
+      {
+        "factor": "Average income >£50k",
+        "impact": "3x higher sales of Blomus",
+        "targetRegions": ["Regions to focus on"]
+      }
+    ]
+  },
+  "regionalProductMix": {
+    "london": {
+      "preferences": "Modern, minimalist designs",
+      "topCategories": ["Soundboxes", "Contemporary decor"],
+      "brandFit": ["Blomus", "Relaxound"]
+    },
+    "cotswolds": {
+      "preferences": "Traditional, cottage style",
+      "topCategories": ["Textiles", "Porcelain"],
+      "brandFit": ["Elvang", "Rader"]
+    }
+  },
+  "expansionOpportunities": [
+    {
+      "region": "Scotland",
+      "rationale": "Underserved market with potential",
+      "strategy": "Partner with local agent",
+      "targetRevenue": "£X in year 1"
+    }
+  ]
+}`;
+
+  try {
+    const result = await flashModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    return { regionalPerformance: { error: "Geographic analysis unavailable" } };
+  }
+}
+
+// Customer Lifetime Value Prediction
+export async function predictCustomerLifetimeValue(customerHistory, industryBenchmarks) {
+  const prompt = `Predict customer lifetime value for DM Brands' B2B customers.
+
+CUSTOMER HISTORY:
+${JSON.stringify(customerHistory.slice(0, 20), null, 2)}
+
+INDUSTRY CONTEXT:
+- B2B relationships typically last 5-10 years
+- Seasonal purchasing patterns
+- Customer types: ${DM_BRANDS_CONTEXT.customerTypes.join(', ')}
+
+CALCULATE/PREDICT:
+1. CLV by customer segment
+2. Factors that increase/decrease CLV
+3. Churn risk indicators
+4. Investment priorities
+
+PROVIDE CLV ANALYSIS (JSON):
+{
+  "clvBySegment": {
+    "giftShops": {
+      "avgCLV": "£X over Y years",
+      "topDecile": "£X",
+      "churnRate": "X% annually",
+      "growthPotential": "high|medium|low"
+    },
+    "interiorDesigners": { ... }
+  },
+  "valueDrivers": [
+    {
+      "factor": "Multi-brand purchasing",
+      "impact": "+£X to CLV",
+      "prevalence": "X% of customers"
+    }
+  ],
+  "churnIndicators": [
+    {
+      "signal": "Order frequency drops >50%",
+      "riskLevel": "high",
+      "preventionStrategy": "Proactive agent outreach"
+    }
+  ],
+  "investmentPriorities": [
+    {
+      "segment": "National Trust Properties",
+      "rationale": "Highest CLV, lowest churn",
+      "recommendedActions": ["Dedicated support", "Exclusive previews"]
+    }
+  ],
+  "retentionROI": {
+    "costToRetain": "£X per customer",
+    "valueOfRetention": "£Y over 3 years",
+    "focusSegments": ["Segments worth investing in"]
+  }
+}`;
+
+  try {
+    const result = await proModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    return { clvBySegment: { error: "CLV analysis unavailable" } };
+  }
+}
+
+// Cash Flow Optimization Analysis
+export async function optimizeCashFlow(purchaseOrders, paymentTerms, salesForecast) {
+  const prompt = `Optimize cash flow for DM Brands considering payment terms and inventory needs.
+
+CURRENT SITUATION:
+Purchase Orders: ${JSON.stringify(purchaseOrders, null, 2)}
+Payment Terms: ${JSON.stringify(paymentTerms, null, 2)}
+Sales Forecast: ${JSON.stringify(salesForecast, null, 2)}
+
+BUSINESS CONTEXT:
+- Supplier payment terms: 30-50% deposit, balance on delivery
+- Customer payment terms: 30-60 days
+- Seasonal cash needs: High in Feb/March and Aug/Sept
+
+OPTIMIZE FOR:
+1. Minimal cash tied up in inventory
+2. Never stock out of fast-movers
+3. Negotiate better payment terms
+4. Time purchases optimally
+
+PROVIDE OPTIMIZATION STRATEGY (JSON):
+{
+  "cashFlowSummary": {
+    "currentPosition": "£X available",
+    "projectedNeeds": {
+      "30days": "£X",
+      "60days": "£Y", 
+      "90days": "£Z"
+    },
+    "risks": ["Risk 1", "Risk 2"]
+  },
+  "purchaseOptimization": [
+    {
+      "brand": "Elvang",
+      "currentOrder": "£X",
+      "optimizedOrder": "£Y",
+      "timing": "Order by DATE",
+      "rationale": "Reduce by 20% due to slow Q1"
+    }
+  ],
+  "paymentTermsStrategy": {
+    "negotiations": [
+      {
+        "supplier": "Brand name",
+        "current": "50% deposit",
+        "target": "30% deposit",
+        "leverage": "Long relationship, consistent orders"
+      }
+    ],
+    "customerTerms": [
+      {
+        "segment": "New customers",
+        "suggest": "Reduce from 60 to 30 days",
+        "incentive": "2% early payment discount"
+      }
+    ]
+  },
+  "inventoryFinancing": {
+    "fastMovers": {
+      "strategy": "Stock 6 weeks supply",
+      "brands": ["My Flame", "Rader"],
+      "cashRequirement": "£X"
+    },
+    "slowMovers": {
+      "strategy": "Reduce to 2 weeks supply",
+      "brands": ["List brands"],
+      "cashRelease": "£Y"
+    }
+  },
+  "seasonalStrategy": {
+    "Q1": "Conservative ordering, focus on cash collection",
+    "Q2": "Build inventory for autumn",
+    "Q3": "Peak sales, maximize collections",
+    "Q4": "Strategic purchasing for Christmas"
+  }
+}`;
+
+  try {
+    const result = await proModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    return { cashFlowSummary: { error: "Cash flow analysis unavailable" } };
+  }
+}
+
+// Product Lifecycle Analysis
+export async function analyzeProductLifecycle(productHistory, marketTrends) {
+  const prompt = `Analyze product lifecycle stages for DM Brands' portfolio.
+
+PRODUCT PERFORMANCE HISTORY:
+${JSON.stringify(productHistory, null, 2)}
+
+MARKET TRENDS:
+${JSON.stringify(marketTrends, null, 2)}
+
+IDENTIFY:
+1. Products in each lifecycle stage
+2. Actions needed per stage
+3. New product opportunities
+4. Phase-out recommendations
+
+PROVIDE LIFECYCLE ANALYSIS (JSON):
+{
+  "lifecycleStages": {
+    "introduction": [
+      {
+        "product": "Relaxound Ocean Box",
+        "launchDate": "3 months ago",
+        "performance": "Meeting expectations",
+        "actions": ["Increase agent training", "Customer testimonials"]
+      }
+    ],
+    "growth": [
+      {
+        "product": "My Flame Soy Candles",
+        "growthRate": "+45% YoY",
+        "actions": ["Increase stock", "Expand range"]
+      }
+    ],
+    "maturity": [
+      {
+        "product": "GEFU Spiralizer",
+        "status": "Stable sales for 2 years",
+        "actions": ["Maintain stock", "Bundle opportunities"]
+      }
+    ],
+    "decline": [
+      {
+        "product": "Product name",
+        "declineRate": "-30% YoY",
+        "actions": ["Clear stock", "Don't reorder"],
+        "replacement": "Consider NEW_PRODUCT"
+      }
+    ]
+  },
+  "portfolioHealth": {
+    "balance": "healthy|concerning",
+    "newProductNeeds": ["Gap in category X", "Trend Y not covered"],
+    "recommendations": ["Launch 2-3 new lines in Q2"]
+  },
+  "innovationOpportunities": [
+    {
+      "trend": "Sustainable living",
+      "productIdeas": ["Eco-friendly candles", "Recycled textiles"],
+      "brands": ["My Flame", "Elvang"],
+      "marketSize": "£X potential"
+    }
+  ]
+}`;
+
+  try {
+    const result = await flashModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    return { lifecycleStages: { error: "Lifecycle analysis unavailable" } };
+  }
+}
+
+// Weather Impact Analysis (for seasonal products)
+export async function analyzeWeatherImpact(weatherData, salesHistory, productCategories) {
+  const prompt = `Analyze weather impact on DM Brands' seasonal product sales.
+
+WEATHER PATTERNS:
+${JSON.stringify(weatherData, null, 2)}
+
+SALES CORRELATION:
+${JSON.stringify(salesHistory, null, 2)}
+
+AFFECTED CATEGORIES:
+- Outdoor furniture (Blomus, Remember)
+- Candles (My Flame - cozy weather correlation)
+- Textiles (Elvang - cold weather boost)
+
+ANALYZE:
+1. Weather-sales correlations
+2. Optimal stock levels by forecast
+3. Regional weather considerations
+
+PROVIDE INSIGHTS (JSON):
+{
+  "weatherCorrelations": [
+    {
+      "condition": "Temperature <10°C",
+      "impact": "+30% Elvang blanket sales",
+      "categories": ["Textiles", "Candles"],
+      "actionThreshold": "5-day forecast"
+    }
+  ],
+  "seasonalStocking": {
+    "formula": "Base stock + (weather factor × safety stock)",
+    "adjustments": [
+      {
+        "forecast": "Unseasonably warm autumn",
+        "action": "Reduce textile orders by 20%",
+        "increase": "Outdoor furniture by 15%"
+      }
+    ]
+  },
+  "regionalStrategy": {
+    "scotland": "Stock heavier textiles earlier",
+    "southCoast": "Extended outdoor furniture season"
+  }
+}`;
+
+  try {
+    const result = await flashModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    return { weatherCorrelations: { error: "Weather analysis unavailable" } };
+  }
+}
+
+// Event-Driven Sales Analysis
+export async function analyzeEventImpact(events, historicalEventSales) {
+  const prompt = `Analyze impact of events on DM Brands sales.
+
+EVENTS TO CONSIDER:
+- Trade shows (Spring Fair, Autumn Fair)
+- Gift fairs
+- Local events near customers
+- Holidays and celebrations
+- Marketing campaigns
+
+HISTORICAL DATA:
+${JSON.stringify(historicalEventSales, null, 2)}
+
+ANALYZE:
+1. ROI of different events
+2. Optimal event strategy
+3. Pre/post event sales impact
+
+PROVIDE INSIGHTS (JSON):
+{
+  "eventROI": [
+    {
+      "event": "Spring Fair Birmingham",
+      "investment": "£X (stand, staff, samples)",
+      "directSales": "£Y",
+      "followUpSales": "£Z (90 days)",
+      "totalROI": "X%",
+      "recommendation": "continue|reconsider"
+    }
+  ],
+  "eventStrategy": {
+    "essential": ["Spring Fair", "Autumn Fair"],
+    "valuable": ["Regional gift fairs"],
+    "reconsider": ["Events with low ROI"]
+  },
+  "eventPlanning": {
+    "preEvent": ["Stock build-up", "Agent briefing"],
+    "duringEvent": ["New product focus", "Exclusive offers"],
+    "postEvent": ["Follow-up within 48hrs", "Sample fulfillment"]
+  }
+}`;
+
+  try {
+    const result = await flashModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    return { eventROI: { error: "Event analysis unavailable" } };
+  }
+}
+
+// Supply Chain Risk Analysis
+export async function analyzeSupplyChainRisks(suppliers, leadTimes, alternativeOptions) {
+  const prompt = `Analyze supply chain risks for DM Brands' imported products.
+
+SUPPLIER DATA:
+${JSON.stringify(suppliers, null, 2)}
+
+CURRENT CHALLENGES:
+- Brexit impact on EU imports
+- Container shipping delays
+- Raw material shortages
+- Currency fluctuations
+
+ANALYZE:
+1. Risk levels by supplier/brand
+2. Mitigation strategies
+3. Alternative sourcing options
+
+PROVIDE RISK ASSESSMENT (JSON):
+{
+  "riskMatrix": {
+    "high": [
+      {
+        "brand": "Brand name",
+        "risks": ["Single supplier", "Long lead time"],
+        "impact": "Could lose £X in sales",
+        "mitigation": ["Safety stock", "Alternative products"]
+      }
+    ],
+    "medium": [...],
+    "low": [...]
+  },
+  "contingencyPlans": [
+    {
+      "scenario": "Port delays >2 weeks",
+      "affectedBrands": ["List"],
+      "action": ["Air freight critical items", "Customer communication"]
+    }
+  ],
+  "diversificationOptions": [
+    {
+      "currentSupplier": "Italian furniture maker",
+      "alternatives": ["Portuguese manufacturer", "Spanish option"],
+      "prosAndCons": "Analysis"
+    }
+  ]
+}`;
+
+  try {
+    const result = await proModel.generateContent(prompt);
+    return parseAIResponse(result.response.text());
+  } catch (error) {
+    return { riskMatrix: { error: "Risk analysis unavailable" } };
+  }
+}
+
+// Export all advanced analytics functions
+export {
+  analyzeCrossSelling,
+  analyzeBrandCannibalization,
+  analyzeGeographicPerformance,
+  predictCustomerLifetimeValue,
+  optimizeCashFlow,
+  analyzeProductLifecycle,
+  analyzeWeatherImpact,
+  analyzeEventImpact,
+  analyzeSupplyChainRisks
+};

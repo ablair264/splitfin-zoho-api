@@ -19,6 +19,8 @@ const MIGRATION_CONFIG = {
     existingItems: 'items',
     existingCustomers: 'customer_data',
     existingSyncMetadata: 'sync_metadata',
+    existingOrders: 'orders',
+    existingInvoices: 'invoices',
     
     // New collections to create
     newItems: 'items', // Same name, different structure
@@ -26,12 +28,15 @@ const MIGRATION_CONFIG = {
     newItemCategories: 'item_categories',
     newSalesOrders: 'sales_orders',
     newInvoices: 'invoices',
+    newPurchaseOrders: 'purchase_orders',
     newWarehouses: 'warehouses',
     newStockTransactions: 'stock_transactions',
     newStockAlerts: 'stock_alerts',
     newShippingMethods: 'shipping_methods',
     newCouriers: 'couriers',
-    newVendorContacts: 'vendor_contacts'
+    newVendorContacts: 'vendor_contacts',
+    newBranches: 'branches',
+    newCustomers: 'customers'
   },
   
   // Migration options
@@ -78,7 +83,7 @@ function normalizeString(str) {
 // ============================================================
 
 /**
- * Transform existing item data to new Item interface
+ * Transform existing item data to new Item interface with enhanced fields
  */
 function transformItemData(existingItem) {
   const now = Timestamp.now();
@@ -94,7 +99,37 @@ function transformItemData(existingItem) {
   const stockCommitted = parseInt(existingItem.actual_available_stock || 0);
   const stockAvailable = Math.max(0, stockTotal - stockCommitted);
   
-  // Transform to new Item structure
+  // Extract dimensions from existing data if available
+  const dimensions = {
+    length: parseFloat(existingItem.length || existingItem.dimensions?.length || null),
+    height: parseFloat(existingItem.height || existingItem.dimensions?.height || null),
+    width: parseFloat(existingItem.width || existingItem.dimensions?.width || null),
+    diameter: parseFloat(existingItem.diameter || null),
+    volume: parseFloat(existingItem.volume || null),
+    weight: parseFloat(existingItem.weight || existingItem.dimensions?.weight || null),
+    dimension_unit: existingItem.dimension_unit || 'cm',
+    weight_unit: existingItem.weight_unit || 'kg'
+  };
+  
+  // Extract package information
+  const packageInfo = {
+    package_length: parseFloat(existingItem.package_length || null),
+    package_width: parseFloat(existingItem.package_width || null),
+    package_height: parseFloat(existingItem.package_height || null),
+    package_weight: parseFloat(existingItem.package_weight || null),
+    package_unit: existingItem.package_unit || 'cm',
+    package_weight_unit: existingItem.package_weight_unit || 'kg'
+  };
+  
+  // Extract manufacturer information
+  const manufacturer = {
+    manufacturer_name: existingItem.manufacturer_name || existingItem.Manufacturer || vendorName,
+    manufacturer_part_number: existingItem.manufacturer_part_number || existingItem.part_no || '',
+    manufacturer_website: existingItem.manufacturer_website || '',
+    manufacturer_contact: existingItem.manufacturer_contact || ''
+  };
+  
+  // Transform to new Item structure with enhanced fields
   const newItem = {
     // Core identifiers
     item_id: existingItem.item_id || generateId('ITEM'),
@@ -110,34 +145,55 @@ function transformItemData(existingItem) {
     created_date: existingItem.created_time || now,
     ean: existingItem.ean || '',
     
-    // Dimensions (placeholder - not in existing data)
-    dimensions: {
-      length: null,
-      height: null,
-      width: null,
-      diameter: null,
-      volume: null
-    },
+    // Enhanced dimensions
+    dimensions: dimensions,
+    package_info: packageInfo,
+    manufacturer: manufacturer,
     
     part_no: existingItem.sku || '',
-    product_type: 'Goods',
-    purchase_price: parseFloat(existingItem.purchase_rate || 0),
-    retail_price: parseFloat(existingItem.rate || 0),
-    reorder_level: 10, // Default value
-    estimated_delivery: 7, // Default 7 days
+    product_type: existingItem.product_type || 'Goods',
+    purchase_price: parseFloat(existingItem.purchase_rate || existingItem.purchase_price || 0),
+    retail_price: parseFloat(existingItem.rate || existingItem.retail_price || 0),
+    wholesale_price: parseFloat(existingItem.wholesale_price || 0),
+    cost_price: parseFloat(existingItem.cost_price || existingItem.purchase_rate || 0),
+    reorder_level: parseInt(existingItem.reorder_level || 10),
+    reorder_quantity: parseInt(existingItem.reorder_quantity || 1),
+    estimated_delivery: parseInt(existingItem.estimated_delivery || 7),
     sku: existingItem.sku || '',
     status: existingItem.status || 'active',
     
-    // Tax structure
+    // Enhanced tax structure
     tax: {
-      tax_rate: 20, // Default UK VAT rate
-      tax_exempt: false
+      tax_rate: parseFloat(existingItem.tax_rate || 20), // Default UK VAT rate
+      tax_exempt: Boolean(existingItem.tax_exempt || false),
+      tax_code: existingItem.tax_code || 'VAT20',
+      tax_name: existingItem.tax_name || 'VAT'
     },
     
-    minimum_order_qty: 1,
-    variable_pricing: false,
+    // Enhanced pricing
+    minimum_order_qty: parseInt(existingItem.minimum_order_qty || 1),
+    variable_pricing: Boolean(existingItem.variable_pricing || false),
+    bulk_pricing: existingItem.bulk_pricing || [],
     
-    // Metadata
+    // Enhanced inventory tracking
+    inventory_valuation: {
+      method: existingItem.valuation_method || 'FIFO',
+      last_cost: parseFloat(existingItem.last_cost || existingItem.purchase_rate || 0),
+      average_cost: parseFloat(existingItem.average_cost || 0),
+      total_value: parseFloat(existingItem.total_value || 0)
+    },
+    
+    // Enhanced shipping
+    shipping: {
+      weight: parseFloat(existingItem.shipping_weight || dimensions.weight || 0),
+      weight_unit: existingItem.shipping_weight_unit || 'kg',
+      requires_special_handling: Boolean(existingItem.requires_special_handling || false),
+      is_fragile: Boolean(existingItem.is_fragile || false),
+      is_hazardous: Boolean(existingItem.is_hazardous || false),
+      shipping_class: existingItem.shipping_class || 'standard'
+    },
+    
+    // Enhanced metadata
     created_by: 'migration_script',
     updated_by: 'migration_script',
     last_modified: now,
@@ -152,7 +208,7 @@ function transformItemData(existingItem) {
 }
 
 /**
- * Extract vendors from existing items data
+ * Extract vendors from existing items data with enhanced fields
  */
 function extractVendorsFromItems(existingItems) {
   const vendorMap = new Map();
@@ -165,37 +221,43 @@ function extractVendorsFromItems(existingItems) {
       const newVendor = {
         vendor_id: generateId('VEND'),
         vendor_name: vendorName,
-        vendor_location: 'United Kingdom', // Default, can be updated later
+        vendor_location: item.vendor_location || 'United Kingdom',
         vendor_address: {
-          street_1: '',
-          street_2: '',
-          city: '',
-          state: '',
-          postcode: '',
-          country: 'United Kingdom'
+          street_1: item.vendor_street_1 || '',
+          street_2: item.vendor_street_2 || '',
+          city: item.vendor_city || '',
+          state: item.vendor_state || '',
+          postcode: item.vendor_postcode || '',
+          country: item.vendor_country || 'United Kingdom'
         },
         
-        // Vendor contacts (placeholder - can be updated later)
+        // Enhanced vendor contacts
         vendor_contacts: [{
           venc_id: generateId('VENCONT'),
           venc_name: vendorName,
-          venc_phone: '',
-          venc_email: '',
+          venc_phone: item.vendor_phone || '',
+          venc_email: item.vendor_email || '',
           venc_primary: true,
           venc_comments: '',
           venc_created: now
         }],
         
         vendor_status: 'active',
+        vendor_type: item.vendor_type || 'supplier',
         
-        // Bank details (placeholder)
-        vendor_bank_name: '',
-        vendor_bank_sortcode: '',
-        vendor_bank_acc: '',
-        vendor_bank_vat: '',
-        vendor_bank_verified: false,
+        // Enhanced bank details
+        vendor_bank_name: item.vendor_bank_name || '',
+        vendor_bank_sortcode: item.vendor_bank_sortcode || '',
+        vendor_bank_acc: item.vendor_bank_acc || '',
+        vendor_bank_vat: item.vendor_bank_vat || '',
+        vendor_bank_verified: Boolean(item.vendor_bank_verified || false),
         
-        // Metadata
+        // Enhanced payment terms
+        payment_terms: item.vendor_payment_terms || '30 days',
+        credit_limit: parseFloat(item.vendor_credit_limit || 0),
+        discount_rate: parseFloat(item.vendor_discount_rate || 0),
+        
+        // Enhanced metadata
         created_date: now,
         created_by: 'migration_script',
         updated_by: 'migration_script',
@@ -215,8 +277,7 @@ function extractVendorsFromItems(existingItems) {
 }
 
 /**
- * Transform existing customer data to new Customer interface
- * (Keep customers as customers - they are different from vendors)
+ * Transform existing customer data to new Customer interface with enhanced fields
  */
 function transformCustomerToNewCustomer(existingCustomer) {
   const now = Timestamp.now();
@@ -233,36 +294,44 @@ function transformCustomerToNewCustomer(existingCustomer) {
     customer_type: existingCustomer.customer_type || 'business',
     customer_status: existingCustomer.status || 'active',
     
-    // Addresses
+    // Enhanced addresses
     customer_billing_address: {
-      street_1: billingAddress.address || '',
-      street_2: '',
+      street_1: billingAddress.address || billingAddress.street_1 || '',
+      street_2: billingAddress.street_2 || '',
       city: billingAddress.city || '',
       state: billingAddress.state || '',
-      postcode: billingAddress.zip || existingCustomer.postcode || '',
+      postcode: billingAddress.zip || billingAddress.postcode || existingCustomer.postcode || '',
       country: billingAddress.country || 'United Kingdom'
     },
     
     customer_shipping_address: {
-      street_1: shippingAddress.address || '',
-      street_2: '',
+      street_1: shippingAddress.address || shippingAddress.street_1 || '',
+      street_2: shippingAddress.street_2 || '',
       city: shippingAddress.city || '',
       state: shippingAddress.state || '',
-      postcode: shippingAddress.zip || existingCustomer.postcode || '',
+      postcode: shippingAddress.zip || shippingAddress.postcode || existingCustomer.postcode || '',
       country: shippingAddress.country || 'United Kingdom'
     },
     
-    // Business information
+    // Enhanced business information
     customer_company_name: existingCustomer.company_name || '',
     customer_vat_number: existingCustomer.vat_number || '',
     customer_registration_number: existingCustomer.registration_number || '',
+    customer_website: existingCustomer.website || '',
+    customer_industry: existingCustomer.industry || '',
     
-    // Credit and payment
+    // Enhanced credit and payment
     customer_credit_limit: parseFloat(existingCustomer.credit_limit || 0),
     customer_payment_terms: existingCustomer.payment_terms || '30 days',
     customer_discount_rate: parseFloat(existingCustomer.discount_rate || 0),
+    customer_payment_method: existingCustomer.payment_method || 'invoice',
     
-    // Metadata
+    // Enhanced contact information
+    customer_contact_person: existingCustomer.contact_person || '',
+    customer_contact_phone: existingCustomer.contact_phone || '',
+    customer_contact_email: existingCustomer.contact_email || '',
+    
+    // Enhanced metadata
     created_date: now,
     created_by: 'migration_script',
     updated_by: 'migration_script',
@@ -275,6 +344,159 @@ function transformCustomerToNewCustomer(existingCustomer) {
   };
   
   return newCustomer;
+}
+
+/**
+ * Transform existing order data to new SalesOrder interface
+ */
+function transformOrderToSalesOrder(existingOrder) {
+  const now = Timestamp.now();
+  
+  // Extract items from order
+  const orderItems = existingOrder.items || existingOrder.order_items || [];
+  const transformedItems = orderItems.map(item => ({
+    item_id: item.item_id || item.id || generateId('ITEM'),
+    item_name: item.name || item.item_name || 'Unknown Item',
+    item_sku: item.sku || item.item_sku || '',
+    quantity: parseInt(item.quantity || 1),
+    unit_price: parseFloat(item.unit_price || item.price || 0),
+    total_price: parseFloat(item.total_price || (item.quantity * item.unit_price) || 0),
+    discount_rate: parseFloat(item.discount_rate || 0),
+    discount_amount: parseFloat(item.discount_amount || 0),
+    tax_rate: parseFloat(item.tax_rate || 20),
+    tax_amount: parseFloat(item.tax_amount || 0)
+  }));
+  
+  // Calculate totals
+  const subtotal = transformedItems.reduce((sum, item) => sum + item.total_price, 0);
+  const taxTotal = transformedItems.reduce((sum, item) => sum + item.tax_amount, 0);
+  const discountTotal = transformedItems.reduce((sum, item) => sum + item.discount_amount, 0);
+  const total = subtotal + taxTotal - discountTotal;
+  
+  const newSalesOrder = {
+    salesorder_id: generateId('SO'),
+    salesorder_number: existingOrder.order_number || existingOrder.order_id || generateId('SO'),
+    approved: Boolean(existingOrder.approved || false),
+    approved_by_id: existingOrder.approved_by_id || null,
+    approved_by_name: existingOrder.approved_by_name || null,
+    balance_remaining: parseFloat(existingOrder.balance_remaining || total),
+    customer_id: existingOrder.customer_id || generateId('CUST'),
+    customer_name: existingOrder.customer_name || 'Unknown Customer',
+    
+    // Enhanced order details
+    order_date: existingOrder.order_date || existingOrder.created_time || now,
+    expected_shipment_date: existingOrder.expected_shipment_date || null,
+    status: existingOrder.status || 'pending',
+    custom_status: existingOrder.custom_status || null,
+    branch_id: existingOrder.branch_id || null,
+    branch_name: existingOrder.branch_name || null,
+    sales_channel: existingOrder.sales_channel || 'direct_sales',
+    sales_person: existingOrder.sales_person || existingOrder.salesperson_id || null,
+    payment_terms: existingOrder.payment_terms || '30 days',
+    delivery_method: existingOrder.delivery_method || 'standard',
+    source: existingOrder.source || 'web',
+    
+    // Enhanced items
+    items: transformedItems,
+    
+    // Enhanced totals
+    subtotal: subtotal,
+    tax_total: taxTotal,
+    discount_total: discountTotal,
+    shipping_total: parseFloat(existingOrder.shipping_total || 0),
+    total: total,
+    
+    // Enhanced metadata
+    created_date: now,
+    created_by: 'migration_script',
+    updated_by: 'migration_script',
+    last_modified: now,
+    
+    // Migration metadata
+    _migrated_from: 'orders',
+    _original_id: existingOrder.id || existingOrder.order_id,
+    _migration_date: now
+  };
+  
+  return newSalesOrder;
+}
+
+/**
+ * Transform existing invoice data to new Invoice interface
+ */
+function transformInvoiceData(existingInvoice) {
+  const now = Timestamp.now();
+  
+  // Extract items from invoice
+  const invoiceItems = existingInvoice.items || existingInvoice.invoice_items || [];
+  const transformedItems = invoiceItems.map(item => ({
+    item_id: item.item_id || item.id || generateId('ITEM'),
+    item_name: item.name || item.item_name || 'Unknown Item',
+    item_sku: item.sku || item.item_sku || '',
+    quantity: parseInt(item.quantity || 1),
+    unit_price: parseFloat(item.unit_price || item.price || 0),
+    total_price: parseFloat(item.total_price || (item.quantity * item.unit_price) || 0),
+    discount_rate: parseFloat(item.discount_rate || 0),
+    discount_amount: parseFloat(item.discount_amount || 0),
+    tax_rate: parseFloat(item.tax_rate || 20),
+    tax_amount: parseFloat(item.tax_amount || 0)
+  }));
+  
+  // Calculate totals
+  const subtotal = transformedItems.reduce((sum, item) => sum + item.total_price, 0);
+  const taxTotal = transformedItems.reduce((sum, item) => sum + item.tax_amount, 0);
+  const discountTotal = transformedItems.reduce((sum, item) => sum + item.discount_amount, 0);
+  const total = subtotal + taxTotal - discountTotal;
+  
+  const newInvoice = {
+    invoice_id: generateId('INV'),
+    invoice_number: existingInvoice.invoice_number || existingInvoice.invoice_id || generateId('INV'),
+    salesorder_id: existingInvoice.salesorder_id || existingInvoice.order_id || null,
+    customer_id: existingInvoice.customer_id || generateId('CUST'),
+    customer_name: existingInvoice.customer_name || 'Unknown Customer',
+    
+    // Enhanced invoice details
+    invoice_date: existingInvoice.invoice_date || existingInvoice.created_time || now,
+    due_date: existingInvoice.due_date || null,
+    expected_payment_date: existingInvoice.expected_payment_date || null,
+    status: existingInvoice.status || 'draft',
+    branch_id: existingInvoice.branch_id || null,
+    branch_name: existingInvoice.branch_name || null,
+    
+    // Enhanced currency and exchange rate
+    currency_code: existingInvoice.currency_code || 'GBP',
+    exchange_rate: parseFloat(existingInvoice.exchange_rate || 1),
+    
+    // Enhanced items
+    items: transformedItems,
+    
+    // Enhanced totals
+    subtotal: subtotal,
+    tax_total: taxTotal,
+    discount_total: discountTotal,
+    shipping_total: parseFloat(existingInvoice.shipping_total || 0),
+    total: total,
+    balance: parseFloat(existingInvoice.balance || total),
+    
+    // Enhanced payment information
+    payment_status: existingInvoice.payment_status || 'unpaid',
+    payment_method: existingInvoice.payment_method || null,
+    payment_date: existingInvoice.payment_date || null,
+    payment_reference: existingInvoice.payment_reference || null,
+    
+    // Enhanced metadata
+    created_date: now,
+    created_by: 'migration_script',
+    updated_by: 'migration_script',
+    last_modified: now,
+    
+    // Migration metadata
+    _migrated_from: 'invoices',
+    _original_id: existingInvoice.id || existingInvoice.invoice_id,
+    _migration_date: now
+  };
+  
+  return newInvoice;
 }
 
 /**
@@ -297,7 +519,7 @@ function createCategoryFromItem(item) {
 }
 
 /**
- * Create default warehouse
+ * Create default warehouse with enhanced fields
  */
 function createDefaultWarehouse() {
   const now = Timestamp.now();
@@ -327,6 +549,43 @@ function createDefaultWarehouse() {
     updated_by: 'migration_script',
     last_modified: now,
     _migrated_from: 'default_warehouse',
+    _migration_date: now
+  };
+}
+
+/**
+ * Create default branch
+ */
+function createDefaultBranch() {
+  const now = Timestamp.now();
+  
+  return {
+    branch_id: generateId('BR'),
+    branch_name: 'Main Branch',
+    branch_code: 'MAIN',
+    description: 'Primary business location',
+    address: {
+      street_1: '123 Main Street',
+      street_2: '',
+      city: 'London',
+      state: 'England',
+      country: 'United Kingdom',
+      postcode: 'SW1A 1AA'
+    },
+    phone: '',
+    email: '',
+    fax: '',
+    branch_type: 'headquarters',
+    is_active: true,
+    is_primary: true,
+    contact_person: '',
+    contact_phone: '',
+    contact_email: '',
+    created_date: now,
+    created_by: 'migration_script',
+    updated_by: 'migration_script',
+    last_modified: now,
+    _migrated_from: 'default_branch',
     _migration_date: now
   };
 }
@@ -369,7 +628,7 @@ async function createCollections() {
 }
 
 /**
- * Migrate items data
+ * Migrate items data with enhanced fields
  */
 async function migrateItems() {
   log('info', 'Starting items migration...');
@@ -430,7 +689,7 @@ async function migrateItems() {
 }
 
 /**
- * Migrate customers to vendors
+ * Migrate customers to new customer structure
  */
 async function migrateCustomers() {
   log('info', 'Starting customers migration...');
@@ -463,7 +722,7 @@ async function migrateCustomers() {
           const newCustomer = transformCustomerToNewCustomer(existingCustomer);
           
           // Use generated customer_id as document ID
-          const docRef = db.collection('customers').doc(newCustomer.customer_id);
+          const docRef = db.collection(MIGRATION_CONFIG.collections.newCustomers).doc(newCustomer.customer_id);
           
           batch.set(docRef, newCustomer, { merge: true });
           migrated++;
@@ -485,6 +744,126 @@ async function migrateCustomers() {
     
   } catch (error) {
     log('error', 'Customers migration failed:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Migrate orders to sales orders
+ */
+async function migrateOrders() {
+  log('info', 'Starting orders migration...');
+  
+  try {
+    const existingOrdersSnapshot = await db.collection(MIGRATION_CONFIG.collections.existingOrders).get();
+    const existingOrders = existingOrdersSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    log('info', `Found ${existingOrders.length} existing orders to migrate`);
+    
+    if (MIGRATION_CONFIG.options.dryRun) {
+      log('info', 'DRY RUN: Would migrate orders', { count: existingOrders.length });
+      return { migrated: 0, skipped: 0, errors: 0 };
+    }
+    
+    let migrated = 0;
+    let skipped = 0;
+    let errors = 0;
+    
+    // Process in batches
+    for (let i = 0; i < existingOrders.length; i += MIGRATION_CONFIG.options.batchSize) {
+      const batch = db.batch();
+      const batchOrders = existingOrders.slice(i, i + MIGRATION_CONFIG.options.batchSize);
+      
+      for (const existingOrder of batchOrders) {
+        try {
+          const newSalesOrder = transformOrderToSalesOrder(existingOrder);
+          
+          // Use generated salesorder_id as document ID
+          const docRef = db.collection(MIGRATION_CONFIG.collections.newSalesOrders).doc(newSalesOrder.salesorder_id);
+          
+          batch.set(docRef, newSalesOrder, { merge: true });
+          migrated++;
+          
+          log('debug', `Migrated order: ${existingOrder.order_number || existingOrder.order_id}`);
+        } catch (error) {
+          log('error', `Error migrating order ${existingOrder.id}:`, error.message);
+          errors++;
+        }
+      }
+      
+      // Commit batch
+      await batch.commit();
+      log('info', `Processed batch ${Math.floor(i / MIGRATION_CONFIG.options.batchSize) + 1}`);
+    }
+    
+    log('info', `Orders migration completed: ${migrated} migrated, ${skipped} skipped, ${errors} errors`);
+    return { migrated, skipped, errors };
+    
+  } catch (error) {
+    log('error', 'Orders migration failed:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Migrate invoices
+ */
+async function migrateInvoices() {
+  log('info', 'Starting invoices migration...');
+  
+  try {
+    const existingInvoicesSnapshot = await db.collection(MIGRATION_CONFIG.collections.existingInvoices).get();
+    const existingInvoices = existingInvoicesSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    log('info', `Found ${existingInvoices.length} existing invoices to migrate`);
+    
+    if (MIGRATION_CONFIG.options.dryRun) {
+      log('info', 'DRY RUN: Would migrate invoices', { count: existingInvoices.length });
+      return { migrated: 0, skipped: 0, errors: 0 };
+    }
+    
+    let migrated = 0;
+    let skipped = 0;
+    let errors = 0;
+    
+    // Process in batches
+    for (let i = 0; i < existingInvoices.length; i += MIGRATION_CONFIG.options.batchSize) {
+      const batch = db.batch();
+      const batchInvoices = existingInvoices.slice(i, i + MIGRATION_CONFIG.options.batchSize);
+      
+      for (const existingInvoice of batchInvoices) {
+        try {
+          const newInvoice = transformInvoiceData(existingInvoice);
+          
+          // Use generated invoice_id as document ID
+          const docRef = db.collection(MIGRATION_CONFIG.collections.newInvoices).doc(newInvoice.invoice_id);
+          
+          batch.set(docRef, newInvoice, { merge: true });
+          migrated++;
+          
+          log('debug', `Migrated invoice: ${existingInvoice.invoice_number || existingInvoice.invoice_id}`);
+        } catch (error) {
+          log('error', `Error migrating invoice ${existingInvoice.id}:`, error.message);
+          errors++;
+        }
+      }
+      
+      // Commit batch
+      await batch.commit();
+      log('info', `Processed batch ${Math.floor(i / MIGRATION_CONFIG.options.batchSize) + 1}`);
+    }
+    
+    log('info', `Invoices migration completed: ${migrated} migrated, ${skipped} skipped, ${errors} errors`);
+    return { migrated, skipped, errors };
+    
+  } catch (error) {
+    log('error', 'Invoices migration failed:', error.message);
     throw error;
   }
 }
@@ -629,6 +1008,32 @@ async function createDefaultWarehouseData() {
 }
 
 /**
+ * Create default branch
+ */
+async function createDefaultBranchData() {
+  log('info', 'Creating default branch...');
+  
+  try {
+    if (MIGRATION_CONFIG.options.dryRun) {
+      log('info', 'DRY RUN: Would create default branch');
+      return { created: 0, errors: 0 };
+    }
+    
+    const defaultBranch = createDefaultBranch();
+    const docRef = db.collection(MIGRATION_CONFIG.collections.newBranches).doc(defaultBranch.branch_id);
+    
+    await docRef.set(defaultBranch, { merge: true });
+    
+    log('info', 'Default branch created successfully');
+    return { created: 1, errors: 0 };
+    
+  } catch (error) {
+    log('error', 'Default branch creation failed:', error.message);
+    throw error;
+  }
+}
+
+/**
  * Create migration summary
  */
 async function createMigrationSummary(results) {
@@ -636,11 +1041,21 @@ async function createMigrationSummary(results) {
   
   const summary = {
     migration_date: Timestamp.now(),
-    migration_version: '1.0.0',
+    migration_version: '2.0.0', // Updated version for enhanced fields
     dry_run: MIGRATION_CONFIG.options.dryRun,
     results: results,
     collections_created: Object.values(MIGRATION_CONFIG.collections),
-    config: MIGRATION_CONFIG.options
+    config: MIGRATION_CONFIG.options,
+    enhanced_fields: [
+      'Item dimensions and package info',
+      'Manufacturer information',
+      'Enhanced pricing (wholesale, cost, bulk)',
+      'Inventory valuation methods',
+      'Enhanced shipping information',
+      'Branch management',
+      'Enhanced vendor and customer fields',
+      'Sales order and invoice improvements'
+    ]
   };
   
   try {
@@ -658,7 +1073,7 @@ async function createMigrationSummary(results) {
 async function runMigration() {
   const startTime = Date.now();
   
-  log('info', 'Starting inventory system migration...');
+  log('info', 'Starting enhanced inventory system migration...');
   log('info', `Configuration:`, MIGRATION_CONFIG.options);
   
   try {
@@ -668,25 +1083,37 @@ async function runMigration() {
     // Step 2: Create vendors from items data (suppliers)
     const vendorsResult = await createVendorsFromItems();
     
-    // Step 3: Migrate items (with vendor references)
+    // Step 3: Migrate items (with enhanced fields)
     const itemsResult = await migrateItems();
     
     // Step 4: Migrate customers (keep as customers - they buy from you)
     const customersResult = await migrateCustomers();
     
-    // Step 5: Create categories from items
+    // Step 5: Migrate orders to sales orders
+    const ordersResult = await migrateOrders();
+    
+    // Step 6: Migrate invoices
+    const invoicesResult = await migrateInvoices();
+    
+    // Step 7: Create categories from items
     const categoriesResult = await createCategoriesFromItems();
     
-    // Step 6: Create default warehouse
+    // Step 8: Create default warehouse
     const warehouseResult = await createDefaultWarehouseData();
     
-    // Step 7: Create migration summary
+    // Step 9: Create default branch
+    const branchResult = await createDefaultBranchData();
+    
+    // Step 10: Create migration summary
     const results = {
       vendors: vendorsResult,
       items: itemsResult,
       customers: customersResult,
+      orders: ordersResult,
+      invoices: invoicesResult,
       categories: categoriesResult,
-      warehouse: warehouseResult
+      warehouse: warehouseResult,
+      branch: branchResult
     };
     
     await createMigrationSummary(results);
@@ -694,7 +1121,7 @@ async function runMigration() {
     const endTime = Date.now();
     const duration = (endTime - startTime) / 1000;
     
-    log('info', 'Migration completed successfully!');
+    log('info', 'Enhanced migration completed successfully!');
     log('info', `Total duration: ${duration.toFixed(2)} seconds`);
     log('info', 'Results:', results);
     
