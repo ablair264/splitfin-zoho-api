@@ -591,7 +591,7 @@ function generateAgentFallback(agentData) {
     executiveSummary: {
       tone: "supportive and encouraging",
       highlights: [`${agentData.agentName} continues to serve their customers well`],
-      businessHealth: "steady",
+      businessHealth: "steady" n,
       keyMessage: "Keep up the good work. Full analysis will be available shortly."
     }
   };
@@ -626,5 +626,4 @@ export {
   analyzeStockPerformance,
   analyzeAgentPerformance,
   analyzeCompetitorPerformance,
-  generateSeasonalStrategy
 };
