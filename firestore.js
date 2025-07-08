@@ -17,49 +17,13 @@ async function extractCollectionStructure() {
   
   const collectionStructure = {};
   
-  // List of known collections from your project
+  // Only the 5 collections you want to analyze
   const knownCollections = [
-    // User collections
-    'users',
-    'brand_managers',
-    'sales_agents',
     'customers',
-    'customer_data',
-    
-    // Item/Product collections
-    'items',
-    'items_enhanced',
-    'products',
-    'vendors',
-    'item_categories',
-    
-    // Order/Sales collections
-    'salesorders',
-    'sales_orders',
-    'sales_transactions',
     'invoices',
-    'invoices_enhanced',
-    'purchase_orders',
-    
-    // Inventory collections
-    'warehouses',
-    'stock_transactions',
-    'stock_alerts',
-    'inventory_transactions',
-    
-    // Supporting collections
-    'shipping_methods',
-    'couriers',
-    'vendor_contacts',
-    'branches',
-    'packing_stations',
-    'packing_jobs',
-    
-    // System collections
-    'sync_metadata',
-    'sync_queue',
-    'migration_logs',
-    'data_adapters'
+    'items_data',
+    'sales_agents',
+    'sales_orders'
   ];
   
   // Process each collection
@@ -67,26 +31,8 @@ async function extractCollectionStructure() {
     try {
       console.log(`📁 Analyzing collection: ${collectionName}`);
       
-      let snapshot;
-      let sampleDoc;
-      
-      // Special handling for users collection - use specific document
-      if (collectionName === 'users') {
-        const specificDoc = await db.collection(collectionName).doc('kePM8QtWXoO24zlMg3qSidGOen02').get();
-        if (specificDoc.exists) {
-          console.log(`   📌 Using specific document: kePM8QtWXoO24zlMg3qSidGOen02`);
-          snapshot = {
-            empty: false,
-            docs: [specificDoc]
-          };
-        } else {
-          console.log(`   ⚠️  Specific document not found, falling back to sample`);
-          snapshot = await db.collection(collectionName).limit(10).get();
-        }
-      } else {
-        // Get a sample of documents for other collections
-        snapshot = await db.collection(collectionName).limit(10).get();
-      }
+      // Get a sample of documents (increase limit for better structure understanding)
+      const snapshot = await db.collection(collectionName).limit(10).get();
       
       if (snapshot.empty) {
         console.log(`   ⚠️  Collection is empty or doesn't exist`);
@@ -99,30 +45,38 @@ async function extractCollectionStructure() {
         continue;
       }
       
-      // Analyze document structure
+      // Analyze document structure from multiple documents to catch all fields
       const fieldStructure = {};
-      sampleDoc = snapshot.docs[0].data();
+      const allFieldsMap = new Map();
       
-      // Extract field types and structure with enhanced array/map analysis
-      analyzeFields(sampleDoc, fieldStructure);
+      // Analyze all sample documents to get complete field structure
+      for (const doc of snapshot.docs) {
+        const docData = doc.data();
+        collectAllFields(docData, allFieldsMap);
+      }
       
-      // Count total documents (be careful with large collections)
+      // Convert collected fields to structure
+      for (const [fieldPath, value] of allFieldsMap.entries()) {
+        analyzeFieldValue(fieldPath, value, fieldStructure);
+      }
+      
+      // Count total documents
       const countSnapshot = await db.collection(collectionName).count().get();
       const documentCount = countSnapshot.data().count;
+      
+      // Get the first document as sample
+      const sampleDoc = snapshot.docs[0].data();
       
       collectionStructure[collectionName] = {
         exists: true,
         documentCount: documentCount,
         fields: fieldStructure,
         sampleDocumentId: snapshot.docs[0].id,
-        sampleData: sanitizeSampleData(sampleDoc),
-        // Add specific note for users collection
-        ...(collectionName === 'users' && snapshot.docs[0].id === 'kePM8QtWXoO24zlMg3qSidGOen02' 
-          ? { note: 'Using specific document ID: kePM8QtWXoO24zlMg3qSidGOen02' } 
-          : {})
+        sampleData: sanitizeSampleData(sampleDoc)
       };
       
       console.log(`   ✅ Found ${documentCount} documents`);
+      console.log(`   📊 Analyzed ${Object.keys(fieldStructure).length} unique field paths`);
       
     } catch (error) {
       console.error(`   ❌ Error analyzing ${collectionName}:`, error.message);
@@ -137,72 +91,66 @@ async function extractCollectionStructure() {
 }
 
 /**
- * Analyze field types recursively with enhanced array and map analysis
+ * Collect all fields from multiple documents to ensure we capture the complete structure
  */
-function analyzeFields(obj, structure, prefix = '') {
+function collectAllFields(obj, fieldMap, prefix = '') {
   for (const [key, value] of Object.entries(obj)) {
     const fieldPath = prefix ? `${prefix}.${key}` : key;
     
-    if (value === null) {
-      structure[fieldPath] = { type: 'null' };
-    } else if (value === undefined) {
-      structure[fieldPath] = { type: 'undefined' };
-    } else if (value instanceof admin.firestore.Timestamp) {
-      structure[fieldPath] = { 
-        type: 'timestamp',
-        example: value.toDate().toISOString()
-      };
-    } else if (value instanceof admin.firestore.GeoPoint) {
-      structure[fieldPath] = { 
-        type: 'geopoint',
-        example: { latitude: value.latitude, longitude: value.longitude }
-      };
-    } else if (Array.isArray(value)) {
-      // Enhanced array analysis
-      const arrayInfo = analyzeArray(value);
-      structure[fieldPath] = arrayInfo;
-      
-      // If array contains objects, analyze their complete structure
-      if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
-        // Collect all unique fields from all objects in the array
-        const allFields = new Map();
-        
+    // Store the field value if we haven't seen it before or if it's not null/undefined
+    if (!fieldMap.has(fieldPath) || (fieldMap.get(fieldPath) === null && value !== null)) {
+      fieldMap.set(fieldPath, value);
+    }
+    
+    // Recursively collect nested fields
+    if (value !== null && value !== undefined) {
+      if (Array.isArray(value) && value.length > 0) {
+        // For arrays, collect fields from all objects in the array
         for (const item of value) {
           if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
-            for (const [objKey, objValue] of Object.entries(item)) {
-              if (!allFields.has(objKey)) {
-                allFields.set(objKey, objValue);
-              }
-            }
+            collectAllFields(item, fieldMap, `${fieldPath}[]`);
           }
         }
-        
-        // Analyze the combined structure
-        const arrayObjectStructure = {};
-        for (const [objKey, objValue] of allFields.entries()) {
-          analyzeFields({ [objKey]: objValue }, arrayObjectStructure, `${fieldPath}[]`);
-        }
-        
-        // Store the analyzed structure
-        structure[fieldPath].objectFields = arrayObjectStructure;
+      } else if (typeof value === 'object' && !(value instanceof admin.firestore.Timestamp) && !(value instanceof admin.firestore.GeoPoint)) {
+        collectAllFields(value, fieldMap, fieldPath);
       }
-    } else if (typeof value === 'object') {
-      // Mark as map/object
-      structure[fieldPath] = { 
-        type: 'map',
-        fieldCount: Object.keys(value).length,
-        mapFields: Object.keys(value) // Store the actual field names
-      };
-      // Analyze nested fields
-      analyzeFields(value, structure, fieldPath);
-    } else {
-      structure[fieldPath] = { 
-        type: typeof value,
-        example: typeof value === 'string' && value.length > 50 
-          ? value.substring(0, 50) + '...' 
-          : value
-      };
     }
+  }
+}
+
+/**
+ * Analyze a field value and determine its type and structure
+ */
+function analyzeFieldValue(fieldPath, value, structure) {
+  if (value === null) {
+    structure[fieldPath] = { type: 'null' };
+  } else if (value === undefined) {
+    structure[fieldPath] = { type: 'undefined' };
+  } else if (value instanceof admin.firestore.Timestamp) {
+    structure[fieldPath] = { 
+      type: 'timestamp',
+      example: value.toDate().toISOString()
+    };
+  } else if (value instanceof admin.firestore.GeoPoint) {
+    structure[fieldPath] = { 
+      type: 'geopoint',
+      example: { latitude: value.latitude, longitude: value.longitude }
+    };
+  } else if (Array.isArray(value)) {
+    structure[fieldPath] = analyzeArray(value);
+  } else if (typeof value === 'object') {
+    structure[fieldPath] = { 
+      type: 'map',
+      fieldCount: Object.keys(value).length,
+      mapFields: Object.keys(value)
+    };
+  } else {
+    structure[fieldPath] = { 
+      type: typeof value,
+      example: typeof value === 'string' && value.length > 50 
+        ? value.substring(0, 50) + '...' 
+        : value
+    };
   }
 }
 
@@ -338,12 +286,15 @@ function sanitizeSampleData(data) {
     
     // Handle arrays with detailed sanitization
     if (Array.isArray(value)) {
-      sanitized[key] = value.map(item => {
+      sanitized[key] = value.slice(0, 3).map(item => {
         if (typeof item === 'object' && item !== null && !(item instanceof admin.firestore.Timestamp)) {
           return sanitizeSampleData(item);
         }
         return sanitizeValue(item);
       });
+      if (value.length > 3) {
+        sanitized[key].push(`... and ${value.length - 3} more items`);
+      }
       continue;
     }
     
@@ -359,137 +310,89 @@ function sanitizeSampleData(data) {
 }
 
 /**
- * Generate a markdown report of the collection structure
+ * Generate a detailed structure report
  */
-function generateMarkdownReport(structure) {
-  let markdown = '# Firebase Collection Structure\n\n';
-  markdown += `Generated on: ${new Date().toISOString()}\n\n`;
-  markdown += '## Table of Contents\n\n';
+function generateDetailedReport(structure) {
+  let report = '# Firebase Collection Structure Report\n\n';
+  report += `Generated on: ${new Date().toISOString()}\n\n`;
+  report += '## Collections Analyzed\n\n';
   
-  // Generate TOC
-  Object.keys(structure).forEach(collection => {
-    if (structure[collection].exists) {
-      markdown += `- [${collection}](#${collection.replace(/_/g, '-')})\n`;
-    }
-  });
-  
-  markdown += '\n## Collections\n\n';
-  
-  // Generate detailed structure for each collection
   for (const [collectionName, collectionData] of Object.entries(structure)) {
-    markdown += `### ${collectionName}\n\n`;
+    report += `### ${collectionName}\n\n`;
     
     if (!collectionData.exists) {
-      markdown += '**Status:** Collection does not exist or is empty\n\n';
+      report += '**Status:** Collection does not exist or is empty\n\n';
       continue;
     }
     
-    markdown += `**Document Count:** ${collectionData.documentCount}\n`;
-    if (collectionData.note) {
-      markdown += `**Note:** ${collectionData.note}\n`;
-    }
-    markdown += '\n**Field Structure:**\n\n';
-    markdown += '| Field Path | Type | Details | Example |\n';
-    markdown += '|------------|------|---------|----------|\n';
+    report += `**Document Count:** ${collectionData.documentCount}\n`;
+    report += `**Sample Document ID:** ${collectionData.sampleDocumentId}\n\n`;
+    report += '**Complete Field Structure:**\n\n';
     
-    // Sort fields to ensure nested fields appear after their parents
-    const sortedFields = Object.entries(collectionData.fields).sort(([a], [b]) => a.localeCompare(b));
+    // Create a hierarchical view of fields
+    const fields = collectionData.fields;
+    const rootFields = {};
     
-    for (const [fieldPath, fieldInfo] of sortedFields) {
-      // Skip nested fields that will be shown under their parent
-      if (fieldInfo.type === 'map' && !fieldPath.includes('[]')) {
-        // For maps, show the map field with its field count and field names
-        const fieldNames = fieldInfo.mapFields ? fieldInfo.mapFields.join(', ') : '';
-        markdown += `| **${fieldPath}** | **map** | **${fieldInfo.fieldCount} fields:** ${fieldNames} | - |\n`;
-        continue;
+    // Group fields by root
+    for (const [fieldPath, fieldInfo] of Object.entries(fields)) {
+      const parts = fieldPath.split('.');
+      const root = parts[0];
+      
+      if (!rootFields[root]) {
+        rootFields[root] = [];
       }
       
-      if (fieldInfo.type === 'array') {
-        // For arrays, show array info and then its nested structure
-        let details = `Length: ${fieldInfo.length}`;
-        if (fieldInfo.itemTypes && Array.isArray(fieldInfo.itemTypes)) {
-          const types = fieldInfo.itemTypes.map(t => `${t.type} (${t.percentage})`).join(', ');
-          details += `<br>Types: ${types}`;
-        }
+      rootFields[root].push({ path: fieldPath, info: fieldInfo, parts });
+    }
+    
+    // Display fields hierarchically
+    for (const [root, fieldList] of Object.entries(rootFields)) {
+      // Find the root field info
+      const rootField = fieldList.find(f => f.parts.length === 1);
+      
+      if (rootField) {
+        report += `- **${root}** (${rootField.info.type})`;
         
-        markdown += `| **${fieldPath}** | **array** | **${details}** | - |\n`;
-        
-        // If array contains objects, show their fields
-        if (fieldInfo.objectFields) {
-          const objectFields = Object.entries(fieldInfo.objectFields).sort(([a], [b]) => a.localeCompare(b));
-          for (const [objFieldPath, objFieldInfo] of objectFields) {
-            const indent = '&nbsp;&nbsp;&nbsp;&nbsp;';
-            const displayPath = objFieldPath.replace(`${fieldPath}[]`, `${indent}└─`);
-            const example = objFieldInfo.example !== undefined 
-              ? `\`${JSON.stringify(objFieldInfo.example)}\`` 
-              : '-';
-            markdown += `| ${displayPath} | ${objFieldInfo.type} | - | ${example} |\n`;
+        if (rootField.info.type === 'map') {
+          report += ` - ${rootField.info.fieldCount} fields: ${rootField.info.mapFields.join(', ')}`;
+        } else if (rootField.info.type === 'array') {
+          report += ` - ${rootField.info.length} items`;
+          if (rootField.info.itemTypes && Array.isArray(rootField.info.itemTypes)) {
+            const types = rootField.info.itemTypes.map(t => `${t.type} (${t.count})`).join(', ');
+            report += ` - Types: ${types}`;
           }
+        } else if (rootField.info.example !== undefined) {
+          report += ` - Example: \`${JSON.stringify(rootField.info.example)}\``;
         }
-        continue;
-      }
-      
-      // For regular fields and nested map fields
-      const indent = fieldPath.split('.').length > 1 ? '&nbsp;&nbsp;&nbsp;&nbsp;'.repeat(fieldPath.split('.').length - 1) + '└─ ' : '';
-      const displayField = fieldPath.includes('.') ? indent + fieldPath.split('.').pop() : fieldPath;
-      
-      const example = fieldInfo.example !== undefined 
-        ? `\`${JSON.stringify(fieldInfo.example)}\`` 
-        : '-';
-      
-      markdown += `| ${displayField} | ${fieldInfo.type} | - | ${example} |\n`;
-    }
-    
-    markdown += '\n';
-  }
-  
-  return markdown;
-}
-
-/**
- * Build a hierarchical field tree from flat field paths
- */
-function buildFieldTree(fields) {
-  const tree = {};
-  
-  // Sort fields to process parents before children
-  const sortedPaths = Object.keys(fields).sort((a, b) => {
-    const aDepth = a.split('.').length;
-    const bDepth = b.split('.').length;
-    if (aDepth !== bDepth) return aDepth - bDepth;
-    return a.localeCompare(b);
-  });
-  
-  for (const fieldPath of sortedPaths) {
-    const fieldInfo = fields[fieldPath];
-    const parts = fieldPath.split('.');
-    let current = tree;
-    
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      const isLast = i === parts.length - 1;
-      
-      if (isLast) {
-        // This is the leaf node
-        current[part] = {
-          ...fieldInfo,
-          // Include nested array object fields if present
-          ...(fieldInfo.objectFields ? { fields: buildFieldTree(fieldInfo.objectFields) } : {})
-        };
-      } else {
-        // This is an intermediate node
-        if (!current[part]) {
-          current[part] = { type: 'object', fields: {} };
-        } else if (!current[part].fields) {
-          // If this was previously a leaf node, convert it to an object with fields
-          current[part] = { ...current[part], fields: {} };
+        report += '\n';
+        
+        // Display nested fields
+        const nestedFields = fieldList.filter(f => f.parts.length > 1).sort((a, b) => a.path.localeCompare(b.path));
+        
+        for (const nested of nestedFields) {
+          const indent = '  '.repeat(nested.parts.length - 1);
+          const fieldName = nested.path;
+          
+          report += `${indent}- **${fieldName}** (${nested.info.type})`;
+          
+          if (nested.info.type === 'map') {
+            report += ` - ${nested.info.fieldCount} fields`;
+          } else if (nested.info.type === 'array') {
+            report += ` - ${nested.info.length} items`;
+          } else if (nested.info.example !== undefined) {
+            report += ` - Example: \`${JSON.stringify(nested.info.example)}\``;
+          }
+          report += '\n';
         }
-        current = current[part].fields || {};
       }
     }
+    
+    report += '\n**Sample Data:**\n```json\n';
+    report += JSON.stringify(collectionData.sampleData, null, 2);
+    report += '\n```\n\n---\n\n';
   }
   
-  return tree;
+  return report;
 }
 
 /**
@@ -503,26 +406,23 @@ async function main() {
     // Generate outputs
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     
-    // Save JSON structure - simplified without the problematic buildFieldTree
+    // Save JSON structure
     const jsonPath = path.join(process.cwd(), `firebase-structure-${timestamp}.json`);
     fs.writeFileSync(jsonPath, JSON.stringify(structure, null, 2));
     console.log(`\n✅ JSON structure saved to: ${jsonPath}`);
     
-    // Save Markdown report
-    const markdownPath = path.join(process.cwd(), `firebase-structure-${timestamp}.md`);
-    fs.writeFileSync(markdownPath, generateMarkdownReport(structure));
-    console.log(`✅ Markdown report saved to: ${markdownPath}`);
+    // Save detailed report
+    const reportPath = path.join(process.cwd(), `firebase-structure-${timestamp}.md`);
+    fs.writeFileSync(reportPath, generateDetailedReport(structure));
+    console.log(`✅ Detailed report saved to: ${reportPath}`);
     
-    // Generate a simple visual representation
+    // Display summary
     console.log('\n📊 Collection Summary:');
     console.log('====================');
     
     Object.entries(structure).forEach(([collection, data]) => {
       if (data.exists) {
-        console.log(`✅ ${collection}: ${data.documentCount} documents`);
-        if (data.note) {
-          console.log(`   📌 ${data.note}`);
-        }
+        console.log(`✅ ${collection}: ${data.documentCount} documents, ${Object.keys(data.fields).length} field paths`);
       } else {
         console.log(`❌ ${collection}: Empty or doesn't exist`);
       }
