@@ -619,11 +619,3 @@ function generateCustomerSegmentFallback(customerData) {
     }
   };
 }
-
-// Export all functions
-export {
-  DM_BRANDS_CONTEXT,
-  analyzeStockPerformance,
-  analyzeAgentPerformance,
-  analyzeCompetitorPerformance,
-};
