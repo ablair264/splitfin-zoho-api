@@ -1,15 +1,16 @@
 // src/services/cronDataSyncService.js
-// Refactored to focus solely on syncing raw data from Zoho to Firestore.
-// All dashboard-specific calculations have been moved to dashboardAggregator.js.
+// Enhanced to trigger daily aggregation after successful syncs
 
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
-import zohoInventoryService from './zohoInventoryService.js'; // Assuming this handles Zoho API calls
+import zohoInventoryService from './zohoInventoryService.js';
+import DailyDashboardAggregator from './dailyDashboardAggregator.js';
 
 const db = getFirestore();
 
 class CronDataSyncService {
   constructor() {
     this.isRunning = new Map();
+    this.aggregator = new DailyDashboardAggregator();
   }
 
   /**
@@ -92,7 +93,7 @@ class CronDataSyncService {
   }
   
   /**
-   * NEW: Links newly synced orders to their respective customers and sales agents.
+   * Links newly synced orders to their respective customers and sales agents.
    */
   async _linkNewData(newlySyncedOrders) {
     if (!newlySyncedOrders || newlySyncedOrders.length === 0) return;
@@ -111,7 +112,7 @@ class CronDataSyncService {
         }
     });
 
-    const batch = db.batch();
+    let batch = db.batch();
     let linkCount = 0;
 
     for (const order of newlySyncedOrders) {
@@ -166,6 +167,57 @@ class CronDataSyncService {
   }
 
   /**
+   * Get dates that were affected by the sync for aggregation
+   */
+  _getAffectedDates(orders, invoices) {
+    const dates = new Set();
+    
+    // Get dates from orders
+    orders.forEach(order => {
+      if (order.date) {
+        const date = new Date(order.date);
+        dates.add(date.toISOString().split('T')[0]);
+      }
+      if (order.modified_time) {
+        const date = new Date(order.modified_time);
+        dates.add(date.toISOString().split('T')[0]);
+      }
+    });
+    
+    // Get dates from invoices
+    invoices.forEach(invoice => {
+      if (invoice.date) {
+        const date = new Date(invoice.date);
+        dates.add(date.toISOString().split('T')[0]);
+      }
+    });
+    
+    // Always include today (for partial data)
+    dates.add(new Date().toISOString().split('T')[0]);
+    
+    return Array.from(dates);
+  }
+
+  /**
+   * Update daily aggregates for affected dates
+   */
+  async _updateDailyAggregates(affectedDates) {
+    if (affectedDates.length === 0) return;
+    
+    console.log(`📊 Updating daily aggregates for ${affectedDates.length} affected dates...`);
+    
+    for (const dateStr of affectedDates) {
+      try {
+        await this.aggregator.calculateDailyAggregate(new Date(dateStr));
+      } catch (error) {
+        console.error(`Failed to update aggregate for ${dateStr}:`, error);
+      }
+    }
+    
+    console.log(`✅ Daily aggregates updated for affected dates`);
+  }
+
+  /**
    * HIGH FREQUENCY SYNC - Every 15 minutes
    */
   async highFrequencySync() {
@@ -195,9 +247,19 @@ class CronDataSyncService {
         await this._batchWrite('invoices', newInvoices, 'invoice_id');
       }
       
+      // Update daily aggregates for affected dates
+      const affectedDates = this._getAffectedDates(newOrders, newInvoices);
+      await this._updateDailyAggregates(affectedDates);
+      
       await this._updateSyncMetadata(jobType, {
-        recordsProcessed: { orders: newOrders.length, invoices: newInvoices.length }
+        recordsProcessed: { 
+          orders: newOrders.length, 
+          invoices: newInvoices.length,
+          affectedDates: affectedDates.length
+        }
       }, syncTimestamp);
+      
+      console.log(`✅ High frequency sync completed. Orders: ${newOrders.length}, Invoices: ${newInvoices.length}`);
       
     } catch (error) {
       console.error('❌ High frequency sync failed:', error);
@@ -241,13 +303,22 @@ class CronDataSyncService {
       if (customers.length > 0) await this._batchWrite('customers', customers, 'customer_id');
       if (items.length > 0) await this._batchWrite('items_data', items, 'item_id');
       
+      // Update daily aggregates for affected dates
+      const affectedDates = this._getAffectedDates(orders, invoices);
+      await this._updateDailyAggregates(affectedDates);
+      
+      // Run full daily aggregation for yesterday (comprehensive recalc)
+      console.log('📊 Running full daily aggregation...');
+      await this.aggregator.runDailyAggregation();
+      
       await this._updateSyncMetadata(jobType, {
         recordsProcessed: { 
             orders: orders.length, 
             invoices: invoices.length, 
             purchaseOrders: purchaseOrders.length, 
             customers: customers.length,
-            items: items.length
+            items: items.length,
+            affectedDates: affectedDates.length
         }
       }, syncTimestamp);
       
