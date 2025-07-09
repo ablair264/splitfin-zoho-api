@@ -410,44 +410,49 @@ async processSalesTransactions(orders, db) {
   }
     
     // Process orders
-  orders.forEach(order => {
-    if (order.line_items && Array.isArray(order.line_items)) {
-      order.line_items.forEach(item => {
-        const itemInfo = itemsMap.get(item.item_id) || {};
-        const manufacturer = itemInfo.manufacturer || 'Unknown';
-        
-        // Check if marketplace order
-        const isMarketplaceOrder = 
-          order.customer_name === 'Amazon UK - Customer';
-        
-        const itemTotal = item.item_total || item.total || 
-                        (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
-        
-        transactions.push({
-          transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
-          item_id: item.item_id,
-          item_name: item.name || item.item_name || 'Unknown Item',
-          sku: item.sku || itemInfo.sku || '',
-          manufacturer: manufacturer,
-          brand: manufacturer,
-          brand_normalized: manufacturer.toLowerCase().replace(/\s+/g, '-'),
-          quantity: parseInt(item.quantity || 0),
-          price: parseFloat(item.rate || 0),
-          total: itemTotal,
-          order_id: order.salesorder_id,
-          order_number: order.salesorder_number,
-          order_date: order.date,
-          customer_id: order.customer_id,
-          customer_name: order.customer_name,
-          salesperson_id: order.salesperson_id || '',
-          salesperson_name: order.salesperson_name || '',
-          is_marketplace_order: isMarketplaceOrder,
-          created_at: order.date,
-          last_modified: admin.firestore.FieldValue.serverTimestamp()
-        });
+orders.forEach(order => {
+  if (order.line_items && Array.isArray(order.line_items)) {
+    order.line_items.forEach(item => {
+      const itemInfo = itemsMap.get(item.item_id) || {};
+      
+      // Ensure manufacturer is always a valid string
+      let manufacturer = itemInfo.manufacturer;
+      if (!manufacturer || typeof manufacturer !== 'string') {
+        manufacturer = 'Unknown';
+      }
+      
+      // Check if marketplace order
+      const isMarketplaceOrder = 
+        order.customer_name === 'Amazon UK - Customer';
+      
+      const itemTotal = item.item_total || item.total || 
+                      (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
+      
+      transactions.push({
+        transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
+        item_id: item.item_id,
+        item_name: item.name || item.item_name || 'Unknown Item',
+        sku: item.sku || itemInfo.sku || '',
+        manufacturer: manufacturer,
+        brand: manufacturer,
+        brand_normalized: manufacturer.toLowerCase().replace(/\s+/g, '-'),
+        quantity: parseInt(item.quantity || 0),
+        price: parseFloat(item.rate || 0),
+        total: itemTotal,
+        order_id: order.salesorder_id,
+        order_number: order.salesorder_number,
+        order_date: order.date,
+        customer_id: order.customer_id,
+        customer_name: order.customer_name,
+        salesperson_id: order.salesperson_id || '',
+        salesperson_name: order.salesperson_name || '',
+        is_marketplace_order: isMarketplaceOrder,
+        created_at: order.date,
+        last_modified: admin.firestore.FieldValue.serverTimestamp()
       });
-    }
-  });
+    });
+  }
+});
   
   return transactions;
 }
