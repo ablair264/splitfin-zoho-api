@@ -347,100 +347,110 @@ class CronDataSyncService {
   /**
    * Process and enrich sales transactions with proper brand info
    */
-  async processSalesTransactions(orders, db) {
-    const transactions = [];
+async processSalesTransactions(orders, db) {
+  const transactions = [];
+  
+  // First, collect all unique item IDs to batch fetch
+  const itemIds = new Set();
+  orders.forEach(order => {
+    if (order.line_items && Array.isArray(order.line_items)) {
+      order.line_items.forEach(item => {
+        if (item.item_id) itemIds.add(item.item_id);
+      });
+    }
+  });
+  
+  // Batch fetch items to get Manufacturer field
+  const itemsMap = new Map();
+  const itemIdsArray = Array.from(itemIds);
+  
+  for (let i = 0; i < itemIdsArray.length; i += 10) {
+    const batch = itemIdsArray.slice(i, i + 10);
     
-    // First, collect all unique item IDs to batch fetch
-    const itemIds = new Set();
-    orders.forEach(order => {
-      if (order.line_items && Array.isArray(order.line_items)) {
-        order.line_items.forEach(item => {
-          if (item.item_id) itemIds.add(item.item_id);
-        });
-      }
+    // Try items_data collection first
+    const itemsDataSnapshot = await db.collection('items_data')
+      .where('item_id', 'in', batch)
+      .get();
+    
+    itemsDataSnapshot.forEach(doc => {
+      const itemData = doc.data();
+      // Extract manufacturer name from the object structure
+      const manufacturerName = typeof itemData.manufacturer === 'object' 
+        ? (itemData.manufacturer?.manufacturer_name || itemData.brand_name || 'Unknown')
+        : (itemData.manufacturer || itemData.brand_name || 'Unknown');
+      
+      itemsMap.set(itemData.item_id, {
+        manufacturer: manufacturerName,
+        name: itemData.item_name || itemData.name,
+        sku: itemData.sku
+      });
     });
     
-    // Batch fetch items to get Manufacturer field
-    const itemsMap = new Map();
-    const itemIdsArray = Array.from(itemIds);
-    
-    for (let i = 0; i < itemIdsArray.length; i += 10) {
-      const batch = itemIdsArray.slice(i, i + 10);
-      
-      // Try items_data collection first
-      const itemsDataSnapshot = await db.collection('items_data')
-        .where('item_id', 'in', batch)
+    // Fallback to items collection for any missing
+    const missingIds = batch.filter(id => !itemsMap.has(id));
+    if (missingIds.length > 0) {
+      const itemsSnapshot = await db.collection('items')
+        .where('item_id', 'in', missingIds)
         .get();
       
-      itemsDataSnapshot.forEach(doc => {
+      itemsSnapshot.forEach(doc => {
         const itemData = doc.data();
+        // Handle manufacturer field which might be a string or object
+        const manufacturerName = typeof itemData.Manufacturer === 'object'
+          ? (itemData.Manufacturer?.manufacturer_name || 'Unknown')
+          : (itemData.Manufacturer || itemData.manufacturer || 'Unknown');
+        
         itemsMap.set(itemData.item_id, {
-          manufacturer: itemData.manufacturer?.manufacturer_name || itemData.brand_name || 'Unknown',
-          name: itemData.item_name || itemData.name,
+          manufacturer: manufacturerName,
+          name: itemData.name || itemData.item_name,
           sku: itemData.sku
         });
       });
-      
-      // Fallback to items collection for any missing
-      const missingIds = batch.filter(id => !itemsMap.has(id));
-      if (missingIds.length > 0) {
-        const itemsSnapshot = await db.collection('items')
-          .where('item_id', 'in', missingIds)
-          .get();
-        
-        itemsSnapshot.forEach(doc => {
-          const itemData = doc.data();
-          itemsMap.set(itemData.item_id, {
-            manufacturer: itemData.Manufacturer || itemData.manufacturer || 'Unknown',
-            name: itemData.name || itemData.item_name,
-            sku: itemData.sku
-          });
-        });
-      }
     }
+  }
     
     // Process orders
-    orders.forEach(order => {
-      if (order.line_items && Array.isArray(order.line_items)) {
-        order.line_items.forEach(item => {
-          const itemInfo = itemsMap.get(item.item_id) || {};
-          const manufacturer = itemInfo.manufacturer || 'Unknown';
-          
-          // Check if marketplace order
-          const isMarketplaceOrder = 
-            order.customer_name === 'Amazon UK - Customer';
-          
-          const itemTotal = item.item_total || item.total || 
-                          (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
-          
-          transactions.push({
-            transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
-            item_id: item.item_id,
-            item_name: item.name || item.item_name || 'Unknown Item',
-            sku: item.sku || itemInfo.sku || '',
-            manufacturer: manufacturer,
-            brand: manufacturer,
-            brand_normalized: manufacturer.toLowerCase().replace(/\s+/g, '-'),
-            quantity: parseInt(item.quantity || 0),
-            price: parseFloat(item.rate || 0),
-            total: itemTotal,
-            order_id: order.salesorder_id,
-            order_number: order.salesorder_number,
-            order_date: order.date,
-            customer_id: order.customer_id,
-            customer_name: order.customer_name,
-            salesperson_id: order.salesperson_id || '',
-            salesperson_name: order.salesperson_name || '',
-            is_marketplace_order: isMarketplaceOrder,
-            created_at: order.date,
-            last_modified: admin.firestore.FieldValue.serverTimestamp()
-          });
+  orders.forEach(order => {
+    if (order.line_items && Array.isArray(order.line_items)) {
+      order.line_items.forEach(item => {
+        const itemInfo = itemsMap.get(item.item_id) || {};
+        const manufacturer = itemInfo.manufacturer || 'Unknown';
+        
+        // Check if marketplace order
+        const isMarketplaceOrder = 
+          order.customer_name === 'Amazon UK - Customer';
+        
+        const itemTotal = item.item_total || item.total || 
+                        (parseFloat(item.rate || 0) * parseInt(item.quantity || 0));
+        
+        transactions.push({
+          transaction_id: item.line_item_id || `${order.salesorder_id}_${item.item_id}`,
+          item_id: item.item_id,
+          item_name: item.name || item.item_name || 'Unknown Item',
+          sku: item.sku || itemInfo.sku || '',
+          manufacturer: manufacturer,
+          brand: manufacturer,
+          brand_normalized: manufacturer.toLowerCase().replace(/\s+/g, '-'),
+          quantity: parseInt(item.quantity || 0),
+          price: parseFloat(item.rate || 0),
+          total: itemTotal,
+          order_id: order.salesorder_id,
+          order_number: order.salesorder_number,
+          order_date: order.date,
+          customer_id: order.customer_id,
+          customer_name: order.customer_name,
+          salesperson_id: order.salesperson_id || '',
+          salesperson_name: order.salesperson_name || '',
+          is_marketplace_order: isMarketplaceOrder,
+          created_at: order.date,
+          last_modified: admin.firestore.FieldValue.serverTimestamp()
         });
-      }
-    });
-    
-    return transactions;
-  }
+      });
+    }
+  });
+  
+  return transactions;
+}
 
   /**
    * Update brand backorder information from purchase orders
@@ -472,53 +482,58 @@ class CronDataSyncService {
             const backorderQuantity = quantity - quantityReceived - quantityCancelled;
             
             // Only process if there's actually a backorder
-            if (backorderQuantity > 0) {
-              // Get item info from items_data collection first
-              let itemData = null;
-              const itemDoc = await db.collection('items_data')
-                .where('item_id', '==', item.item_id)
-                .limit(1)
-                .get();
-              
-              if (!itemDoc.empty) {
-                itemData = itemDoc.docs[0].data();
-                const brand = itemData.manufacturer?.manufacturer_name || itemData.brand_name || 'Unknown';
-                const brandNormalized = brand.toLowerCase().replace(/\s+/g, '-');
-                
-                if (!backordersByBrand.has(brandNormalized)) {
-                  backordersByBrand.set(brandNormalized, {
-                    brand_name: brand,
-                    items_on_backorder: 0,
-                    backorder_value: 0,
-                    items_in_transit: 0,
-                    backorder_details: []
-                  });
-                }
-                
-                const brandBackorder = backordersByBrand.get(brandNormalized);
-                brandBackorder.items_on_backorder += backorderQuantity;
-                brandBackorder.backorder_value += backorderQuantity * (parseFloat(item.rate) || 0);
-                brandBackorder.items_in_transit += quantityInTransit;
-                
-                brandBackorder.backorder_details.push({
-                  item_id: item.item_id,
-                  item_name: item.name || item.item_name,
-                  sku: item.sku,
-                  po_number: po.purchaseorder_number,
-                  po_date: po.date,
-                  po_status: po.status,
-                  vendor_name: po.vendor_name,
-                  quantity_ordered: quantity,
-                  quantity_received: quantityReceived,
-                  quantity_cancelled: quantityCancelled,
-                  quantity_in_transit: quantityInTransit,
-                  quantity_billed: parseInt(item.quantity_billed || 0),
-                  quantity_marked_as_received: parseInt(item.quantity_marked_as_received || 0),
-                  backorder_quantity: backorderQuantity,
-                  rate: parseFloat(item.rate || 0),
-                  backorder_value: backorderQuantity * (parseFloat(item.rate) || 0)
-                });
-              }
+if (backorderQuantity > 0) {
+  // Get item info from items_data collection first
+  let itemData = null;
+  const itemDoc = await db.collection('items_data')
+    .where('item_id', '==', item.item_id)
+    .limit(1)
+    .get();
+  
+  if (!itemDoc.empty) {
+    itemData = itemDoc.docs[0].data();
+    
+    // Extract manufacturer name from object structure
+    const brand = typeof itemData.manufacturer === 'object'
+      ? (itemData.manufacturer?.manufacturer_name || itemData.brand_name || 'Unknown')
+      : (itemData.manufacturer || itemData.brand_name || 'Unknown');
+    
+    const brandNormalized = brand.toLowerCase().replace(/\s+/g, '-');
+    
+    if (!backordersByBrand.has(brandNormalized)) {
+      backordersByBrand.set(brandNormalized, {
+        brand_name: brand,
+        items_on_backorder: 0,
+        backorder_value: 0,
+        items_in_transit: 0,
+        backorder_details: []
+      });
+    }
+    
+    const brandBackorder = backordersByBrand.get(brandNormalized);
+    brandBackorder.items_on_backorder += backorderQuantity;
+    brandBackorder.backorder_value += backorderQuantity * (parseFloat(item.rate) || 0);
+    brandBackorder.items_in_transit += quantityInTransit;
+    
+    brandBackorder.backorder_details.push({
+      item_id: item.item_id,
+      item_name: item.name || item.item_name,
+      sku: item.sku,
+      po_number: po.purchaseorder_number,
+      po_date: po.date,
+      po_status: po.status,
+      vendor_name: po.vendor_name,
+      quantity_ordered: quantity,
+      quantity_received: quantityReceived,
+      quantity_cancelled: quantityCancelled,
+      quantity_in_transit: quantityInTransit,
+      quantity_billed: parseInt(item.quantity_billed || 0),
+      quantity_marked_as_received: parseInt(item.quantity_marked_as_received || 0),
+      backorder_quantity: backorderQuantity,
+      rate: parseFloat(item.rate || 0),
+      backorder_value: backorderQuantity * (parseFloat(item.rate) || 0)
+    });
+  }
             }
           }
         }
@@ -809,54 +824,63 @@ class CronDataSyncService {
   /**
    * Get active product counts by brand
    */
-  async getActiveProductCounts() {
-    const db = admin.firestore();
+ async getActiveProductCounts() {
+  const db = admin.firestore();
+  
+  try {
+    // Brand name mappings for items collection
+    const brandSearchTerms = {
+      'rader': ['Räder', 'Rader', 'räder', 'rader'],
+      'relaxound': ['Relaxound', 'relaxound'],
+      'myflame': ['My Flame', 'my flame', 'MyFlame', 'myflame'],
+      'blomus': ['Blomus', 'blomus'],
+      'remember': ['Remember', 'remember'],
+      'elvang': ['Elvang', 'elvang']
+    };
     
-    try {
-      // Brand name mappings for items collection
-      const brandSearchTerms = {
-        'rader': ['Räder', 'Rader', 'räder', 'rader'],
-        'relaxound': ['Relaxound', 'relaxound'],
-        'myflame': ['My Flame', 'my flame', 'MyFlame', 'myflame'],
-        'blomus': ['Blomus', 'blomus'],
-        'remember': ['Remember', 'remember'],
-        'elvang': ['Elvang', 'elvang']
-      };
+    const counts = {};
+    
+    // Query items_data collection for each brand
+    for (const [brandKey, searchTerms] of Object.entries(brandSearchTerms)) {
+      let activeCount = 0;
       
-      const counts = {};
-      
-      // Query items_data collection for each brand
-      for (const [brandKey, searchTerms] of Object.entries(brandSearchTerms)) {
-        let activeCount = 0;
+      for (const term of searchTerms) {
+        // Check items_data collection - manufacturer is an object
+        const itemsDataSnapshot = await db.collection('items_data')
+          .where('manufacturer.manufacturer_name', '==', term)
+          .where('status', '==', 'active')
+          .get();
         
-        for (const term of searchTerms) {
-          // Check items_data collection
-          const itemsDataSnapshot = await db.collection('items_data')
-            .where('manufacturer.manufacturer_name', '==', term)
-            .where('status', '==', 'active')
-            .get();
-          
-          activeCount += itemsDataSnapshot.size;
-          
-          // Also check brand_name field
-          const brandNameSnapshot = await db.collection('items_data')
-            .where('brand_name', '==', term)
-            .where('status', '==', 'active')
-            .get();
-          
-          activeCount += brandNameSnapshot.size;
-        }
+        // Create a set to track unique item IDs and avoid duplicates
+        const uniqueItemIds = new Set();
         
-        counts[brandKey] = activeCount;
+        itemsDataSnapshot.forEach(doc => {
+          uniqueItemIds.add(doc.data().item_id);
+        });
+        
+        // Also check brand_name field
+        const brandNameSnapshot = await db.collection('items_data')
+          .where('brand_name', '==', term)
+          .where('status', '==', 'active')
+          .get();
+        
+        brandNameSnapshot.forEach(doc => {
+          uniqueItemIds.add(doc.data().item_id);
+        });
+        
+        activeCount += uniqueItemIds.size;
       }
       
-      return counts;
-      
-    } catch (error) {
-      console.error('Error getting active product counts:', error);
-      return {};
+      counts[brandKey] = activeCount;
     }
+    
+    return counts;
+    
+  } catch (error) {
+    console.error('Error getting active product counts:', error);
+    return {};
   }
+}
 
   /**
    * Helper to get date range
