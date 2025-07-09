@@ -5,7 +5,7 @@
 import puppeteer from 'puppeteer';
 import axios from 'axios';
 import admin from 'firebase-admin';
-import { parseAIResponse } from './dmBrandsAIService.js';
+import { parseAIResponse, proModel } from './dmBrandsAIService.js';
 
 class CompetitorWebScraperService {
   constructor() {
@@ -346,7 +346,6 @@ PROVIDE STRATEGIC INSIGHTS (JSON):
 }`;
 
     try {
-      const { proModel } = await import('./dmBrandsAIService.js');
       const result = await proModel.generateContent(prompt);
       return parseAIResponse(result.response.text());
     } catch (error) {
@@ -422,4 +421,4 @@ PROVIDE STRATEGIC INSIGHTS (JSON):
   }
 }
 
-export default new CompetitorWebScraperService(); 
+export default new CompetitorWebScraperService();

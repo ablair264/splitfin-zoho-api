@@ -4,6 +4,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import admin from 'firebase-admin';
 import crypto from 'crypto';
+import { parseAIResponse as parseResponse } from './dmBrandsAIService.js';
 
 // Initialize AI models with optimization
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
@@ -64,7 +65,7 @@ class InsightCache {
   }
 }
 
-const insightCache = new InsightCache();
+export const insightCache = new InsightCache();
 
 // Enhanced Context Manager with persistent memory
 export class EnhancedContextManager {
@@ -114,7 +115,7 @@ export class EnhancedContextManager {
   }
 }
 
-const contextManager = new EnhancedContextManager();
+export const contextManager = new EnhancedContextManager();
 
 // Enhanced Prompt Builder with templates
 export class EnhancedPromptBuilder {
@@ -316,39 +317,8 @@ export function preprocessData(data, type) {
   return processed;
 }
 
-// Enhanced response parser with validation
-export function parseAIResponse(text, expectedFormat = null) {
-  try {
-    // Clean the response
-    let cleaned = text
-      .replace(/```json\s*/gi, '')
-      .replace(/```\s*/gi, '')
-      .trim();
-    
-    // Find JSON in response
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in response');
-    }
-    
-    const parsed = JSON.parse(jsonMatch[0]);
-    
-    // Validate against expected format if provided
-    if (expectedFormat) {
-      for (const key of Object.keys(expectedFormat)) {
-        if (!(key in parsed)) {
-          console.warn(`Missing expected key: ${key}`);
-          parsed[key] = expectedFormat[key];
-        }
-      }
-    }
-    
-    return parsed;
-  } catch (error) {
-    console.error('Parse error:', error);
-    throw error;
-  }
-}
+// Use the imported parseAIResponse from dmBrandsAIService
+export const parseAIResponse = parseResponse;
 
 // Main insight generation with intelligent routing
 export async function generateEnhancedInsights(type, data, options = {}) {
@@ -520,7 +490,6 @@ export async function batchGenerateInsights(requests) {
 }
 
 // Export enhanced versions of existing functions
-// Note: These functions should be implemented separately to avoid circular imports
 export async function estimateTokens(text) {
   // Rough estimation: 1 token ≈ 4 characters
   return Math.ceil(text.length / 4);

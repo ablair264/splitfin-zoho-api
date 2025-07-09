@@ -4,39 +4,6 @@
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import admin from 'firebase-admin';
-// Enhanced response parser with validation
-function parseAIResponse(text, expectedFormat = null) {
-  try {
-    // Clean the response
-    let cleaned = text
-      .replace(/```json\s*/gi, '')
-      .replace(/```\s*/gi, '')
-      .trim();
-    
-    // Find JSON in response
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in response');
-    }
-    
-    const parsed = JSON.parse(jsonMatch[0]);
-    
-    // Validate against expected format if provided
-    if (expectedFormat) {
-      for (const key of Object.keys(expectedFormat)) {
-        if (!(key in parsed)) {
-          console.warn(`Missing expected key: ${key}`);
-          parsed[key] = expectedFormat[key];
-        }
-      }
-    }
-    
-    return parsed;
-  } catch (error) {
-    console.error('Parse error:', error);
-    throw error;
-  }
-}
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
 
@@ -60,7 +27,7 @@ const proModel = genAI.getGenerativeModel({
 });
 
 // DM Brands Business Context
-const DM_BRANDS_CONTEXT = {
+export const DM_BRANDS_CONTEXT = {
   company: "DM Brands Limited",
   type: "UK Distributor and Agency",
   distributorBrands: ["Rader", "Elvang", "Remember", "Relaxound", "My Flame Lifestyle"],
@@ -100,6 +67,40 @@ const DM_BRANDS_CONTEXT = {
     "Cash flow management"
   ]
 };
+
+// Enhanced response parser with validation
+export function parseAIResponse(text, expectedFormat = null) {
+  try {
+    // Clean the response
+    let cleaned = text
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/gi, '')
+      .trim();
+    
+    // Find JSON in response
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in response');
+    }
+    
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    // Validate against expected format if provided
+    if (expectedFormat) {
+      for (const key of Object.keys(expectedFormat)) {
+        if (!(key in parsed)) {
+          console.warn(`Missing expected key: ${key}`);
+          parsed[key] = expectedFormat[key];
+        }
+      }
+    }
+    
+    return parsed;
+  } catch (error) {
+    console.error('Parse error:', error);
+    throw error;
+  }
+}
 
 // Enhanced Stock Analysis for Distributor Brands
 export async function analyzeStockPerformance(stockData, salesHistory, marketData) {
@@ -153,8 +154,7 @@ PROVIDE ACTIONABLE INSIGHTS (JSON):
       "seasonalRelevance": "high|medium|low",
       "stockPosition": "well positioned|needs adjustment",
       "action": "Specific recommendation"
-    },
-    // ... other categories
+    }
   },
   "pricingOpportunities": [
     {
@@ -219,8 +219,8 @@ ${JSON.stringify({
     acc[c.type] = (acc[c.type] || 0) + 1;
     return acc;
   }, {}),
-  activeCustomers: customerBase.filter(c => c.dayssinceLastOrder < 90).length,
-  dormantCustomers: customerBase.filter(c => c.dayssinceLastOrder > 180).length
+  activeCustomers: customerBase.filter(c => c.daysSinceLastOrder < 90).length,
+  dormantCustomers: customerBase.filter(c => c.daysSinceLastOrder > 180).length
 }, null, 2)}
 
 PROVIDE SUPPORTIVE ANALYSIS (JSON):
@@ -368,8 +368,14 @@ PROVIDE STRATEGIC INSIGHTS (JSON):
       "strength": "What they do well",
       "ourOpportunity": "How to differentiate"
     },
-    "nordicnest": { ... },
-    "royaldesign": { ... }
+    "nordicnest": {
+      "strength": "Their market position",
+      "ourOpportunity": "Our advantage"
+    },
+    "royaldesign": {
+      "strength": "Their focus",
+      "ourOpportunity": "Gap to fill"
+    }
   },
   "actionableTakeaways": [
     {
@@ -619,3 +625,13 @@ function generateCustomerSegmentFallback(customerData) {
     }
   };
 }
+
+// Export all functions and models
+export {
+  flashModel,
+  proModel,
+  generateStockFallback,
+  generateAgentFallback,
+  generateSeasonalFallback,
+  generateCustomerSegmentFallback
+};

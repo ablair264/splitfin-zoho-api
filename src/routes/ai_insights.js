@@ -1,25 +1,25 @@
-// DM Brands AI Service Integration Guide
-// Complete implementation with API routes and frontend integration
-
-// ============================================
-// 1. UPDATED API ROUTES (ai_insights.js)
-// ============================================
+// DM Brands AI Service Integration Routes
+// Complete implementation with API routes
+// server/src/routes/ai_insights.js
 
 import express from 'express';
 import admin from 'firebase-admin';
 import {
-  // Core AI functions
+  // Core AI functions from aiAnalyticsService
   generateEnhancedInsights,
   generateCardInsights,
   generateAIInsights,
+  insightCache,
   
   // DM Brands specific functions
   analyzeStockPerformance,
   analyzeAgentPerformance,
   analyzeCompetitorPerformance,
   generateSeasonalStrategy,
-  analyzeCustomerSegments,
-  
+  analyzeCustomerSegments
+} from '../services/dmBrandsAIService.js';
+
+import {
   // Advanced analytics
   analyzeCrossSelling,
   analyzeBrandCannibalization,
@@ -30,7 +30,7 @@ import {
   analyzeWeatherImpact,
   analyzeEventImpact,
   analyzeSupplyChainRisks
-} from '../services/dmBrandsAIService.js';
+} from '../services/dmBrandsAdvancedAnalytics.js';
 
 import competitorScraper from '../services/competitorWebScraperService.js';
 
@@ -455,6 +455,64 @@ router.post('/customer-segments', validateUserForAI, checkAIRateLimit, async (re
   }
 });
 
+// Product Lifecycle Analysis
+router.post('/product-lifecycle', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { productHistory, marketTrends } = req.body;
+    
+    if (!productHistory) {
+      return res.status(400).json({ error: 'Product history required' });
+    }
+    
+    const insights = await analyzeProductLifecycle(
+      productHistory,
+      marketTrends || {}
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      analysisType: 'product_lifecycle',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Product lifecycle error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Lifecycle analysis unavailable'
+    });
+  }
+});
+
+// Brand Cannibalization Analysis
+router.post('/brand-cannibalization', validateUserForAI, checkAIRateLimit, async (req, res) => {
+  try {
+    const { salesData, productOverlaps } = req.body;
+    
+    if (!salesData) {
+      return res.status(400).json({ error: 'Sales data required' });
+    }
+    
+    const insights = await analyzeBrandCannibalization(
+      salesData,
+      productOverlaps || {}
+    );
+    
+    res.json({
+      success: true,
+      data: insights,
+      analysisType: 'brand_cannibalization',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Cannibalization analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Cannibalization analysis unavailable'
+    });
+  }
+});
+
 // ============================================
 // UTILITY ENDPOINTS
 // ============================================
@@ -476,7 +534,6 @@ router.get('/health', (req, res) => {
 router.post('/clear-cache', validateUserForAI, async (req, res) => {
   try {
     // Clear AI cache
-    const { insightCache } = await import('../services/aiAnalyticsService.js');
     insightCache.clear();
     
     // Clear competitor cache
@@ -519,4 +576,3 @@ async function getOurProducts() {
 }
 
 export default router;
-

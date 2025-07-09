@@ -3,7 +3,7 @@
 // server/src/services/dmBrandsAdvancedAnalytics.js
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { DM_BRANDS_CONTEXT } from './dmBrandsAIService.js';
+import { DM_BRANDS_CONTEXT, parseAIResponse } from './dmBrandsAIService.js';
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
 
@@ -24,40 +24,6 @@ const proModel = genAI.getGenerativeModel({
     maxOutputTokens: 4096,
   }
 });
-
-// Enhanced response parser with validation
-function parseAIResponse(text, expectedFormat = null) {
-  try {
-    // Clean the response
-    let cleaned = text
-      .replace(/```json\s*/gi, '')
-      .replace(/```\s*/gi, '')
-      .trim();
-    
-    // Find JSON in response
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in response');
-    }
-    
-    const parsed = JSON.parse(jsonMatch[0]);
-    
-    // Validate against expected format if provided
-    if (expectedFormat) {
-      for (const key of Object.keys(expectedFormat)) {
-        if (!(key in parsed)) {
-          console.warn(`Missing expected key: ${key}`);
-          parsed[key] = expectedFormat[key];
-        }
-      }
-    }
-    
-    return parsed;
-  } catch (error) {
-    console.error('Parse error:', error);
-    throw error;
-  }
-}
 
 // Cross-Selling & Basket Analysis
 export async function analyzeCrossSelling(transactionData, productCatalog) {
@@ -333,7 +299,12 @@ PROVIDE CLV ANALYSIS (JSON):
       "churnRate": "X% annually",
       "growthPotential": "high|medium|low"
     },
-    "interiorDesigners": { ... }
+    "interiorDesigners": {
+      "avgCLV": "£X over Y years",
+      "topDecile": "£X",
+      "churnRate": "X% annually",
+      "growthPotential": "high|medium|low"
+    }
   },
   "valueDrivers": [
     {
@@ -663,8 +634,22 @@ PROVIDE RISK ASSESSMENT (JSON):
         "mitigation": ["Safety stock", "Alternative products"]
       }
     ],
-    "medium": [...],
-    "low": [...]
+    "medium": [
+      {
+        "brand": "Brand name",
+        "risks": ["Currency exposure"],
+        "impact": "Margin pressure",
+        "mitigation": ["Forward contracts", "Price adjustments"]
+      }
+    ],
+    "low": [
+      {
+        "brand": "Brand name",
+        "risks": ["Minor delays possible"],
+        "impact": "Minimal",
+        "mitigation": ["Standard buffer stock"]
+      }
+    ]
   },
   "contingencyPlans": [
     {
@@ -689,16 +674,3 @@ PROVIDE RISK ASSESSMENT (JSON):
     return { riskMatrix: { error: "Risk analysis unavailable" } };
   }
 }
-
-// Export all advanced analytics functions
-export {
-  analyzeCrossSelling,
-  analyzeBrandCannibalization,
-  analyzeGeographicPerformance,
-  predictCustomerLifetimeValue,
-  optimizeCashFlow,
-  analyzeProductLifecycle,
-  analyzeWeatherImpact,
-  analyzeEventImpact,
-  analyzeSupplyChainRisks
-};
