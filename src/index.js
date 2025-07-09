@@ -22,7 +22,6 @@ import DashboardController from './services/dashboardController.js';
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
 import syncRoutes from './routes/sync.js';
-import reportsRoutes from './routes/reports.js';
 import cronRoutes from './routes/cron.js';
 import aiInsightsRoutes from './routes/ai_insights.js';
 import productsRoutes from './routes/products.js';
@@ -74,7 +73,6 @@ app.use((req, res, next) => {
 app.use('/api/cron', cronRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/sync', syncRoutes);
-app.use('/api/reports', reportsRoutes);
 app.use('/api/ai-insights', aiInsightsRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/oauth', authRoutes);
