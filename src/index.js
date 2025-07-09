@@ -6,7 +6,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import cron from 'node-cron';
+// Using Render's cron jobs instead of node-cron
 
 // Import your existing services and routes
 import { createZohoSalesOrder } from './services/salesOrder.js';
@@ -149,22 +149,58 @@ app.post('/api/dashboard/backfill', async (req, res) => {
   }
 });
 
-// ── CRON JOBS ───────────────────────────────────────────────────────
+// ── CRON JOB ENDPOINTS FOR RENDER ──────────────────────────────────
 
-// Run daily aggregation at 2 AM every day
-cron.schedule('0 2 * * *', () => {
-  console.log('⏰ Daily cron job triggered: Running daily aggregation...');
-  dailyAggregator.runDailyAggregation().catch(error => {
-    console.error('Scheduled daily aggregation failed:', error);
-  });
+// Endpoint for Render's daily cron job (2 AM)
+app.post('/api/cron/daily-aggregation', async (req, res) => {
+  // Verify the request is from Render (optional security)
+  const cronSecret = req.headers['x-cron-secret'];
+  if (process.env.CRON_SECRET && cronSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  console.log('⏰ Daily cron job triggered via Render: Running daily aggregation...');
+  
+  try {
+    dailyAggregator.runDailyAggregation().catch(error => {
+      console.error('Scheduled daily aggregation failed:', error);
+    });
+    
+    res.json({ 
+      success: true, 
+      message: 'Daily aggregation started',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Failed to start daily aggregation:', error);
+    res.status(500).json({ error: 'Failed to start daily aggregation' });
+  }
 });
 
-// Update current day's data every hour (for real-time accuracy)
-cron.schedule('0 * * * *', () => {
-  console.log('⏰ Hourly cron job triggered: Updating today\'s aggregate...');
-  dailyAggregator.calculateDailyAggregate(new Date()).catch(error => {
-    console.error('Hourly aggregate update failed:', error);
-  });
+// Endpoint for Render's hourly cron job
+app.post('/api/cron/hourly-update', async (req, res) => {
+  // Verify the request is from Render (optional security)
+  const cronSecret = req.headers['x-cron-secret'];
+  if (process.env.CRON_SECRET && cronSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  console.log('⏰ Hourly cron job triggered via Render: Updating today\'s aggregate...');
+  
+  try {
+    dailyAggregator.calculateDailyAggregate(new Date()).catch(error => {
+      console.error('Hourly aggregate update failed:', error);
+    });
+    
+    res.json({ 
+      success: true, 
+      message: 'Hourly update started',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Failed to start hourly update:', error);
+    res.status(500).json({ error: 'Failed to start hourly update' });
+  }
 });
 
 // ── Root & Health Endpoints ─────────────────────────────────────────
@@ -186,6 +222,10 @@ app.get('/', (req, res) => {
         calculate_missing: 'POST /api/dashboard/calculate-missing',
         run_aggregation: 'POST /api/dashboard/run-daily-aggregation',
         backfill: 'POST /api/dashboard/backfill'
+      },
+      cron: {
+        daily_aggregation: 'POST /api/cron/daily-aggregation',
+        hourly_update: 'POST /api/cron/hourly-update'
       },
       zoho: {
         create_contact: 'POST /api/zoho/create-contact',
@@ -257,6 +297,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('║ - Custom Date Range Support                                ║');
   console.log('║ - Real-time Updates (Hourly)                               ║');
   console.log('║ - Agent-specific Reports                                   ║');
+  console.log('║ - Render Cron Job Integration                              ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
   
   // Check if we need to run initial aggregation
