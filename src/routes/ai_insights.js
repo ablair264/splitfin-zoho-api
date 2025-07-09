@@ -4,14 +4,17 @@
 
 import express from 'express';
 import admin from 'firebase-admin';
+
+// Import from aiAnalyticsService
 import {
-  // Core AI functions from aiAnalyticsService
   generateEnhancedInsights,
   generateCardInsights,
   generateAIInsights,
-  insightCache,
-  
-  // DM Brands specific functions
+  insightCache
+} from '../services/aiAnalyticsService.js';
+
+// Import from dmBrandsAIService
+import {
   analyzeStockPerformance,
   analyzeAgentPerformance,
   analyzeCompetitorPerformance,
@@ -19,8 +22,8 @@ import {
   analyzeCustomerSegments
 } from '../services/dmBrandsAIService.js';
 
+// Import from dmBrandsAdvancedAnalytics
 import {
-  // Advanced analytics
   analyzeCrossSelling,
   analyzeBrandCannibalization,
   analyzeGeographicPerformance,
