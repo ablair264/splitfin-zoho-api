@@ -311,7 +311,9 @@ class DailyDashboardAggregator {
             combined.dailyBreakdown.push({
                 date: daily.date,
                 revenue: daily.totalRevenue,
-                orders: daily.totalOrders
+                orders: daily.totalOrders,
+                invoicesCreated: daily.invoicesCreated || 0, // **FIX**: Added invoicesCreated
+                uniqueCustomers: daily.uniqueCustomers || 0
             });
         });
 
