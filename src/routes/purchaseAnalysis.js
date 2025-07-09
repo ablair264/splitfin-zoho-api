@@ -1,4 +1,6 @@
+// Purchase Analysis Routes
 // server/src/routes/purchaseAnalysis.js
+
 import express from 'express';
 import purchaseAnalysisService from '../services/purchaseAnalysisService.js';
 
