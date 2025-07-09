@@ -14,6 +14,7 @@ build/
 .env
 .env.local
 server/.env
+key.json
 
 # Firebase service account (keep your key private!)
 serviceAccountKey.json
