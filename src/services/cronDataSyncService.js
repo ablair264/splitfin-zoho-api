@@ -1,9 +1,10 @@
 // src/services/cronDataSyncService.js
-// Enhanced to trigger daily aggregation after successful syncs
+// Refactored to focus solely on syncing raw data from Zoho to Firestore.
+// All dashboard-specific calculations have been moved to dashboardAggregator.js.
 
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
-import zohoInventoryService from './zohoInventoryService.js';
-import DailyDashboardAggregator from './dailyDashboardAggregator.js';
+import zohoInventoryService from './zohoInventoryService.js'; // Assuming this handles Zoho API calls
+import DailyDashboardAggregator from './dailyDashboardAggregator.js'; // Assuming this is your new aggregator
 
 const db = getFirestore();
 
@@ -69,15 +70,13 @@ class CronDataSyncService {
             _syncSource: 'zoho_api'
         };
         
-        // Special handling for sales_orders to move line_items to a sub-collection
         if (collectionName === 'sales_orders' && item.line_items && Array.isArray(item.line_items)) {
             const lineItems = itemWithMetadata.line_items;
-            delete itemWithMetadata.line_items; // Remove from parent document
+            delete itemWithMetadata.line_items;
 
             const itemsSubCollection = docRef.collection('order_line_items');
             lineItems.forEach(lineItem => {
                 const lineItemId = lineItem.line_item_id || itemsSubCollection.doc().id;
-                // Add to the main batch, as it's a different path
                 mainBatch.set(itemsSubCollection.doc(lineItemId), lineItem);
             });
         }
@@ -102,7 +101,6 @@ class CronDataSyncService {
     const customersRef = db.collection('customers');
     const agentsRef = db.collection('sales_agents');
 
-    // Pre-fetch all agents to avoid querying in a loop
     const agentSnapshot = await agentsRef.get();
     const agentMap = new Map();
     agentSnapshot.forEach(doc => {
@@ -119,7 +117,7 @@ class CronDataSyncService {
         const orderId = order.salesorder_id;
         if (!orderId) continue;
 
-        // 1. Link to Customer
+        // Link to Customer
         if (order.customer_id) {
             const customerQuery = await customersRef.where('customer_id', '==', order.customer_id).limit(1).get();
             if (!customerQuery.empty) {
@@ -138,7 +136,7 @@ class CronDataSyncService {
             }
         }
 
-        // 2. Link to Sales Agent
+        // Link to Sales Agent
         if (order.salesperson_id && agentMap.has(order.salesperson_id)) {
             const agentRef = agentMap.get(order.salesperson_id);
             const agentOrderRef = agentRef.collection('customers_orders').doc(orderId);
@@ -172,27 +170,15 @@ class CronDataSyncService {
   _getAffectedDates(orders, invoices) {
     const dates = new Set();
     
-    // Get dates from orders
     orders.forEach(order => {
-      if (order.date) {
-        const date = new Date(order.date);
-        dates.add(date.toISOString().split('T')[0]);
-      }
-      if (order.modified_time) {
-        const date = new Date(order.modified_time);
-        dates.add(date.toISOString().split('T')[0]);
-      }
+      if (order.date) dates.add(new Date(order.date).toISOString().split('T')[0]);
+      if (order.modified_time) dates.add(new Date(order.modified_time).toISOString().split('T')[0]);
     });
     
-    // Get dates from invoices
     invoices.forEach(invoice => {
-      if (invoice.date) {
-        const date = new Date(invoice.date);
-        dates.add(date.toISOString().split('T')[0]);
-      }
+      if (invoice.date) dates.add(new Date(invoice.date).toISOString().split('T')[0]);
     });
     
-    // Always include today (for partial data)
     dates.add(new Date().toISOString().split('T')[0]);
     
     return Array.from(dates);
@@ -230,7 +216,7 @@ class CronDataSyncService {
     try {
       console.log('🚀 Starting high frequency sync...');
       const metadata = await this._getSyncMetadata(jobType) || {};
-      const lookbackDate = new Date(syncTimestamp.getTime() - 20 * 60 * 1000); // 20 min lookback
+      const lookbackDate = new Date(syncTimestamp.getTime() - 20 * 60 * 1000);
       const lastSync = metadata.lastSyncTimestamp ? new Date(metadata.lastSyncTimestamp) : lookbackDate;
       
       console.log(`Syncing changes since: ${lastSync.toISOString()}`);
@@ -240,14 +226,13 @@ class CronDataSyncService {
       
       if (newOrders.length > 0) {
         await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
-        await this._linkNewData(newOrders); // Link the new orders
+        await this._linkNewData(newOrders);
       }
       
       if (newInvoices.length > 0) {
         await this._batchWrite('invoices', newInvoices, 'invoice_id');
       }
       
-      // Update daily aggregates for affected dates
       const affectedDates = this._getAffectedDates(newOrders, newInvoices);
       await this._updateDailyAggregates(affectedDates);
       
@@ -269,6 +254,62 @@ class CronDataSyncService {
   }
 
   /**
+   * MEDIUM FREQUENCY SYNC - Every 2-4 hours (FIXED)
+   * Catches up on recent orders/invoices and updates daily aggregates.
+   */
+  async mediumFrequencySync() {
+    const jobType = 'medium_frequency_sync';
+    if (this.isRunning.get(jobType)) {
+      console.log('⏩ Medium frequency sync already running, skipping...');
+      return;
+    }
+    
+    this.isRunning.set(jobType, true);
+    const syncTimestamp = new Date();
+    
+    try {
+      console.log('🔄 Starting medium frequency sync...');
+      const metadata = await this._getSyncMetadata(jobType) || {};
+      const lookbackDate = new Date(syncTimestamp.getTime() - 4 * 60 * 60 * 1000); 
+      const lastSync = metadata.lastSyncTimestamp ? new Date(metadata.lastSyncTimestamp) : lookbackDate;
+      
+      console.log(`Syncing changes since: ${lastSync.toISOString()}`);
+      
+      const [newOrders, newInvoices] = await Promise.all([
+        zohoInventoryService.getSalesOrders({ modified_since: lastSync.toISOString() }),
+        zohoInventoryService.getInvoices({ modified_since: lastSync.toISOString() })
+      ]);
+      
+      if (newOrders.length > 0) {
+        await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
+        await this._linkNewData(newOrders);
+      }
+      
+      if (newInvoices.length > 0) {
+        await this._batchWrite('invoices', newInvoices, 'invoice_id');
+      }
+      
+      const affectedDates = this._getAffectedDates(newOrders, newInvoices);
+      await this._updateDailyAggregates(affectedDates);
+      
+      await this._updateSyncMetadata(jobType, {
+        recordsProcessed: { 
+          orders: newOrders.length, 
+          invoices: newInvoices.length,
+          affectedDates: affectedDates.length
+        }
+      }, syncTimestamp);
+      
+      console.log(`✅ Medium frequency sync completed. Orders: ${newOrders.length}, Invoices: ${newInvoices.length}`);
+      
+    } catch (error) {
+      console.error('❌ Medium frequency sync failed:', error);
+    } finally {
+      this.isRunning.set(jobType, false);
+    }
+  }
+
+  /**
    * LOW FREQUENCY SYNC - Daily
    */
   async lowFrequencySync() {
@@ -281,7 +322,7 @@ class CronDataSyncService {
     try {
       console.log('🔄 Starting low frequency sync...');
       const metadata = await this._getSyncMetadata(jobType) || {};
-      const lookbackDate = new Date(syncTimestamp.getTime() - 25 * 60 * 60 * 1000); // 25 hours ago
+      const lookbackDate = new Date(syncTimestamp.getTime() - 25 * 60 * 60 * 1000);
       const lastSync = metadata.lastSyncTimestamp ? new Date(metadata.lastSyncTimestamp) : lookbackDate;
 
       console.log(`Syncing all data modified since ${lastSync.toISOString()}`);
@@ -296,18 +337,16 @@ class CronDataSyncService {
 
       if (orders.length > 0) {
         await this._batchWrite('sales_orders', orders, 'salesorder_id');
-        await this._linkNewData(orders); // Link the new orders
+        await this._linkNewData(orders);
       }
       if (invoices.length > 0) await this._batchWrite('invoices', invoices, 'invoice_id');
       if (purchaseOrders.length > 0) await this._batchWrite('purchase_orders', purchaseOrders, 'purchaseorder_id');
       if (customers.length > 0) await this._batchWrite('customers', customers, 'customer_id');
       if (items.length > 0) await this._batchWrite('items_data', items, 'item_id');
       
-      // Update daily aggregates for affected dates
       const affectedDates = this._getAffectedDates(orders, invoices);
       await this._updateDailyAggregates(affectedDates);
       
-      // Run full daily aggregation for yesterday (comprehensive recalc)
       console.log('📊 Running full daily aggregation...');
       await this.aggregator.runDailyAggregation();
       
