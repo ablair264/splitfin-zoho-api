@@ -1,5 +1,9 @@
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 
+// Note: Firebase must be initialized before importing this module
+// In scripts, import '../config/firebase.js' first
+// In the server, it's initialized via index.js
+
 const db = getFirestore();
 
 class DailyDashboardAggregator {
