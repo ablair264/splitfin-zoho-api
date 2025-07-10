@@ -1,30 +1,20 @@
-// server/src/index.js - Updated with daily aggregation system
+// server/src/index.js - Cleaned and organized version
 import admin from 'firebase-admin';
-import './config/firebase.js'; // Your existing firebase config
+import './config/firebase.js';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-// Using Render's cron jobs instead of node-cron
-
-// Import the backfill service
-import { backfillAgentAggregatesForUser, backfillAllAgents } from './services/agentBackfillService.js';
-
-// Import your existing services and routes
 import { createZohoSalesOrder } from './services/salesOrder.js';
 import { syncCustomerWithZoho, syncAllCustomers } from './services/customerSync.js';
 import { createZohoContact } from './services/createContact.js';
-import { updateZohoContact } from './services/updateContact.js';
-import { getSyncStatus } from './syncInventory.js';
-
-// Import the new daily dashboard aggregator and controller
-import DailyDashboardAggregator from './services/dailyDashboardAggregator.js';
-import DashboardController from './services/dashboardController.js';
+import { getAccessToken, fetchPaginatedData, createInventoryContact } from './api/zoho.js';
 
 // Import routes
 import webhookRoutes from './routes/webhooks.js';
 import syncRoutes from './routes/sync.js';
+import reportsRoutes from './routes/reports.js';
 import cronRoutes from './routes/cron.js';
 import aiInsightsRoutes from './routes/ai_insights.js';
 import productsRoutes from './routes/products.js';
@@ -32,6 +22,11 @@ import authRoutes from './routes/auth.js';
 import purchaseAnalysisRoutes from './routes/purchaseAnalysis.js';
 import searchTrendsRoutes from './routes/searchTrends.js';
 import emailRoutes from './routes/email.js';
+
+// Import services (only what's actually used in production)
+import { getSyncStatus } from './syncInventory.js';
+import { updateZohoContact } from './services/updateContact.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,7 +36,7 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 // ── Configuration ───────────────────────────────────────────────────
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PORT = process.env.PORT || 3001;
-const API_VERSION = '3.2.0'; // Version bump for daily aggregation
+const API_VERSION = '3.0.0'; // Bumped for major cleanup
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
@@ -53,6 +48,7 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
 // ── Express Setup ───────────────────────────────────────────────────
 const app = express();
 
+// CORS configuration
 app.use(cors({
   origin: (incomingOrigin, callback) => {
     if (!incomingOrigin || ALLOWED_ORIGINS.includes(incomingOrigin)) {
@@ -64,11 +60,21 @@ app.use(cors({
   credentials: true
 }));
 
+// Body parsing middleware
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ limit: '25mb', extended: true }));
 
+// Request logging middleware (consider using Morgan in production)
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.url.includes('/ai-insights')) {
+    const size = JSON.stringify(req.body).length / (1024 * 1024);
+    console.log(`AI Insights request size: ${size.toFixed(2)}MB`);
+  }
   next();
 });
 
@@ -76,13 +82,14 @@ app.use((req, res, next) => {
 app.use('/api/cron', cronRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/sync', syncRoutes);
+app.use('/api/reports', reportsRoutes);
 app.use('/api/ai-insights', aiInsightsRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/oauth', authRoutes);
 app.use('/api/purchase-analysis', purchaseAnalysisRoutes);
 app.use('/api/search-trends', searchTrendsRoutes);
 app.use('/api/auth', authRoutes);
-app.use('/api/email', emailRoutes);
+app.use('/api/email', emailRoutes);  // ← ADD THIS LINE HERE
 
 app.put('/api/zoho/update-contact', updateZohoContact);
 app.post('/api/zoho/create-contact', createZohoContact);
@@ -90,251 +97,242 @@ app.post('/api/zoho/salesorder', createZohoSalesOrder);
 app.post('/api/customers/sync', syncCustomerWithZoho);
 app.post('/api/customers/sync-all', syncAllCustomers);
 
-// ── NEW DASHBOARD ROUTES ────────────────────────────────────────────
-const dashboardController = new DashboardController();
-const dailyAggregator = new DailyDashboardAggregator();
-
-// Dashboard data endpoint (supports custom date ranges)
-app.post('/api/dashboard/data', (req, res) => 
-  dashboardController.getDashboardData(req, res)
-);
-
-// Check missing dates
-app.post('/api/dashboard/calculate-missing', (req, res) => 
-  dashboardController.calculateMissingDates(req, res)
-);
-
-// Manual trigger for daily aggregation
-app.post('/api/dashboard/run-daily-aggregation', async (req, res) => {
-  console.log('Received request to manually run daily aggregation...');
-  try {
-    // Run without 'await' to return a response immediately
-    dailyAggregator.runDailyAggregation().catch(err => {
-      console.error("Error during background aggregation:", err);
-    });
-    res.status(202).json({ 
-      message: "Accepted. Daily aggregation process started in the background." 
-    });
-  } catch (error) {
-    console.error('Failed to start aggregation process:', error);
-    res.status(500).json({ error: 'Failed to start aggregation process.' });
-  }
-});
-
-// Backfill endpoint for historical data
-app.post('/api/dashboard/backfill', async (req, res) => {
-  const { startDate, endDate } = req.body;
-  
-  if (!startDate || !endDate) {
-    return res.status(400).json({ error: 'Start and end dates required' });
-  }
-  
-  console.log(`Received request to backfill from ${startDate} to ${endDate}`);
-  
-  try {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    
-    // Run without 'await' to return a response immediately
-    dailyAggregator.backfillDailyAggregates(start, end).catch(err => {
-      console.error("Error during backfill:", err);
-    });
-    
-    res.status(202).json({ 
-      message: "Accepted. Backfill process started in the background.",
-      range: { startDate, endDate }
-    });
-  } catch (error) {
-    console.error('Failed to start backfill process:', error);
-    res.status(500).json({ error: 'Failed to start backfill process.' });
-  }
-});
-
-// Backfill specific agent endpoint
-app.post('/api/dashboard/backfill-agent', async (req, res) => {
-  const { userId } = req.body;
-  
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID required' });
-  }
-  
-  console.log(`Received request to backfill agent data for user: ${userId}`);
-  
-  try {
-    // Run without 'await' to return a response immediately
-    backfillAgentAggregatesForUser(userId)
-      .then(result => {
-        console.log('Agent backfill completed:', result);
-      })
-      .catch(err => {
-        console.error("Error during agent backfill:", err);
-      });
-    
-    res.status(202).json({ 
-      message: "Accepted. Agent backfill process started in the background.",
-      userId
-    });
-  } catch (error) {
-    console.error('Failed to start agent backfill process:', error);
-    res.status(500).json({ error: 'Failed to start agent backfill process.' });
-  }
-});
-
-// Backfill all agents endpoint
-app.post('/api/dashboard/backfill-all-agents', async (req, res) => {
-  console.log('Received request to backfill all agents');
-  
-  try {
-    // Run without 'await' to return a response immediately
-    backfillAllAgents()
-      .then(result => {
-        console.log('All agents backfill completed:', result);
-      })
-      .catch(err => {
-        console.error("Error during all agents backfill:", err);
-      });
-    
-    res.status(202).json({ 
-      message: "Accepted. All agents backfill process started in the background."
-    });
-  } catch (error) {
-    console.error('Failed to start all agents backfill process:', error);
-    res.status(500).json({ error: 'Failed to start all agents backfill process.' });
-  }
-});
-
-// ── CRON JOB ENDPOINTS FOR RENDER ──────────────────────────────────
-
-// Endpoint for Render's daily cron job (2 AM)
-app.post('/api/cron/daily-aggregation', async (req, res) => {
-  // Verify the request is from Render (optional security)
-  const cronSecret = req.headers['x-cron-secret'];
-  if (process.env.CRON_SECRET && cronSecret !== process.env.CRON_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  
-  console.log('⏰ Daily cron job triggered via Render: Running daily aggregation...');
-  
-  try {
-    dailyAggregator.runDailyAggregation().catch(error => {
-      console.error('Scheduled daily aggregation failed:', error);
-    });
-    
-    res.json({ 
-      success: true, 
-      message: 'Daily aggregation started',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Failed to start daily aggregation:', error);
-    res.status(500).json({ error: 'Failed to start daily aggregation' });
-  }
-});
-
-// Endpoint for Render's hourly cron job
-app.post('/api/cron/hourly-update', async (req, res) => {
-  // Verify the request is from Render (optional security)
-  const cronSecret = req.headers['x-cron-secret'];
-  if (process.env.CRON_SECRET && cronSecret !== process.env.CRON_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  
-  console.log('⏰ Hourly cron job triggered via Render: Updating today\'s aggregate...');
-  
-  try {
-    dailyAggregator.calculateDailyAggregate(new Date()).catch(error => {
-      console.error('Hourly aggregate update failed:', error);
-    });
-    
-    res.json({ 
-      success: true, 
-      message: 'Hourly update started',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Failed to start hourly update:', error);
-    res.status(500).json({ error: 'Failed to start hourly update' });
-  }
-});
-
 // ── Root & Health Endpoints ─────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     name: 'Splitfin Zoho Integration API',
     version: API_VERSION,
     status: 'running',
-    features: {
-      zoho_integration: true,
-      ai_insights: true,
-      dashboard_aggregation: 'daily',
-      custom_date_ranges: true,
-      realtime_updates: 'hourly'
-    },
-    endpoints: {
-      dashboard: {
-        data: 'POST /api/dashboard/data',
-        calculate_missing: 'POST /api/dashboard/calculate-missing',
-        run_aggregation: 'POST /api/dashboard/run-daily-aggregation',
-        backfill: 'POST /api/dashboard/backfill'
-      },
-      cron: {
-        daily_aggregation: 'POST /api/cron/daily-aggregation',
-        hourly_update: 'POST /api/cron/hourly-update'
-      },
-      zoho: {
-        create_contact: 'POST /api/zoho/create-contact',
-        update_contact: 'PUT /api/zoho/update-contact',
-        create_order: 'POST /api/zoho/salesorder'
-      },
-      sync: {
-        inventory: '/api/sync/*',
-        customers: 'POST /api/customers/sync'
+    environment: IS_PRODUCTION ? 'production' : 'development',
+    documentation: {
+      base_url: `${req.protocol}://${req.get('host')}`,
+      endpoints: {
+        health: '/health',
+        api: {
+          webhooks: '/api/webhooks/*',
+          sync: '/api/sync/*',
+          reports: '/api/reports/*',
+          cron: '/api/cron/*',
+          'ai-insights': '/api/ai-insights/*',
+          products: '/api/products/*',
+        },
+        auth: {
+          oauth: '/oauth/url',
+          callback: '/oauth/callback'
+        }
       }
-    }
+    },
+    features: [
+      'OAuth 2.0 Authentication',
+      'CRM & Inventory Integration',
+      'CRON-based Data Sync',
+      'Normalized Data Collections',
+      'AI-Powered Analytics',
+      'Real-time Dashboard',
+      'Product Management'
+    ],
+    timestamp: new Date().toISOString()
   });
+});
+
+app.post('/api/customers/enrich', async (req, res) => {
+  try {
+    const { customerId } = req.body;
+    
+    if (customerId) {
+      // Enrich single customer
+      const result = await customerEnrichmentService.enrichCustomer(customerId);
+      res.json({ success: true, data: result });
+    } else {
+      // Enrich all customers missing data
+      const result = await customerEnrichmentService.enrichMissingCustomers();
+      res.json({ success: true, data: result });
+    }
+  } catch (error) {
+    console.error('Enrichment error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/zoho/test/contact-creation', async (req, res) => {
+  const results = {
+    timestamp: new Date().toISOString(),
+    tests: []
+  };
+  
+  try {
+    // Get the access token first
+    const token = await getAccessToken();
+    
+    // Get org ID from environment
+    const orgId = process.env.ZOHO_ORG_ID;
+    
+    // Test 1: Create a simple contact using the existing function
+    const testContact = {
+      contact_name: `API Test ${Date.now()}`,
+      contact_type: 'customer',
+      email: `apitest${Date.now()}@test.com`
+    };
+    
+    console.log('Creating test contact:', testContact);
+    
+    try {
+      const createResult = await createInventoryContact(testContact);
+      
+      results.tests.push({
+        test: 'create',
+        success: true,
+        response: createResult
+      });
+      
+      // If we got a contact ID, try to verify it exists
+      if (createResult.contact?.contact_id) {
+        const contactId = createResult.contact.contact_id;
+        
+        // Wait a moment for Zoho to process
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Try to fetch the contact
+        try {
+          const fetchResponse = await axios.get(
+            `https://www.zohoapis.eu/inventory/v1/contacts/${contactId}`,
+            {
+              headers: {
+                'Authorization': `Zoho-oauthtoken ${token}`,
+                'X-com-zoho-inventory-organizationid': orgId
+              }
+            }
+          );
+          
+          results.tests.push({
+            test: 'fetch',
+            success: true,
+            found: true,
+            contact: fetchResponse.data.contact
+          });
+        } catch (fetchError) {
+          results.tests.push({
+            test: 'fetch',
+            success: false,
+            error: fetchError.response?.data || fetchError.message
+          });
+        }
+      }
+      
+    } catch (createError) {
+      results.tests.push({
+        test: 'create',
+        success: false,
+        error: createError.message,
+        details: createError.response?.data
+      });
+    }
+    
+    try {
+      const listResponse = await axios.get(
+        'https://www.zohoapis.eu/inventory/v1/contacts',
+        {
+          params: {
+            sort_column: 'created_time',
+            sort_order: 'D',
+            per_page: 10
+          },
+          headers: {
+            'Authorization': `Zoho-oauthtoken ${token}`,
+            'X-com-zoho-inventory-organizationid': orgId
+          }
+        }
+      );
+      
+      results.tests.push({
+        test: 'list',
+        success: true,
+        totalContacts: listResponse.data.page_context?.total || 0,
+        recentContacts: listResponse.data.contacts?.slice(0, 5).map(c => ({
+          id: c.contact_id,
+          name: c.contact_name,
+          email: c.email,
+          created: c.created_time
+        }))
+      });
+    } catch (listError) {
+      results.tests.push({
+        test: 'list',
+        success: false,
+        error: listError.message
+      });
+    }
+    
+    res.json({
+      success: true,
+      orgId: orgId,
+      results: results
+    });
+    
+  } catch (error) {
+    console.error('Test error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
 });
 
 app.get('/health', async (req, res) => {
   try {
+    // Basic health check
     const db = admin.firestore();
     await db.collection('_health').doc('check').set({
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
-    
-    // Check daily aggregates health
-    const today = new Date().toISOString().split('T')[0];
-    const todayAggregate = await db.collection('daily_aggregates').doc(today).get();
-    
+
+    // Get sync status
     const syncStatus = await getSyncStatus();
     
     res.json({
       status: 'healthy',
       version: API_VERSION,
+      environment: IS_PRODUCTION ? 'production' : 'development',
+      timestamp: new Date().toISOString(),
       database: 'connected',
       sync: {
         lastSync: syncStatus?.lastSync || 'never',
         status: syncStatus?.status || 'unknown'
-      },
-      dailyAggregates: {
-        todayExists: todayAggregate.exists,
-        lastUpdate: todayAggregate.exists ? todayAggregate.data().timestamp?.toDate() : null
       }
     });
   } catch (error) {
-    res.status(503).json({ status: 'unhealthy', error: error.message });
+    res.status(503).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
   }
 });
 
 // ── Error Handling ──────────────────────────────────────────────────
+// 404 handler
 app.use((req, res) => {
-  res.status(404).json({ success: false, message: 'Endpoint not found' });
+  res.status(404).json({
+    success: false,
+    message: 'Endpoint not found',
+    path: req.path,
+    timestamp: new Date().toISOString()
+  });
 });
 
+// Global error handler
 app.use((err, req, res, next) => {
   console.error('🚨 Unhandled error:', err);
+  
   res.status(err.status || 500).json({
     success: false,
     message: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { 
+      stack: err.stack,
+      details: err 
+    }),
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -342,33 +340,61 @@ app.use((err, req, res, next) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║           Splitfin Zoho Integration API                    ║');
+  console.log('╠════════════════════════════════════════════════════════════╣');
   console.log(`║ Version    : ${API_VERSION.padEnd(46)}║`);
-  console.log(`║ Port       : ${String(PORT).padEnd(46)}║`);
-  console.log(`║ Environment: ${(IS_PRODUCTION ? 'Production' : 'Development').padEnd(46)}║`);
-  console.log('║                                                            ║');
+  console.log(`║ Environment: ${(IS_PRODUCTION ? 'production' : 'development').padEnd(46)}║`);
+  console.log(`║ Port       : ${PORT.toString().padEnd(46)}║`);
+  console.log(`║ Base URL   : http://localhost:${PORT.toString().padEnd(29)}║`);
+  console.log('╠════════════════════════════════════════════════════════════╣');
   console.log('║ Features:                                                  ║');
-  console.log('║ - Daily Dashboard Aggregation                              ║');
-  console.log('║ - Custom Date Range Support                                ║');
-  console.log('║ - Real-time Updates (Hourly)                               ║');
-  console.log('║ - Agent-specific Reports                                   ║');
-  console.log('║ - Render Cron Job Integration                              ║');
+  console.log('║ • OAuth 2.0 Authentication                                 ║');
+  console.log('║ • CRON-based Data Synchronization                          ║');
+  console.log('║ • Normalized Data Collections                              ║');
+  console.log('║ • AI-Powered Analytics                                     ║');
+  console.log('║ • Real-time Dashboard                                      ║');
+  console.log('╠════════════════════════════════════════════════════════════╣');
+  console.log('║ Main Endpoints:                                            ║');
+  console.log(`║ • Health     : http://localhost:${PORT}/health              ║`);
+  console.log(`║ • API Docs   : http://localhost:${PORT}/                    ║`);
+  console.log(`║ • Dashboard  : /api/reports/dashboard                      ║`);
+  console.log(`║ • CRON Jobs  : /api/cron/*                                 ║`);
   console.log('╚════════════════════════════════════════════════════════════╝');
   
-  // Check if we need to run initial aggregation
-  console.log('\n🔍 Checking daily aggregates status...');
-  const db = admin.firestore();
-  const today = new Date().toISOString().split('T')[0];
-  
-  db.collection('daily_aggregates').doc(today).get()
-    .then(doc => {
-      if (!doc.exists) {
-        console.log('📊 Today\'s aggregate missing. Running initial aggregation...');
-        return dailyAggregator.calculateDailyAggregate(new Date());
-      } else {
-        console.log('✅ Today\'s aggregate already exists.');
-      }
-    })
-    .catch(error => {
-      console.error('Error checking daily aggregates:', error);
-    });
+  if (IS_PRODUCTION) {
+    console.log('\n✅ Production mode: CRON jobs handle all data synchronization');
+  } else {
+    console.log('\n🔧 Development mode: All debugging endpoints available');
+  }
 });
+
+// ── Graceful Shutdown ───────────────────────────────────────────────
+const gracefulShutdown = (signal) => {
+  console.log(`\n${signal} received, starting graceful shutdown...`);
+  
+  server.close(() => {
+    console.log('✅ HTTP server closed');
+    console.log('✅ Graceful shutdown completed');
+    process.exit(0);
+  });
+  
+  // Force shutdown after 30 seconds
+  setTimeout(() => {
+    console.error('⚠️ Forcefully shutting down after timeout');
+    process.exit(1);
+  }, 30000);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught errors
+process.on('uncaughtException', (error) => {
+  console.error('🚨 Uncaught Exception:', error);
+  gracefulShutdown('UNCAUGHT_EXCEPTION');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🚨 Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+export default app;
