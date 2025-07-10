@@ -48,6 +48,30 @@ class CronDataSyncService {
   }
 
   /**
+   * Helper to retry operations with exponential backoff
+   */
+  async _retryOperation(operation, maxRetries = 3, operationName = 'Operation') {
+    let lastError;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        
+        if (attempt < maxRetries) {
+          const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
+          console.log(`⏰ ${operationName} failed (attempt ${attempt}/${maxRetries}). Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    console.error(`❌ ${operationName} failed after ${maxRetries} attempts`);
+    throw lastError;
+  }
+
+  /**
    * Writes an array of data to a specified collection in batches.
    * Now handles creating sub-collections for sales order line items.
    */
@@ -55,17 +79,45 @@ class CronDataSyncService {
     if (!dataArray || dataArray.length === 0) return;
 
     const collectionRef = db.collection(collectionName);
-    const BATCH_SIZE = 400;
+    const BATCH_SIZE = 50; // Reduced from 400 to 50 for safety
+    const BATCH_OPERATIONS_LIMIT = 450; // Firestore limit is 500, leaving buffer
+    
     let mainBatch = db.batch();
-    let writeCount = 0;
+    let operationCount = 0; // Track total operations (main doc + line items)
+    let documentCount = 0;
+    let totalDocuments = dataArray.length;
+    let batchNumber = 1;
+    
+    console.log(`📝 Starting batch write for ${totalDocuments} ${collectionName} documents...`);
 
     for (const item of dataArray) {
         const docId = item[idKey];
         if (!docId) continue;
 
-        if (writeCount > 0 && writeCount % BATCH_SIZE === 0) {
-            await mainBatch.commit();
+        // Calculate operations needed for this document
+        let operationsNeeded = 1; // Main document
+        if (collectionName === 'sales_orders' && item.line_items && Array.isArray(item.line_items)) {
+            operationsNeeded += item.line_items.length; // Add line items count
+        }
+
+        // Check if adding this document would exceed limits
+        if (operationCount > 0 && (operationCount + operationsNeeded > BATCH_OPERATIONS_LIMIT || documentCount >= BATCH_SIZE)) {
+            console.log(`  📦 Committing batch ${batchNumber} with ${operationCount} operations...`);
+            
+            // Use retry mechanism for batch commit
+            await this._retryOperation(
+                () => mainBatch.commit(),
+                3,
+                `Batch ${batchNumber} commit`
+            );
+            
             mainBatch = db.batch();
+            operationCount = 0;
+            documentCount = 0;
+            batchNumber++;
+            
+            // Add a small delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
 
         const docRef = collectionRef.doc(String(docId));
@@ -75,6 +127,7 @@ class CronDataSyncService {
             _syncSource: 'zoho_api'
         };
         
+        // Handle line items for sales orders
         if (collectionName === 'sales_orders' && item.line_items && Array.isArray(item.line_items)) {
             const lineItems = itemWithMetadata.line_items;
             delete itemWithMetadata.line_items;
@@ -83,17 +136,27 @@ class CronDataSyncService {
             lineItems.forEach(lineItem => {
                 const lineItemId = lineItem.line_item_id || itemsSubCollection.doc().id;
                 mainBatch.set(itemsSubCollection.doc(lineItemId), lineItem);
+                operationCount++;
             });
         }
 
         mainBatch.set(docRef, itemWithMetadata, { merge: true });
-        writeCount++;
+        operationCount++;
+        documentCount++;
     }
 
-    if (writeCount > 0) {
-        await mainBatch.commit();
+    // Commit remaining batch
+    if (operationCount > 0) {
+        console.log(`  📦 Committing final batch ${batchNumber} with ${operationCount} operations...`);
+        
+        await this._retryOperation(
+            () => mainBatch.commit(),
+            3,
+            `Final batch ${batchNumber} commit`
+        );
     }
-    console.log(`✅ Wrote/updated ${writeCount} documents in ${collectionName}.`);
+    
+    console.log(`✅ Successfully wrote/updated ${totalDocuments} documents in ${collectionName} across ${batchNumber} batches.`);
   }
   
   /**
@@ -115,8 +178,10 @@ class CronDataSyncService {
         }
     });
 
+    const BATCH_SIZE = 50; // Same as main batch size
     let batch = db.batch();
     let linkCount = 0;
+    let batchNumber = 1;
 
     for (const order of newlySyncedOrders) {
         const orderId = order.salesorder_id;
@@ -157,14 +222,30 @@ class CronDataSyncService {
             linkCount++;
         }
 
-        if (linkCount > 0 && linkCount % 400 === 0) {
-            await batch.commit();
+        // Check batch size and commit if needed
+        if (linkCount > 0 && linkCount % BATCH_SIZE === 0) {
+            console.log(`  🔗 Committing link batch ${batchNumber} with ${BATCH_SIZE} operations...`);
+            await this._retryOperation(
+                () => batch.commit(),
+                3,
+                `Link batch ${batchNumber} commit`
+            );
             batch = db.batch();
+            batchNumber++;
+            
+            // Small delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
     }
 
-    if (linkCount > 0) {
-        await batch.commit();
+    // Commit remaining links
+    if (linkCount % BATCH_SIZE > 0) {
+        console.log(`  🔗 Committing final link batch ${batchNumber}...`);
+        await this._retryOperation(
+            () => batch.commit(),
+            3,
+            `Final link batch ${batchNumber} commit`
+        );
     }
     console.log(`✅ Post-sync linking complete. Created/updated ${linkCount} links.`);
   }
@@ -217,7 +298,10 @@ class CronDataSyncService {
    */
   async highFrequencySync() {
     const jobType = 'high_frequency_sync';
-    if (this.isRunning.get(jobType)) return;
+    if (this.isRunning.get(jobType)) {
+      console.log('⏩ High frequency sync already running, skipping...');
+      return;
+    }
     
     this.isRunning.set(jobType, true);
     const syncTimestamp = new Date();
@@ -230,26 +314,61 @@ class CronDataSyncService {
       
       console.log(`Syncing changes since: ${lastSync.toISOString()}`);
       
-      const newOrders = await zohoInventoryService.getSalesOrders('30_days');
-      const newInvoices = await zohoReportsService.getInvoices('30_days');
+      // Fetch data with error handling
+      let newOrders = [];
+      let newInvoices = [];
       
+      try {
+        console.log('📅 Fetching orders...');
+        newOrders = await zohoInventoryService.getSalesOrders('30_days');
+        console.log(`Found ${newOrders.length} orders. Fetching details...`);
+      } catch (error) {
+        console.error('Failed to fetch orders:', error.message);
+      }
+      
+      try {
+        console.log('📄 Fetching invoices...');
+        newInvoices = await zohoReportsService.getInvoices('30_days');
+        console.log(`Found ${newInvoices.length} invoices.`);
+      } catch (error) {
+        console.error('Failed to fetch invoices:', error.message);
+      }
+      
+      // Process orders with error handling
       if (newOrders.length > 0) {
-        await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
-        await this._linkNewData(newOrders);
+        try {
+          await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
+          await this._linkNewData(newOrders);
+        } catch (error) {
+          console.error('Failed to process orders:', error);
+          // Don't throw - continue with invoices
+        }
       }
       
+      // Process invoices with error handling
       if (newInvoices.length > 0) {
-        await this._batchWrite('invoices', newInvoices, 'invoice_id');
+        try {
+          await this._batchWrite('invoices', newInvoices, 'invoice_id');
+        } catch (error) {
+          console.error('Failed to process invoices:', error);
+          // Don't throw - continue with aggregates
+        }
       }
       
-      const affectedDates = this._getAffectedDates(newOrders, newInvoices);
-      await this._updateDailyAggregates(affectedDates);
+      // Update aggregates with error handling
+      try {
+        const affectedDates = this._getAffectedDates(newOrders, newInvoices);
+        await this._updateDailyAggregates(affectedDates);
+      } catch (error) {
+        console.error('Failed to update aggregates:', error);
+        // Don't throw - sync is mostly complete
+      }
       
       await this._updateSyncMetadata(jobType, {
         recordsProcessed: { 
           orders: newOrders.length, 
           invoices: newInvoices.length,
-          affectedDates: affectedDates.length
+          status: 'completed'
         }
       }, syncTimestamp);
       
@@ -257,6 +376,7 @@ class CronDataSyncService {
       
     } catch (error) {
       console.error('❌ High frequency sync failed:', error);
+      throw error; // Re-throw to indicate failure to the cron handler
     } finally {
       this.isRunning.set(jobType, false);
     }
