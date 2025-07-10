@@ -10,7 +10,8 @@
     "test": "jest",
     "backfill-agent-aggregates": "node src/scripts/backfillAgentAggregates.js",
     "test-agent-dashboard": "node src/scripts/testAgentDashboard.js",
-    "daily-aggregation": "node src/scripts/runDailyAggregation.js"
+    "daily-aggregation": "node src/scripts/runDailyAggregation.js",
+    "check-agent": "node src/scripts/checkAgentData.js"
   },
   "dependencies": {
     "express": "^4.18.2",

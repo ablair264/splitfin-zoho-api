@@ -606,6 +606,39 @@ class DailyDashboardAggregator {
             .orderBy('date', 'asc')
             .get();
         
+        // If no aggregates found, return empty dashboard
+        if (aggregatesSnapshot.empty) {
+            console.log(`⚠️ No daily aggregates found for agent ${agentId}`);
+            return {
+                agentId,
+                agentName: agentData.name,
+                dateRange: { start: startStr, end: endStr },
+                role: 'salesAgent',
+                metrics: {
+                    totalRevenue: 0,
+                    totalOrders: 0,
+                    totalCommission: 0,
+                    uniqueCustomers: 0,
+                    activeDays: 0,
+                    averageOrderValue: 0,
+                    totalCustomers: 0
+                },
+                dailyBreakdown: [],
+                topCustomers: [],
+                topItems: [],
+                performance: {
+                    top_customers: [],
+                    top_items: [],
+                    brands: []
+                },
+                commission: {
+                    total: 0,
+                    rate: 0.05
+                },
+                message: 'No data available for this period. Data aggregation may be in progress.'
+            };
+        }
+        
         // Combine daily data
         const combined = {
             agentId,

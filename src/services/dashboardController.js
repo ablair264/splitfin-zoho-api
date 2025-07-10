@@ -27,12 +27,15 @@ class DashboardController {
         return res.status(400).json({ error: 'User ID required' });
       }
 
+      console.log(`📊 Dashboard request - User: ${userId}, Role: ${userRole}, Range: ${dateRange}`);
+
       // Generate cache key
       const cacheKey = `${userId}-${userRole}-${dateRange}-${JSON.stringify(customDateRange || {})}`;
       
       // Check cache (5 minute TTL)
       const cached = this.cache.get(cacheKey);
       if (cached && (Date.now() - cached.timestamp < 5 * 60 * 1000)) {
+        console.log('📦 Returning cached dashboard data');
         return res.json({ data: cached.data, cached: true });
       }
 
@@ -47,7 +50,28 @@ class DashboardController {
           .get();
           
         if (agentQuery.empty) {
-          return res.status(404).json({ error: 'Agent profile not found' });
+          console.error(`❌ No agent found for user ID: ${userId}`);
+          // Return empty dashboard instead of 404
+          return res.json({ 
+            data: {
+              role: 'salesAgent',
+              metrics: {
+                totalRevenue: 0,
+                totalOrders: 0,
+                averageOrderValue: 0,
+                totalCommission: 0,
+                totalCustomers: 0,
+                uniqueCustomers: 0
+              },
+              topCustomers: [],
+              topItems: [],
+              performance: { top_customers: [], top_items: [], brands: [] },
+              commission: { total: 0, rate: 0.05 },
+              dailyBreakdown: [],
+              dateRange: { start: new Date().toISOString(), end: new Date().toISOString() },
+              message: 'No agent profile found. Please contact support.'
+            }
+          });
         }
         
         const agentId = agentQuery.docs[0].id;

@@ -8,6 +8,9 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 // Using Render's cron jobs instead of node-cron
 
+// Import the backfill service
+import { backfillAgentAggregatesForUser, backfillAllAgents } from './services/agentBackfillService.js';
+
 // Import your existing services and routes
 import { createZohoSalesOrder } from './services/salesOrder.js';
 import { syncCustomerWithZoho, syncAllCustomers } from './services/customerSync.js';
@@ -144,6 +147,59 @@ app.post('/api/dashboard/backfill', async (req, res) => {
   } catch (error) {
     console.error('Failed to start backfill process:', error);
     res.status(500).json({ error: 'Failed to start backfill process.' });
+  }
+});
+
+// Backfill specific agent endpoint
+app.post('/api/dashboard/backfill-agent', async (req, res) => {
+  const { userId } = req.body;
+  
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID required' });
+  }
+  
+  console.log(`Received request to backfill agent data for user: ${userId}`);
+  
+  try {
+    // Run without 'await' to return a response immediately
+    backfillAgentAggregatesForUser(userId)
+      .then(result => {
+        console.log('Agent backfill completed:', result);
+      })
+      .catch(err => {
+        console.error("Error during agent backfill:", err);
+      });
+    
+    res.status(202).json({ 
+      message: "Accepted. Agent backfill process started in the background.",
+      userId
+    });
+  } catch (error) {
+    console.error('Failed to start agent backfill process:', error);
+    res.status(500).json({ error: 'Failed to start agent backfill process.' });
+  }
+});
+
+// Backfill all agents endpoint
+app.post('/api/dashboard/backfill-all-agents', async (req, res) => {
+  console.log('Received request to backfill all agents');
+  
+  try {
+    // Run without 'await' to return a response immediately
+    backfillAllAgents()
+      .then(result => {
+        console.log('All agents backfill completed:', result);
+      })
+      .catch(err => {
+        console.error("Error during all agents backfill:", err);
+      });
+    
+    res.status(202).json({ 
+      message: "Accepted. All agents backfill process started in the background."
+    });
+  } catch (error) {
+    console.error('Failed to start all agents backfill process:', error);
+    res.status(500).json({ error: 'Failed to start all agents backfill process.' });
   }
 });
 
