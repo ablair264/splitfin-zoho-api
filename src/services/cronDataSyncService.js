@@ -1,4 +1,4 @@
-// src/services/cronDataSyncService.js
+// cronDataSyncService.js - Fixed version with incremental sync
 // Refactored to focus solely on syncing raw data from Zoho to Firestore.
 // All dashboard-specific calculations have been moved to dashboardAggregator.js.
 
@@ -74,25 +74,55 @@ class CronDataSyncService {
   /**
    * Writes an array of data to a specified collection in batches.
    * Now handles creating sub-collections for sales order line items.
+   * Returns statistics about what was processed.
    */
   async _batchWrite(collectionName, dataArray, idKey) {
-    if (!dataArray || dataArray.length === 0) return;
+    if (!dataArray || dataArray.length === 0) {
+      return { new: 0, updated: 0, unchanged: 0, total: 0 };
+    }
 
     const collectionRef = db.collection(collectionName);
     const BATCH_SIZE = 50; // Reduced from 400 to 50 for safety
     const BATCH_OPERATIONS_LIMIT = 450; // Firestore limit is 500, leaving buffer
     
+    // Track what we're actually updating
+    const updateStats = {
+      new: 0,
+      updated: 0,
+      unchanged: 0,
+      total: dataArray.length
+    };
+    
     let mainBatch = db.batch();
     let operationCount = 0; // Track total operations (main doc + line items)
     let documentCount = 0;
-    let totalDocuments = dataArray.length;
     let batchNumber = 1;
     
-    console.log(`📝 Starting batch write for ${totalDocuments} ${collectionName} documents...`);
+    console.log(`📝 Starting batch write for ${dataArray.length} ${collectionName} documents...`);
 
     for (const item of dataArray) {
         const docId = item[idKey];
         if (!docId) continue;
+
+        // Check if document exists and compare modification time
+        const docRef = collectionRef.doc(String(docId));
+        const existingDoc = await docRef.get();
+        
+        // Determine if this is new or updated
+        if (!existingDoc.exists) {
+            updateStats.new++;
+        } else {
+            const existingData = existingDoc.data();
+            const existingModTime = existingData.last_modified_time || existingData._lastSynced?.toDate?.().toISOString();
+            const newModTime = item.last_modified_time || item.modified_time;
+            
+            // Skip if the document hasn't been modified
+            if (existingModTime && newModTime && new Date(existingModTime) >= new Date(newModTime)) {
+                updateStats.unchanged++;
+                continue; // Skip this document
+            }
+            updateStats.updated++;
+        }
 
         // Calculate operations needed for this document
         let operationsNeeded = 1; // Main document
@@ -120,7 +150,6 @@ class CronDataSyncService {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
 
-        const docRef = collectionRef.doc(String(docId));
         const itemWithMetadata = {
             ...item,
             _lastSynced: Timestamp.now(),
@@ -156,16 +185,42 @@ class CronDataSyncService {
         );
     }
     
-    console.log(`✅ Successfully wrote/updated ${totalDocuments} documents in ${collectionName} across ${batchNumber} batches.`);
+    console.log(`✅ Batch write complete:`);
+    console.log(`   - New documents: ${updateStats.new}`);
+    console.log(`   - Updated documents: ${updateStats.updated}`);
+    console.log(`   - Unchanged (skipped): ${updateStats.unchanged}`);
+    console.log(`   - Total processed: ${updateStats.total}`);
+    
+    return updateStats;
   }
   
   /**
    * Links newly synced orders to their respective customers and sales agents.
+   * Only processes orders that were actually new or updated.
    */
-  async _linkNewData(newlySyncedOrders) {
+  async _linkNewData(newlySyncedOrders, onlyNewOrUpdated = true) {
     if (!newlySyncedOrders || newlySyncedOrders.length === 0) return;
 
-    console.log(`🔗 Starting post-sync linking for ${newlySyncedOrders.length} orders...`);
+    // If onlyNewOrUpdated is true, filter to only process truly new/updated orders
+    let ordersToLink = newlySyncedOrders;
+    if (onlyNewOrUpdated) {
+        const orderIds = new Set();
+        for (const order of newlySyncedOrders) {
+            const docRef = db.collection('sales_orders').doc(order.salesorder_id);
+            const doc = await docRef.get();
+            if (!doc.exists || doc.data().last_modified_time !== order.last_modified_time) {
+                orderIds.add(order.salesorder_id);
+            }
+        }
+        ordersToLink = newlySyncedOrders.filter(order => orderIds.has(order.salesorder_id));
+    }
+
+    if (ordersToLink.length === 0) {
+        console.log('🔗 No new orders to link.');
+        return;
+    }
+
+    console.log(`🔗 Starting post-sync linking for ${ordersToLink.length} orders...`);
     const customersRef = db.collection('customers');
     const agentsRef = db.collection('sales_agents');
 
@@ -183,7 +238,7 @@ class CronDataSyncService {
     let linkCount = 0;
     let batchNumber = 1;
 
-    for (const order of newlySyncedOrders) {
+    for (const order of ordersToLink) {
         const orderId = order.salesorder_id;
         if (!orderId) continue;
 
@@ -256,15 +311,22 @@ class CronDataSyncService {
   _getAffectedDates(orders, invoices) {
     const dates = new Set();
     
-    orders.forEach(order => {
-      if (order.date) dates.add(new Date(order.date).toISOString().split('T')[0]);
-      if (order.modified_time) dates.add(new Date(order.modified_time).toISOString().split('T')[0]);
-    });
+    // Handle orders array
+    if (orders && Array.isArray(orders)) {
+      orders.forEach(order => {
+        if (order.date) dates.add(new Date(order.date).toISOString().split('T')[0]);
+        if (order.modified_time) dates.add(new Date(order.modified_time).toISOString().split('T')[0]);
+      });
+    }
     
-    invoices.forEach(invoice => {
-      if (invoice.date) dates.add(new Date(invoice.date).toISOString().split('T')[0]);
-    });
+    // Handle invoices array - check if it's actually an array
+    if (invoices && Array.isArray(invoices)) {
+      invoices.forEach(invoice => {
+        if (invoice.date) dates.add(new Date(invoice.date).toISOString().split('T')[0]);
+      });
+    }
     
+    // Always include today's date
     dates.add(new Date().toISOString().split('T')[0]);
     
     return Array.from(dates);
@@ -295,6 +357,7 @@ class CronDataSyncService {
 
   /**
    * HIGH FREQUENCY SYNC - Every 15 minutes
+   * Now with incremental sync to avoid processing unchanged data
    */
   async highFrequencySync() {
     const jobType = 'high_frequency_sync';
@@ -309,36 +372,65 @@ class CronDataSyncService {
     try {
       console.log('🚀 Starting high frequency sync...');
       const metadata = await this._getSyncMetadata(jobType) || {};
-      const lookbackDate = new Date(syncTimestamp.getTime() - 20 * 60 * 1000);
-      const lastSync = metadata.lastSyncTimestamp ? new Date(metadata.lastSyncTimestamp) : lookbackDate;
       
-      console.log(`Syncing changes since: ${lastSync.toISOString()}`);
+      console.log(`Last sync: ${metadata.lastSyncTimestamp || 'Never'}`);
       
       // Fetch data with error handling
       let newOrders = [];
+      let actuallyNewOrders = [];
       let newInvoices = [];
       
       try {
         console.log('📅 Fetching orders...');
-        newOrders = await zohoInventoryService.getSalesOrders('30_days');
-        console.log(`Found ${newOrders.length} orders. Fetching details...`);
+        // Get all orders from the date range first
+        const allOrders = await zohoInventoryService.getSalesOrders('30_days');
+        console.log(`Found ${allOrders.length} total orders in date range.`);
+        
+        // Filter to only new or recently modified orders
+        if (metadata.lastSyncTimestamp) {
+          newOrders = allOrders.filter(order => {
+            const modifiedTime = order.last_modified_time || order.created_time;
+            if (!modifiedTime) return true; // Include if no timestamp
+            return new Date(modifiedTime) > new Date(metadata.lastSyncTimestamp);
+          });
+          console.log(`Filtered to ${newOrders.length} new/modified orders since last sync.`);
+          actuallyNewOrders = newOrders; // Track what's actually new
+        } else {
+          // First sync - take all orders
+          newOrders = allOrders;
+          actuallyNewOrders = allOrders;
+          console.log('First sync - processing all orders.');
+        }
       } catch (error) {
         console.error('Failed to fetch orders:', error.message);
       }
       
       try {
         console.log('📄 Fetching invoices...');
-        newInvoices = await zohoReportsService.getInvoices('30_days');
+        const invoiceResult = await zohoReportsService.getInvoices('30_days');
+        // Handle the categorized invoice response structure
+        if (invoiceResult && typeof invoiceResult === 'object') {
+          // If it's the categorized structure, use the 'all' array
+          newInvoices = Array.isArray(invoiceResult.all) ? invoiceResult.all : 
+                        Array.isArray(invoiceResult) ? invoiceResult : [];
+        } else {
+          newInvoices = [];
+        }
         console.log(`Found ${newInvoices.length} invoices.`);
       } catch (error) {
         console.error('Failed to fetch invoices:', error.message);
+        newInvoices = []; // Ensure it's always an array
       }
       
       // Process orders with error handling
+      let orderStats = { new: 0, updated: 0, unchanged: 0, total: 0 };
       if (newOrders.length > 0) {
         try {
-          await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
-          await this._linkNewData(newOrders);
+          orderStats = await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
+          // Only link orders that were actually new or updated
+          if (actuallyNewOrders.length > 0) {
+            await this._linkNewData(actuallyNewOrders, false);
+          }
         } catch (error) {
           console.error('Failed to process orders:', error);
           // Don't throw - continue with invoices
@@ -346,9 +438,10 @@ class CronDataSyncService {
       }
       
       // Process invoices with error handling
+      let invoiceStats = { new: 0, updated: 0, unchanged: 0, total: 0 };
       if (newInvoices.length > 0) {
         try {
-          await this._batchWrite('invoices', newInvoices, 'invoice_id');
+          invoiceStats = await this._batchWrite('invoices', newInvoices, 'invoice_id');
         } catch (error) {
           console.error('Failed to process invoices:', error);
           // Don't throw - continue with aggregates
@@ -366,13 +459,30 @@ class CronDataSyncService {
       
       await this._updateSyncMetadata(jobType, {
         recordsProcessed: { 
-          orders: newOrders.length, 
-          invoices: newInvoices.length,
+          orders: {
+            total: newOrders.length,
+            new: orderStats.new,
+            updated: orderStats.updated,
+            unchanged: orderStats.unchanged
+          },
+          invoices: {
+            total: newInvoices.length,
+            new: invoiceStats.new,
+            updated: invoiceStats.updated,
+            unchanged: invoiceStats.unchanged
+          },
           status: 'completed'
         }
       }, syncTimestamp);
       
-      console.log(`✅ High frequency sync completed. Orders: ${newOrders.length}, Invoices: ${newInvoices.length}`);
+      console.log(`✅ High frequency sync completed.`);
+      console.log(`   Orders: ${orderStats.new} new, ${orderStats.updated} updated, ${orderStats.unchanged} unchanged`);
+      console.log(`   Invoices: ${invoiceStats.new} new, ${invoiceStats.updated} updated, ${invoiceStats.unchanged} unchanged`);
+      
+      // Log warning if too many records are being processed
+      if (newOrders.length > 200 && orderStats.unchanged < orderStats.total * 0.8) {
+        console.warn(`⚠️ Large number of changed orders (${orderStats.new + orderStats.updated}). This is unusual for a 15-minute sync.`);
+      }
       
     } catch (error) {
       console.error('❌ High frequency sync failed:', error);
@@ -399,23 +509,26 @@ class CronDataSyncService {
     try {
       console.log('🔄 Starting medium frequency sync...');
       const metadata = await this._getSyncMetadata(jobType) || {};
-      const lookbackDate = new Date(syncTimestamp.getTime() - 4 * 60 * 60 * 1000); 
-      const lastSync = metadata.lastSyncTimestamp ? new Date(metadata.lastSyncTimestamp) : lookbackDate;
       
-      console.log(`Syncing changes since: ${lastSync.toISOString()}`);
+      console.log(`Last sync: ${metadata.lastSyncTimestamp || 'Never'}`);
       
       const [newOrders, newInvoices] = await Promise.all([
         zohoInventoryService.getSalesOrders('30_days'),
         zohoReportsService.getInvoices('30_days')
       ]);
       
+      let orderStats = { new: 0, updated: 0, unchanged: 0, total: 0 };
+      let invoiceStats = { new: 0, updated: 0, unchanged: 0, total: 0 };
+      
       if (newOrders.length > 0) {
-        await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
+        orderStats = await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
         await this._linkNewData(newOrders);
       }
       
       if (newInvoices.length > 0) {
-        await this._batchWrite('invoices', newInvoices, 'invoice_id');
+        // Handle invoice result structure
+        const invoiceArray = Array.isArray(newInvoices) ? newInvoices : newInvoices.all || [];
+        invoiceStats = await this._batchWrite('invoices', invoiceArray, 'invoice_id');
       }
       
       const affectedDates = this._getAffectedDates(newOrders, newInvoices);
@@ -423,13 +536,15 @@ class CronDataSyncService {
       
       await this._updateSyncMetadata(jobType, {
         recordsProcessed: { 
-          orders: newOrders.length, 
-          invoices: newInvoices.length,
+          orders: orderStats,
+          invoices: invoiceStats,
           affectedDates: affectedDates.length
         }
       }, syncTimestamp);
       
-      console.log(`✅ Medium frequency sync completed. Orders: ${newOrders.length}, Invoices: ${newInvoices.length}`);
+      console.log(`✅ Medium frequency sync completed.`);
+      console.log(`   Orders: ${orderStats.new} new, ${orderStats.updated} updated`);
+      console.log(`   Invoices: ${invoiceStats.new} new, ${invoiceStats.updated} updated`);
       
     } catch (error) {
       console.error('❌ Medium frequency sync failed:', error);
@@ -451,12 +566,10 @@ class CronDataSyncService {
     try {
       console.log('🔄 Starting low frequency sync...');
       const metadata = await this._getSyncMetadata(jobType) || {};
-      const lookbackDate = new Date(syncTimestamp.getTime() - 25 * 60 * 60 * 1000);
-      const lastSync = metadata.lastSyncTimestamp ? new Date(metadata.lastSyncTimestamp) : lookbackDate;
 
-      console.log(`Syncing all data modified since ${lastSync.toISOString()}`);
+      console.log(`Syncing all data...`);
 
-      const [orders, invoices, purchaseOrders, customers, items] = await Promise.all([
+      const [orders, invoicesResult, purchaseOrders, customers, items] = await Promise.all([
         zohoInventoryService.getSalesOrders('30_days'),
         zohoReportsService.getInvoices('30_days'),
         zohoInventoryService.getPurchaseOrders('30_days'),
@@ -464,14 +577,26 @@ class CronDataSyncService {
         zohoReportsService.getItems()
       ]);
 
+      // Handle invoice result structure
+      const invoices = Array.isArray(invoicesResult) ? invoicesResult : invoicesResult.all || [];
+
+      const stats = {};
       if (orders.length > 0) {
-        await this._batchWrite('sales_orders', orders, 'salesorder_id');
+        stats.orders = await this._batchWrite('sales_orders', orders, 'salesorder_id');
         await this._linkNewData(orders);
       }
-      if (invoices.length > 0) await this._batchWrite('invoices', invoices, 'invoice_id');
-      if (purchaseOrders.length > 0) await this._batchWrite('purchase_orders', purchaseOrders, 'purchaseorder_id');
-      if (customers.length > 0) await this._batchWrite('customers', customers, 'customer_id');
-      if (items.length > 0) await this._batchWrite('items_data', items, 'item_id');
+      if (invoices.length > 0) {
+        stats.invoices = await this._batchWrite('invoices', invoices, 'invoice_id');
+      }
+      if (purchaseOrders.length > 0) {
+        stats.purchaseOrders = await this._batchWrite('purchase_orders', purchaseOrders, 'purchaseorder_id');
+      }
+      if (customers.length > 0) {
+        stats.customers = await this._batchWrite('customers', customers, 'customer_id');
+      }
+      if (items.length > 0) {
+        stats.items = await this._batchWrite('items_data', items, 'item_id');
+      }
       
       const affectedDates = this._getAffectedDates(orders, invoices);
       await this._updateDailyAggregates(affectedDates);
@@ -484,17 +609,14 @@ class CronDataSyncService {
       ]);
       
       await this._updateSyncMetadata(jobType, {
-        recordsProcessed: { 
-            orders: orders.length, 
-            invoices: invoices.length, 
-            purchaseOrders: purchaseOrders.length, 
-            customers: customers.length,
-            items: items.length,
-            affectedDates: affectedDates.length
-        }
+        recordsProcessed: stats,
+        affectedDates: affectedDates.length
       }, syncTimestamp);
       
       console.log(`✅ Low frequency sync completed.`);
+      Object.entries(stats).forEach(([type, stat]) => {
+        console.log(`   ${type}: ${stat.new} new, ${stat.updated} updated, ${stat.unchanged} unchanged`);
+      });
       
     } catch (error) {
       console.error('❌ Low frequency sync failed:', error);
