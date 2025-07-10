@@ -65,6 +65,17 @@ class DailyDashboardAggregator {
 
         console.log(`📊 Calculating aggregates for ${startOfDay.toDateString()}`);
 
+        // 1. Calculate overall daily aggregate
+        await this.calculateOverallDailyAggregate(startOfDay, endOfDay);
+        
+        // 2. Calculate agent-specific aggregates
+        await this.calculateAgentDailyAggregates(startOfDay, endOfDay);
+    }
+    
+    /**
+     * Calculate overall daily aggregate for brand managers
+     */
+    async calculateOverallDailyAggregate(startOfDay, endOfDay) {
         // Fetch all data for this day
         const [ordersSnapshot, invoicesSnapshot] = await Promise.all([
             this.db.collection('sales_orders')
@@ -203,6 +214,130 @@ class DailyDashboardAggregator {
         await this.db.collection('daily_aggregates').doc(docId).set(dailyMetrics);
 
         return dailyMetrics;
+    }
+    
+    /**
+     * Calculate agent-specific daily aggregates
+     */
+    async calculateAgentDailyAggregates(startOfDay, endOfDay) {
+        console.log('📊 Calculating agent-specific aggregates...');
+        
+        const dateStr = startOfDay.toISOString().split('T')[0];
+        const agentsSnapshot = await this.db.collection('sales_agents').get();
+
+        // Process each agent in parallel (with concurrency limit)
+        const batchSize = 5; // Process 5 agents at a time
+        const agents = agentsSnapshot.docs;
+        
+        for (let i = 0; i < agents.length; i += batchSize) {
+            const batch = agents.slice(i, i + batchSize);
+            
+            await Promise.all(batch.map(async (agentDoc) => {
+                const agentId = agentDoc.id;
+                const agentData = agentDoc.data();
+                
+                try {
+                    // Query agent's orders from subcollection
+                    const ordersSnapshot = await this.db
+                        .collection('sales_agents')
+                        .doc(agentId)
+                        .collection('customers_orders')
+                        .where('order_date', '>=', dateStr)
+                        .where('order_date', '<=', dateStr + 'T23:59:59')
+                        .get();
+
+                    if (ordersSnapshot.empty) {
+                        // No orders for this day - still save empty aggregate
+                        await this.saveAgentDailyAggregate(agentId, dateStr, {
+                            date: dateStr,
+                            timestamp: Timestamp.fromDate(startOfDay),
+                            agentId: agentId,
+                            agentName: agentData.name || 'Unknown',
+                            totalOrders: 0,
+                            totalRevenue: 0,
+                            commission: 0,
+                            uniqueCustomers: 0,
+                            customers: {},
+                            topItems: [],
+                            orderIds: []
+                        });
+                        return;
+                    }
+
+                    // Process agent's orders
+                    const orders = ordersSnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Calculate agent metrics
+                    const agentMetrics = {
+                        date: dateStr,
+                        timestamp: Timestamp.fromDate(startOfDay),
+                        agentId: agentId,
+                        agentName: agentData.name || 'Unknown',
+                        
+                        // Order metrics
+                        totalOrders: orders.length,
+                        totalRevenue: orders.reduce((sum, o) => sum + (o.total || 0), 0),
+                        
+                        // Customer breakdown
+                        customers: {},
+                        
+                        // Item breakdown (will need to fetch from main orders)
+                        topItems: [],
+                        
+                        // Commission
+                        commission: 0,
+                        
+                        // Order IDs for reference
+                        orderIds: orders.map(o => o.sales_order_id || o.id)
+                    };
+
+                    // Calculate commission (5% default)
+                    agentMetrics.commission = agentMetrics.totalRevenue * 0.05;
+
+                    // Process customers
+                    const customerMap = new Map();
+                    orders.forEach(order => {
+                        const customerId = order.customer_name || 'Unknown';
+                        if (!customerMap.has(customerId)) {
+                            customerMap.set(customerId, {
+                                name: customerId,
+                                orders: 0,
+                                revenue: 0
+                            });
+                        }
+                        const customer = customerMap.get(customerId);
+                        customer.orders += 1;
+                        customer.revenue += order.total || 0;
+                    });
+
+                    agentMetrics.customers = Object.fromEntries(customerMap);
+                    agentMetrics.uniqueCustomers = customerMap.size;
+
+                    // Save agent's daily aggregate
+                    await this.saveAgentDailyAggregate(agentId, dateStr, agentMetrics);
+                    
+                    console.log(`✅ Agent ${agentData.name}: ${orders.length} orders, £${agentMetrics.totalRevenue}`);
+                    
+                } catch (error) {
+                    console.error(`❌ Error processing agent ${agentId}:`, error);
+                }
+            }));
+        }
+    }
+    
+    /**
+     * Save agent's daily aggregate
+     */
+    async saveAgentDailyAggregate(agentId, dateStr, metrics) {
+        await this.db
+            .collection('sales_agents')
+            .doc(agentId)
+            .collection('daily_aggregates')
+            .doc(dateStr)
+            .set(metrics);
     }
 
     /**
@@ -430,6 +565,154 @@ class DailyDashboardAggregator {
         const today = new Date();
         console.log(`🚀 Updating today's partial data for ${today.toDateString()}`);
         await this.calculateDailyAggregate(today);
+    }
+    
+    /**
+     * Get agent dashboard by combining their daily aggregates
+     */
+    async getAgentDashboard(agentId, dateRange) {
+        const { startDate, endDate } = this.getDateRangeFromKey(dateRange);
+        
+        // Get agent info
+        const agentDoc = await this.db.collection('sales_agents').doc(agentId).get();
+        if (!agentDoc.exists) throw new Error('Agent not found');
+        
+        const agentData = agentDoc.data();
+        
+        // Get date range for query
+        const startStr = startDate.toISOString().split('T')[0];
+        const endStr = endDate.toISOString().split('T')[0];
+        
+        // Check for missing dates and calculate if needed
+        const missingDates = await this.findMissingAgentDates(agentId, startDate, endDate);
+        if (missingDates.length > 0) {
+            console.log(`⚠️ Missing ${missingDates.length} days of agent aggregates, calculating...`);
+            for (const date of missingDates) {
+                await this.calculateAgentDailyAggregates(new Date(date), new Date(date));
+            }
+        }
+        
+        // Fetch agent's daily aggregates
+        const aggregatesSnapshot = await this.db
+            .collection('sales_agents')
+            .doc(agentId)
+            .collection('daily_aggregates')
+            .where('date', '>=', startStr)
+            .where('date', '<=', endStr)
+            .orderBy('date', 'asc')
+            .get();
+        
+        // Combine daily data
+        const combined = {
+            agentId,
+            agentName: agentData.name,
+            dateRange: { start: startStr, end: endStr },
+            role: 'salesAgent',
+            metrics: {
+                totalRevenue: 0,
+                totalOrders: 0,
+                totalCommission: 0,
+                uniqueCustomers: new Set(),
+                activeDays: 0,
+                averageOrderValue: 0,
+                totalCustomers: 0
+            },
+            dailyBreakdown: [],
+            topCustomers: {},
+            topItems: {},
+            commission: {
+                total: 0,
+                rate: 0.05
+            }
+        };
+        
+        // Process each day's data
+        aggregatesSnapshot.docs.forEach(doc => {
+            const daily = doc.data();
+            
+            combined.metrics.totalRevenue += daily.totalRevenue || 0;
+            combined.metrics.totalOrders += daily.totalOrders || 0;
+            combined.metrics.totalCommission += daily.commission || 0;
+            
+            if (daily.totalOrders > 0) {
+                combined.metrics.activeDays += 1;
+            }
+            
+            // Combine customers
+            Object.entries(daily.customers || {}).forEach(([name, data]) => {
+                if (!combined.topCustomers[name]) {
+                    combined.topCustomers[name] = { name, orders: 0, revenue: 0 };
+                }
+                combined.topCustomers[name].orders += data.orders;
+                combined.topCustomers[name].revenue += data.revenue;
+                combined.metrics.uniqueCustomers.add(name);
+            });
+            
+            // Add to daily breakdown
+            combined.dailyBreakdown.push({
+                date: daily.date,
+                revenue: daily.totalRevenue,
+                orders: daily.totalOrders,
+                customers: daily.uniqueCustomers || 0,
+                commission: daily.commission
+            });
+        });
+        
+        // Finalize metrics
+        combined.metrics.uniqueCustomers = combined.metrics.uniqueCustomers.size;
+        combined.metrics.totalCustomers = combined.metrics.uniqueCustomers;
+        combined.metrics.averageOrderValue = combined.metrics.totalOrders > 0
+            ? combined.metrics.totalRevenue / combined.metrics.totalOrders
+            : 0;
+        
+        combined.commission.total = combined.metrics.totalCommission;
+        
+        // Convert to arrays and sort
+        combined.topCustomers = Object.values(combined.topCustomers)
+            .sort((a, b) => b.revenue - a.revenue)
+            .slice(0, 20)
+            .map(c => ({
+                id: c.name,
+                name: c.name,
+                total_spent: c.revenue,
+                order_count: c.orders
+            }));
+        
+        // Format performance data
+        combined.performance = {
+            top_customers: combined.topCustomers,
+            top_items: [], // Items would need to be fetched separately
+            brands: []
+        };
+        
+        return combined;
+    }
+    
+    /**
+     * Find missing dates in agent's daily aggregates
+     */
+    async findMissingAgentDates(agentId, startDate, endDate) {
+        const dates = [];
+        const current = new Date(startDate);
+        
+        while (current <= endDate) {
+            dates.push(current.toISOString().split('T')[0]);
+            current.setDate(current.getDate() + 1);
+        }
+
+        // Check which dates we have for this agent
+        const existingSnapshot = await this.db
+            .collection('sales_agents')
+            .doc(agentId)
+            .collection('daily_aggregates')
+            .where('date', '>=', dates[0])
+            .where('date', '<=', dates[dates.length - 1])
+            .select('date')
+            .get();
+
+        const existingDates = new Set(existingSnapshot.docs.map(doc => doc.data().date));
+        
+        return dates.filter(date => !existingDates.has(date));
     }
 }
 

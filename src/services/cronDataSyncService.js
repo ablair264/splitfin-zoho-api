@@ -3,15 +3,20 @@
 // All dashboard-specific calculations have been moved to dashboardAggregator.js.
 
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
-import zohoInventoryService from './zohoInventoryService.js'; // Assuming this handles Zoho API calls
-import DailyDashboardAggregator from './dailyDashboardAggregator.js'; // Assuming this is your new aggregator
+import zohoInventoryService from './zohoInventoryService.js';
+import zohoReportsService from './zohoReportsService.js';
+import DailyDashboardAggregator from './dailyDashboardAggregator.js';
+import OrdersAggregator from './ordersAggregator.js';
+import PurchaseOrdersAggregator from './purchaseOrdersAggregator.js';
 
 const db = getFirestore();
 
 class CronDataSyncService {
   constructor() {
     this.isRunning = new Map();
-    this.aggregator = new DailyDashboardAggregator();
+    this.dashboardAggregator = new DailyDashboardAggregator();
+    this.ordersAggregator = new OrdersAggregator();
+    this.purchaseOrdersAggregator = new PurchaseOrdersAggregator();
   }
 
   /**
@@ -194,7 +199,11 @@ class CronDataSyncService {
     
     for (const dateStr of affectedDates) {
       try {
-        await this.aggregator.calculateDailyAggregate(new Date(dateStr));
+        await Promise.all([
+          this.dashboardAggregator.calculateDailyAggregate(new Date(dateStr)),
+          this.ordersAggregator.calculateDailyOrderAggregate(new Date(dateStr)),
+          this.purchaseOrdersAggregator.calculateDailyPurchaseOrderAggregate(new Date(dateStr))
+        ]);
       } catch (error) {
         console.error(`Failed to update aggregate for ${dateStr}:`, error);
       }
@@ -221,8 +230,8 @@ class CronDataSyncService {
       
       console.log(`Syncing changes since: ${lastSync.toISOString()}`);
       
-      const newOrders = await zohoInventoryService.getSalesOrders({ modified_since: lastSync.toISOString() });
-      const newInvoices = await zohoInventoryService.getInvoices({ modified_since: lastSync.toISOString() });
+      const newOrders = await zohoInventoryService.getSalesOrders('30_days');
+      const newInvoices = await zohoReportsService.getInvoices('30_days');
       
       if (newOrders.length > 0) {
         await this._batchWrite('sales_orders', newOrders, 'salesorder_id');
@@ -276,8 +285,8 @@ class CronDataSyncService {
       console.log(`Syncing changes since: ${lastSync.toISOString()}`);
       
       const [newOrders, newInvoices] = await Promise.all([
-        zohoInventoryService.getSalesOrders({ modified_since: lastSync.toISOString() }),
-        zohoInventoryService.getInvoices({ modified_since: lastSync.toISOString() })
+        zohoInventoryService.getSalesOrders('30_days'),
+        zohoReportsService.getInvoices('30_days')
       ]);
       
       if (newOrders.length > 0) {
@@ -328,11 +337,11 @@ class CronDataSyncService {
       console.log(`Syncing all data modified since ${lastSync.toISOString()}`);
 
       const [orders, invoices, purchaseOrders, customers, items] = await Promise.all([
-        zohoInventoryService.getSalesOrders({ modified_since: lastSync.toISOString() }),
-        zohoInventoryService.getInvoices({ modified_since: lastSync.toISOString() }),
-        zohoInventoryService.getPurchaseOrders({ modified_since: lastSync.toISOString() }),
-        zohoInventoryService.getCustomers({ modified_since: lastSync.toISOString() }),
-        zohoInventoryService.getItems({ modified_since: lastSync.toISOString() })
+        zohoInventoryService.getSalesOrders('30_days'),
+        zohoReportsService.getInvoices('30_days'),
+        zohoInventoryService.getPurchaseOrders('30_days'),
+        zohoReportsService.getCustomers('all'),
+        zohoReportsService.getItems()
       ]);
 
       if (orders.length > 0) {
@@ -348,7 +357,11 @@ class CronDataSyncService {
       await this._updateDailyAggregates(affectedDates);
       
       console.log('📊 Running full daily aggregation...');
-      await this.aggregator.runDailyAggregation();
+      await Promise.all([
+        this.dashboardAggregator.runDailyAggregation(),
+        this.ordersAggregator.runDailyAggregation(),
+        this.purchaseOrdersAggregator.runDailyAggregation()
+      ]);
       
       await this._updateSyncMetadata(jobType, {
         recordsProcessed: { 

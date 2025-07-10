@@ -204,6 +204,114 @@ class FirebaseDataService:
         print(f"📊 Orders successfully updated from Zoho: {updated_count}")
         print(f"📊 Orders with errors/not found: {errors_count}")
 
+    def assign_customers_to_sales_agents(self):
+        """
+        Assigns customers to sales agents by creating an 'assigned_customers' subcollection
+        under each agent based on the 'sales_agent_id' field in customer records.
+        """
+        print("\n--- Starting Customer Assignment to Sales Agents ---")
+        customers_ref = self.db.collection('customers')
+        agents_ref = self.db.collection('sales_agents')
+        
+        # First, clear existing assigned_customers subcollections (optional)
+        print("🧹 Clearing existing assigned_customers subcollections...")
+        agent_docs = list(agents_ref.stream())
+        for agent_doc in agent_docs:
+            assigned_customers_ref = agent_doc.reference.collection('assigned_customers')
+            # Delete all documents in the subcollection
+            for doc in assigned_customers_ref.stream():
+                doc.reference.delete()
+        
+        # Get all customers
+        all_customers = list(customers_ref.stream())
+        total_customers = len(all_customers)
+        print(f"Found {total_customers} customers in Firestore to process.")
+
+        processed_count = 0
+        assigned_count = 0
+        skipped_count = 0
+        errors_count = 0
+
+        # Process customers in batches
+        batch_size = 500
+        batch = self.db.batch()
+        batch_counter = 0
+
+        for customer_doc in all_customers:
+            processed_count += 1
+            print(f"\n🔄 Processing customer {processed_count}/{total_customers} (ID: {customer_doc.id})")
+            customer_data = customer_doc.to_dict()
+            
+            # Check if customer has a sales_agent_id
+            sales_agent_id = customer_data.get('sales_agent_id')
+            
+            if not sales_agent_id:
+                print(f"   - ⚠️ Skipping: No sales_agent_id found for customer {customer_doc.id}.")
+                skipped_count += 1
+                continue
+
+            # Find the sales agent by sales_agent_id
+            print(f"   - 🔍 Looking for sales agent with ID: {sales_agent_id}")
+            
+            # First try to find by document ID
+            agent_ref = agents_ref.document(sales_agent_id)
+            agent_doc = agent_ref.get()
+            
+            if not agent_doc.exists:
+                # If not found by ID, try by zohospID field
+                agent_query = agents_ref.where('zohospID', '==', sales_agent_id).limit(1).stream()
+                agent_docs = list(agent_query)
+                
+                if not agent_docs:
+                    print(f"   - ❌ Error: Sales agent not found for ID {sales_agent_id}.")
+                    errors_count += 1
+                    continue
+                
+                agent_ref = agent_docs[0].reference
+                agent_data = agent_docs[0].to_dict()
+                agent_name = agent_data.get('name', 'Unknown Agent')
+            else:
+                agent_data = agent_doc.to_dict()
+                agent_name = agent_data.get('name', 'Unknown Agent')
+
+            # Create customer summary for the assigned_customers subcollection
+            assigned_customer_ref = agent_ref.collection('assigned_customers').document(customer_doc.id)
+            customer_summary = {
+                'customer_id': customer_doc.id,
+                'customer_name': customer_data.get('customer_name', ''),
+                'company_name': customer_data.get('company_name', ''),
+                'email': customer_data.get('email', ''),
+                'phone': customer_data.get('phone', ''),
+                'city': customer_data.get('city') or customer_data.get('billing_address', {}).get('city', ''),
+                'postcode': customer_data.get('postcode') or customer_data.get('billing_address', {}).get('postcode', ''),
+                'customer_type': customer_data.get('customer_type', ''),
+                'credit_limit': customer_data.get('credit_limit', 0),
+                'payment_terms': customer_data.get('payment_terms', ''),
+                '_assigned_at': firestore.SERVER_TIMESTAMP
+            }
+            
+            batch.set(assigned_customer_ref, customer_summary)
+            batch_counter += 1
+            assigned_count += 1
+            
+            print(f"   - ✅ Queued assignment to Sales Agent: {agent_name}")
+            
+            # Commit batch when it reaches the size limit
+            if batch_counter >= batch_size:
+                self._batch_commit(batch, f"Batch of {batch_counter} customer assignments")
+                batch = self.db.batch()
+                batch_counter = 0
+
+        # Commit any remaining operations
+        if batch_counter > 0:
+            self._batch_commit(batch, f"Final batch of {batch_counter} customer assignments")
+
+        print("\n--- ✅ Customer Assignment Complete ---")
+        print(f"📊 Total customers processed: {processed_count}")
+        print(f"📊 Customers successfully assigned: {assigned_count}")
+        print(f"📊 Customers skipped (no agent ID): {skipped_count}")
+        print(f"📊 Customers with errors: {errors_count}")
+
 def main():
     """Main function to run the data service tasks."""
     try:
@@ -214,12 +322,20 @@ def main():
         print("\nStarting Firestore data migration and restructuring script.")
         print("Please select an operation to perform:")
         print("1. Refresh & Restructure Sales Orders from Zoho")
+        print("2. Assign Customers to Sales Agents")
+        print("3. Run Both Operations")
         print("0. Exit")
 
         choice = input("Enter your choice: ")
 
         if choice == '1':
             service.refresh_and_restructure_sales_orders()
+        elif choice == '2':
+            service.assign_customers_to_sales_agents()
+        elif choice == '3':
+            service.refresh_and_restructure_sales_orders()
+            print("\n" + "="*50 + "\n")
+            service.assign_customers_to_sales_agents()
         elif choice == '0':
             print("Exiting script.")
         else:

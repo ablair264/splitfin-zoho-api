@@ -1,4 +1,10 @@
-// dashboardController.js - API endpoint for dashboard data
+import {
+  analyzeCrossSelling,
+  analyzeBrandCannibalization,
+  analyzeGeographicPerformance,
+  predictCustomerLifetimeValue
+} from './dmBrandsAdvancedAnalytics.js';
+
 import DailyDashboardAggregator from './dailyDashboardAggregator.js';
 import { getFirestore } from 'firebase-admin/firestore';
 
@@ -7,7 +13,7 @@ const db = getFirestore();
 class DashboardController {
   constructor() {
     this.aggregator = new DailyDashboardAggregator();
-    this.cache = new Map(); // Simple in-memory cache
+    this.cache = new Map();
   }
 
   /**
@@ -22,7 +28,7 @@ class DashboardController {
       }
 
       // Generate cache key
-      const cacheKey = `${userId}-${dateRange}-${JSON.stringify(customDateRange || {})}`;
+      const cacheKey = `${userId}-${userRole}-${dateRange}-${JSON.stringify(customDateRange || {})}`;
       
       // Check cache (5 minute TTL)
       const cached = this.cache.get(cacheKey);
@@ -30,31 +36,48 @@ class DashboardController {
         return res.json({ data: cached.data, cached: true });
       }
 
-      // Get date range
       let dashboardData;
       
-      if (dateRange === 'custom' && customDateRange) {
-        // Custom date range
-        const startDate = new Date(customDateRange.start);
-        const endDate = new Date(customDateRange.end);
-        
-        dashboardData = await this.aggregator.getDashboardData(
-          'custom',
-          startDate,
-          endDate
-        );
-      } else {
-        // Predefined date range
-        dashboardData = await this.aggregator.getDashboardData(dateRange);
-      }
-
-      // For agents, filter data to only their information
+      // Handle sales agents differently - use their specific aggregates
       if (userRole === 'salesAgent') {
-        dashboardData = await this.filterForAgent(dashboardData, userId);
+        // Get agent ID from user document
+        const agentQuery = await db.collection('sales_agents')
+          .where('uid', '==', userId)
+          .limit(1)
+          .get();
+          
+        if (agentQuery.empty) {
+          return res.status(404).json({ error: 'Agent profile not found' });
+        }
+        
+        const agentId = agentQuery.docs[0].id;
+        
+        // Get agent-specific dashboard using their daily aggregates
+        dashboardData = await this.aggregator.getAgentDashboard(agentId, dateRange);
+        
+        // Enhance with real-time invoice data
+        dashboardData = await this.enhanceAgentDashboard(dashboardData, agentId);
+        
+      } else {
+        // Brand managers get the full aggregated view
+        if (dateRange === 'custom' && customDateRange) {
+          // Custom date range
+          const startDate = new Date(customDateRange.start);
+          const endDate = new Date(customDateRange.end);
+          
+          dashboardData = await this.aggregator.getDashboardData(
+            'custom',
+            startDate,
+            endDate
+          );
+        } else {
+          // Predefined date range
+          dashboardData = await this.aggregator.getDashboardData(dateRange);
+        }
+        
+        // Enhance with additional real-time data
+        dashboardData = await this.enhanceWithRealtimeData(dashboardData, userRole);
       }
-
-      // Enhance with additional real-time data if needed
-      dashboardData = await this.enhanceWithRealtimeData(dashboardData, userRole);
 
       // Cache the result
       this.cache.set(cacheKey, {
@@ -67,6 +90,39 @@ class DashboardController {
     } catch (error) {
       console.error('Dashboard data error:', error);
       res.status(500).json({ error: 'Failed to fetch dashboard data' });
+    }
+  }
+
+ async getForecast(req, res) {
+    try {
+      const { dashboardData } = req.body;
+
+      if (!dashboardData) {
+        return res.status(400).json({ error: 'Dashboard data is required for forecasting.' });
+      }
+
+      // Run multiple analyses in parallel for a comprehensive forecast
+      const [crossSell, cannibalization, geo, clv] = await Promise.all([
+        analyzeCrossSelling(dashboardData.orders || [], dashboardData.topItems || []),
+        analyzeBrandCannibalization(dashboardData.topBrands || [], {}),
+        analyzeGeographicPerformance(dashboardData.topAgents || [], {}, {}),
+        predictCustomerLifetimeValue(dashboardData.topCustomers || [], {})
+      ]);
+
+      // Combine results into a single forecast object
+      const forecast = {
+        crossSell,
+        cannibalization,
+        geo,
+        clv,
+        overview: `Comprehensive analysis complete. Key insights found in brand synergies, customer lifetime value, and geographic performance.`
+      };
+
+      res.json({ data: forecast });
+
+    } catch (error) {
+      console.error('Forecast generation error:', error);
+      res.status(500).json({ error: 'Failed to generate forecast data' });
     }
   }
 
@@ -154,6 +210,83 @@ class DashboardController {
     };
   }
 
+  /**
+   * Enhance agent dashboard with real-time data
+   */
+  async enhanceAgentDashboard(dashboardData, agentId) {
+    // Get agent's assigned customers for invoice filtering
+    const assignedCustomersSnapshot = await db
+      .collection('sales_agents')
+      .doc(agentId)
+      .collection('assigned_customers')
+      .get();
+    
+    const customerIds = assignedCustomersSnapshot.docs.map(doc => doc.data().customer_id);
+    
+    if (customerIds.length === 0) {
+      // No assigned customers, no invoices
+      dashboardData.invoices = {
+        outstanding: [],
+        overdue: [],
+        paid: [],
+        summary: {
+          totalOutstanding: 0,
+          totalOverdue: 0,
+          outstandingCount: 0,
+          overdueCount: 0
+        }
+      };
+      return dashboardData;
+    }
+    
+    // Batch query invoices for agent's customers
+    const now = new Date();
+    const invoices = [];
+    
+    // Firestore 'in' query limit is 10
+    for (let i = 0; i < customerIds.length; i += 10) {
+      const batch = customerIds.slice(i, i + 10);
+      const invoicesSnapshot = await db.collection('invoices')
+        .where('customer_id', 'in', batch)
+        .where('date', '>=', dashboardData.dateRange.start)
+        .where('date', '<=', dashboardData.dateRange.end)
+        .get();
+      
+      invoices.push(...invoicesSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })));
+    }
+    
+    // Categorize invoices
+    const outstandingInvoices = invoices.filter(i => i.status !== 'paid' && i.status !== 'void');
+    const overdueInvoices = outstandingInvoices.filter(i => {
+      const dueDate = new Date(i.due_date);
+      return dueDate < now;
+    });
+    const paidInvoices = invoices.filter(i => i.status === 'paid');
+    
+    dashboardData.invoices = {
+      outstanding: outstandingInvoices,
+      overdue: overdueInvoices,
+      paid: paidInvoices,
+      summary: {
+        totalOutstanding: outstandingInvoices.reduce((sum, inv) => sum + (inv.balance || 0), 0),
+        totalOverdue: overdueInvoices.reduce((sum, inv) => sum + (inv.balance || 0), 0),
+        outstandingCount: outstandingInvoices.length,
+        overdueCount: overdueInvoices.length
+      }
+    };
+    
+    // Add invoice metrics to main metrics
+    dashboardData.metrics = {
+      ...dashboardData.metrics,
+      ...dashboardData.invoices.summary
+    };
+    
+    return dashboardData;
+  }
+  
   /**
    * Enhance with real-time data (invoices, etc.)
    */
