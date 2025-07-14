@@ -162,7 +162,7 @@ const [
   productsSnapshot  // This now fetches from 'items' collection
 ] = await Promise.all([
   // Get sales orders - filter by date
-  this.db.collection('salesorders')
+  this.db.collection('sales_orders')
     .where('date', '>=', startISO.split('T')[0])
     .where('date', '<=', endISO.split('T')[0])
     .orderBy('date', 'desc')
@@ -183,7 +183,7 @@ const [
     .get(),
 
   // Get products for brand info - CHANGED TO 'items' COLLECTION
-  this.db.collection('items').get()  // Changed from 'products' to 'items'
+  this.db.collection('items_data').get()  // Changed from 'products' to 'items'
 ]);
 
 // Create product map for brand lookups
@@ -238,14 +238,14 @@ const orders = ordersSnapshot.docs.map(doc => {
         customer_id: data.customer_id,
         customer_name: data.customer_name,
         company_name: data.company_name,
-        total_spent: parseFloat(data.total_spent || 0),
-        order_count: data.order_count || 0,
-        average_order_value: parseFloat(data.average_order_value || 0),
+        total_spent: parseFloat(data.metrics?.total_spent || 0),
+        order_count: data.metrics?.order_count || 0,
+        average_order_value: parseFloat(data.metrics?.average_order_value || 0),
         segment: data.segment,
         status: data.status,
-        city: data.city,
-        country: data.country,
-        last_order_date: data.last_order_date
+        city: data.billing_address?.city,
+        country: data.billing_address?.country,
+        last_order_date: data.metrics?.last_order_date
       };
     });
 
@@ -376,7 +376,7 @@ const orders = ordersSnapshot.docs.map(doc => {
   productsSnapshot
 ] = await Promise.all([
   // Get orders for this specific agent using salesperson_id
-  this.db.collection('salesorders')
+  this.db.collection('sales_orders')
     .where('salesperson_id', '==', zohospID)
     .where('date', '>=', startISO.split('T')[0])
     .where('date', '<=', endISO.split('T')[0])
@@ -390,7 +390,7 @@ const orders = ordersSnapshot.docs.map(doc => {
     .get(),
 
   // Get products for brand info - CHANGED TO 'items' COLLECTION
-  this.db.collection('items').get()  // Changed from 'products' to 'items'
+  this.db.collection('items_data').get()  // Changed from 'products' to 'items'
 ]);
 
 // Create product map
@@ -398,8 +398,8 @@ const productMap = new Map();
 productsSnapshot.docs.forEach(doc => {
   const product = doc.data();
   productMap.set(doc.id, {
-    brand: product.Manufacturer || product.manufacturer || 'Unknown',
-    name: product.name || product.item_name,
+    brand: product.normalizedManufacturer || product.manufacturer || 'Unknown',
+    name: product.item_name,
     sku: product.sku
   });
 });
@@ -557,7 +557,7 @@ productsSnapshot.docs.forEach(doc => {
       // Fetch LIMITED data with strict limits
       const LIMIT = 50;
       
-      let ordersQuery = this.db.collection('salesorders')
+      let ordersQuery = this.db.collection('sales_orders')
         .orderBy('date', 'desc')
         .limit(LIMIT);
       
@@ -980,10 +980,10 @@ productsSnapshot.docs.forEach(doc => {
   async healthCheck() {
     try {
       const checks = await Promise.all([
-        this.db.collection('salesorders').limit(1).get(),
-        this.db.collection('customer_data').limit(1).get(),
-        this.db.collection('products').limit(1).get(),
-        this.db.collection('purchaseorders').limit(1).get(),
+        this.db.collection('sales_orders').limit(1).get(),
+        this.db.collection('customers').limit(1).get(),
+        this.db.collection('items_data').limit(1).get(),
+        this.db.collection('purchase_orders').limit(1).get(),
         this.db.collection('invoices').limit(1).get()
       ]);
 

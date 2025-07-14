@@ -270,7 +270,7 @@ class ZohoInventoryService {
           _synced_at: admin.firestore.FieldValue.serverTimestamp()
         };
         
-        const docRef = this.db.collection('items').doc(zohoProduct.item_id);
+        const docRef = this.db.collection('items_data').doc(zohoProduct.item_id);
         batch.set(docRef, firebaseProduct, { merge: true });
         count++;
         
@@ -357,7 +357,7 @@ class ZohoInventoryService {
     };
     
     // Get all current items from Firebase
-    const firebaseItemsSnapshot = await this.db.collection('items').get();
+    const firebaseItemsSnapshot = await   'items_data').get();
     const firebaseItemsMap = new Map();
     
     firebaseItemsSnapshot.forEach(doc => {
@@ -448,7 +448,7 @@ class ZohoInventoryService {
       }
       
       // Add to batch
-      const docRef = this.db.collection('items').doc(zohoProduct.item_id);
+      const docRef = this.db.collection('items_data').doc(zohoProduct.item_id);
       batch.set(docRef, updatedProduct, { merge: true });
       batchCount++;
       
@@ -487,7 +487,7 @@ class ZohoInventoryService {
       
       for (const item of missingInZoho) {
         console.log(`   Marking as inactive: ${item.name} (${item.sku})`);
-        const docRef = this.db.collection('items').doc(item.item_id);
+        const docRef = this.db.collection('items_data').doc(item.item_id);
         batch.update(docRef, {
           status: 'inactive',
           _deactivated_reason: 'Not found in Zoho Inventory',

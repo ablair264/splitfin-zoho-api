@@ -341,7 +341,7 @@ async function fetchSalesTransactions(db, brandId, sinceDate) {
 }
 
 async function fetchSalesOrders(db, brandName, sinceDate) {
-  const snapshot = await db.collection('salesorders')
+  const snapshot = await db.collection('sales_orders')
     .where('date', '>=', sinceDate.toISOString().split('T')[0])
     .orderBy('date', 'desc')
     .limit(500)
@@ -359,7 +359,7 @@ async function fetchSalesOrders(db, brandName, sinceDate) {
 }
 
 async function fetchCustomerData(db, sinceDate) {
-  const snapshot = await db.collection('customer_data')
+  const snapshot = await db.collection('customers')
     .where('last_order_date', '>=', sinceDate.toISOString().split('T')[0])
     .limit(500)
     .get();
@@ -387,7 +387,7 @@ async function fetchPurchaseOrders(db, brandId) {
   
   if (!vendorId) return [];
   
-  const snapshot = await db.collection('purchaseorders')
+  const snapshot = await db.collection('purchase_orders')
     .where('vendor_id', '==', vendorId)
     .orderBy('date', 'desc')
     .limit(50)
