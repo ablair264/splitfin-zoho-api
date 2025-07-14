@@ -1,16 +1,24 @@
 // src/services/cronDataSyncService.js
-// Cleaned up version with proper incremental syncing and brand handling
+// Cleaned up version with proper incremental syncing, brand handling, and API throttling
 
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 import productSyncService from './productSyncService.js';
-import zohoInventoryService from './zohoInventoryService.js'; // ← ADD THIS LINE
+import zohoInventoryService from './zohoInventoryService.js';
 
 class CronDataSyncService {
   constructor() {
     this.isRunning = new Map();
     this.lastSync = {};
+    
+    // API Rate Limiting Configuration
+    this.rateLimiter = {
+      maxRequestsPerMinute: 100, // Zoho's typical limit
+      requestQueue: [],
+      lastRequestTime: 0,
+      minDelayBetweenRequests: 600 // 600ms between requests = ~100 requests/minute
+    };
     
     // Brand mappings for sales transactions
     this.brandMappings = {
@@ -29,6 +37,33 @@ class CronDataSyncService {
       'gefu': { display: 'GEFU', normalized: 'gefu' },
       'elvang': { display: 'Elvang', normalized: 'elvang' }
     };
+  }
+  
+  /**
+   * Rate-limited API call wrapper
+   */
+  async throttledApiCall(apiFunction, ...args) {
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.rateLimiter.lastRequestTime;
+    
+    if (timeSinceLastRequest < this.rateLimiter.minDelayBetweenRequests) {
+      const delay = this.rateLimiter.minDelayBetweenRequests - timeSinceLastRequest;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    
+    this.rateLimiter.lastRequestTime = Date.now();
+    
+    try {
+      return await apiFunction(...args);
+    } catch (error) {
+      // Check if it's a rate limit error
+      if (error.message?.includes('rate limit') || error.code === 429) {
+        console.log('⚠️ Rate limit hit, waiting 60 seconds...');
+        await new Promise(resolve => setTimeout(resolve, 60000)); // Wait 1 minute
+        return await apiFunction(...args); // Retry once
+      }
+      throw error;
+    }
   }
   
   /**
@@ -105,7 +140,7 @@ class CronDataSyncService {
   
   for (let i = 0; i < itemIdsArray.length; i += 10) {
     const batch = itemIdsArray.slice(i, i + 10);
-    const itemsSnapshot = await db.collection('items')
+    const itemsSnapshot = await db.collection('items_data')
       .where('item_id', 'in', batch)
       .get();
     
@@ -172,7 +207,7 @@ async updateBrandBackorders() {
     console.log('📦 Calculating brand backorders from purchase orders...');
     
     // Get all purchase orders (not just pending ones, since we need to check received quantities)
-    const poSnapshot = await db.collection('purchaseorders').get();
+    const poSnapshot = await db.collection('purchase_orders').get();
     
     // Calculate backorders by brand
     const backordersByBrand = new Map();
@@ -194,7 +229,7 @@ async updateBrandBackorders() {
           // Only process if there's actually a backorder
           if (backorderQuantity > 0) {
             // Get item info to find manufacturer
-            const itemDoc = await db.collection('items')
+            const itemDoc = await db.collection('items_data')
               .where('item_id', '==', item.item_id)
               .limit(1)
               .get();
@@ -396,7 +431,7 @@ async updateBrandStatistics(transactions, dateRange = '30_days') {
   try {
     // Brand mappings with Firebase document IDs
     const brandMappings = {
-      'rader': { id: '14gZGdIzCx4FXk688pFU', display: 'Räder', normalized: 'rader', variants: ['rader', 'räder', 'Rader', 'Räder'] },
+      'rader': { id: '14gZGdIzCx4FXk688pFU', display: 'Räder', normalized: 'rader', variants: ['rader', 'räder', 'Rader', 'Räder', 'rder'] },
       'relaxound': { id: 'EgCkp88aE2tBGuMJffeg', display: 'Relaxound', normalized: 'relaxound', variants: ['relaxound', 'Relaxound'] },
       'myflame': { id: 'RSIgBqXEEyvL5edkwBCh', display: 'My Flame', normalized: 'myflame', variants: ['my flame', 'My Flame', 'myflame', 'MyFlame'] },
       'blomus': { id: 'U3IP2jxNGYpae9WGkCQJ', display: 'Blomus', normalized: 'blomus', variants: ['blomus', 'Blomus'] },
@@ -610,7 +645,7 @@ async getActiveProductCounts() {
   try {
     // Brand name mappings for items collection
     const brandSearchTerms = {
-      'rader': ['Räder', 'Rader', 'räder', 'rader'],
+      'rader': ['Räder', 'Rader', 'räder', 'rader', 'rder'],
       'relaxound': ['Relaxound', 'relaxound'],
       'myflame': ['My Flame', 'my flame', 'MyFlame', 'myflame'],
       'blomus': ['Blomus', 'blomus'],
@@ -625,7 +660,7 @@ async getActiveProductCounts() {
       let activeCount = 0;
       
       for (const term of searchTerms) {
-        const snapshot = await db.collection('items')
+        const snapshot = await db.collection('items_data')
           .where('Manufacturer', '==', term)
           .where('status', '==', 'active')
           .get();
@@ -739,12 +774,12 @@ async highFrequencySync() {
   
   this.isRunning.set(jobType, true);
   const startTime = Date.now();
-  const db = admin.firestore(); // Add this
+  const db = admin.firestore();
   
   try {
     console.log('🚀 Starting high frequency sync...');
     
-    // Initialize counters - ONLY ONCE
+    // Initialize counters
     let orderCount = 0;
     let transactionCount = 0;
     let invoiceCount = 0;
@@ -755,8 +790,11 @@ async highFrequencySync() {
     
     console.log(`Syncing changes since: ${lastSync.toISOString()}`);
     
-    // Get recently modified orders (last hour)
-    const recentOrders = await zohoReportsService.getSalesOrders('today');
+    // Get recently modified orders (last hour) with throttling
+    const recentOrders = await this.throttledApiCall(
+      zohoReportsService.getSalesOrders.bind(zohoReportsService),
+      'today'
+    );
     
     // Filter orders modified after last sync
     const newOrders = recentOrders.filter(order => {
@@ -769,7 +807,7 @@ async highFrequencySync() {
       
       // Enrich orders with UIDs
       const enrichedOrders = await this.enrichOrdersWithUIDs(newOrders);
-      await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+      await this._batchWrite(db, 'sales_orders', enrichedOrders, 'salesorder_id');
       orderCount = enrichedOrders.length;
       
       // Process transactions
@@ -783,8 +821,11 @@ async highFrequencySync() {
       }
     }
     
-    // Get recent invoices
-    const recentInvoices = await zohoReportsService.getInvoices('today');
+    // Get recent invoices with throttling
+    const recentInvoices = await this.throttledApiCall(
+      zohoReportsService.getInvoices.bind(zohoReportsService),
+      'today'
+    );
     const invoiceData = Array.isArray(recentInvoices) ? recentInvoices : 
                        [...(recentInvoices.all || []), ...(recentInvoices.outstanding || [])];
     
@@ -829,9 +870,10 @@ async highFrequencySync() {
     this.isRunning.set(jobType, false);
   }
 }
+
   /**
    * MEDIUM FREQUENCY SYNC - Every 2 hours
-   * Catches any missed records from the last 24 hours
+   * Catches any missed records from the last 24 hours with proper throttling
    */
 async mediumFrequencySync() {
   const jobType = 'medium-frequency';
@@ -848,11 +890,18 @@ async mediumFrequencySync() {
   try {
     console.log('🔄 Starting medium frequency sync (last 24 hours)...');
     
-    // Get yesterday and today's data to catch any missed records
-    const [ordersToday, ordersYesterday] = await Promise.all([
-      zohoReportsService.getSalesOrders('today'),
-      zohoReportsService.getSalesOrders('yesterday')
-    ]);
+    // Use sequential API calls with throttling instead of Promise.all
+    console.log('📅 Fetching today\'s orders...');
+    const ordersToday = await this.throttledApiCall(
+      zohoReportsService.getSalesOrders.bind(zohoReportsService),
+      'today'
+    );
+    
+    console.log('📅 Fetching yesterday\'s orders...');
+    const ordersYesterday = await this.throttledApiCall(
+      zohoReportsService.getSalesOrders.bind(zohoReportsService),
+      'yesterday'
+    );
     
     const allOrders = [...ordersToday, ...ordersYesterday];
     
@@ -861,9 +910,11 @@ async mediumFrequencySync() {
       new Map(allOrders.map(order => [order.salesorder_id, order])).values()
     );
     
+    console.log(`📦 Processing ${uniqueOrders.length} unique orders...`);
+    
     if (uniqueOrders.length > 0) {
       const enrichedOrders = await this.enrichOrdersWithUIDs(uniqueOrders);
-      await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+      await this._batchWrite(db, 'sales_orders', enrichedOrders, 'salesorder_id');
       
       // Process transactions
       const transactions = await this.processSalesTransactions(enrichedOrders, db);
@@ -874,10 +925,14 @@ async mediumFrequencySync() {
         await this.updateBrandStatistics(transactions, '30_days');
       }
     }
-    // REMOVED the extra } and the enrichNormalizedOrdersWithLineItems call
     
-    // Sync invoices from last 24 hours
-    const invoicesResult = await zohoReportsService.getInvoices('7_days');
+    // Sync invoices from last 7 days with throttling
+    console.log('📄 Fetching recent invoices...');
+    const invoicesResult = await this.throttledApiCall(
+      zohoReportsService.getInvoices.bind(zohoReportsService),
+      '7_days'
+    );
+    
     const recentInvoices = [...(invoicesResult.all || []), ...(invoicesResult.outstanding || [])];
     
     // Filter to last 24 hours
@@ -886,15 +941,35 @@ async mediumFrequencySync() {
       new Date(inv.date) >= oneDayAgo
     );
     
+    console.log(`📄 Processing ${last24HourInvoices.length} invoices from last 24 hours...`);
+    
     if (last24HourInvoices.length > 0) {
       await this.syncAndNormalizeInvoices(last24HourInvoices);
+    }
+    
+    // Check for product updates with throttling
+    console.log('📦 Checking for product updates...');
+    let productSyncResult = { stats: { total: 0, updated: 0, new: 0, deactivated: 0 } };
+    
+    try {
+      // Add delay before product sync to avoid overwhelming API
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+      
+      productSyncResult = await this.throttledApiCall(
+        zohoInventoryService.syncProductsWithChangeDetection.bind(zohoInventoryService)
+      );
+      
+      console.log(`✅ Product sync: ${productSyncResult.stats.updated} updated, ${productSyncResult.stats.new} new`);
+    } catch (productError) {
+      console.error('⚠️ Product sync failed, but continuing with other syncs:', productError.message);
     }
     
     // Update metadata
     await this.updateSyncMetadata('medium_frequency', {
       recordsProcessed: {
         orders: uniqueOrders.length,
-        invoices: last24HourInvoices.length
+        invoices: last24HourInvoices.length,
+        products: productSyncResult.stats
       },
       duration: Date.now() - startTime
     });
@@ -902,27 +977,22 @@ async mediumFrequencySync() {
     const duration = Date.now() - startTime;
     console.log(`✅ Medium frequency sync completed in ${duration}ms`);
     
-    console.log('📦 Checking for product updates...');
-const productSyncResult = await zohoInventoryService.syncProductsWithChangeDetection();
-console.log(`✅ Product sync: ${productSyncResult.stats.updated} updated, ${productSyncResult.stats.new} new`);
-    
-return { 
-  success: true, 
-  duration,
-  recordsProcessed: {
-    orders: uniqueOrders.length,
-    invoices: last24HourInvoices.length,
-    products: {
-      total: productSyncResult.stats.total,
-      updated: productSyncResult.stats.updated,
-      new: productSyncResult.stats.new,
-      deactivated: productSyncResult.stats.deactivated
-    }
-  }
-};
+    return { 
+      success: true, 
+      duration,
+      recordsProcessed: {
+        orders: uniqueOrders.length,
+        invoices: last24HourInvoices.length,
+        products: productSyncResult.stats
+      }
+    };
     
   } catch (error) {
     console.error('❌ Medium frequency sync failed:', error);
+    
+    // Clear the running flag on error to prevent blocking
+    this.isRunning.set(jobType, false);
+    
     return { success: false, error: error.message };
   } finally {
     this.isRunning.set(jobType, false);
@@ -931,7 +1001,7 @@ return {
 
   /**
    * LOW FREQUENCY SYNC - Daily at 2 AM
-   * Comprehensive sync of last 7 days + cleanup
+   * Comprehensive sync of last 7 days + cleanup with throttling
    */
  async lowFrequencySync() {
   const jobType = 'low-frequency';
@@ -948,21 +1018,35 @@ return {
   try {
     console.log('🔄 Starting low frequency sync (weekly cleanup)...');
     
-    // Sync product updates
+    // Sync product updates with throttling
     console.log('📦 Syncing product catalog updates...');
-    const productSyncResult = await syncInventory(false); // incremental update
+    const productSyncResult = await this.throttledApiCall(
+      syncInventory.bind(null, false) // incremental update
+    );
     
-    // Get last 7 days of data for comprehensive sync
-    const [orders7Days, invoices7Days, purchaseOrders7Days] = await Promise.all([
-      zohoReportsService.getSalesOrders('7_days'),
-      zohoReportsService.getInvoices('7_days'),
-      zohoReportsService.getPurchaseOrders('7_days')
-    ]);
+    // Get last 7 days of data with throttling - sequential calls
+    console.log('📅 Fetching orders from last 7 days...');
+    const orders7Days = await this.throttledApiCall(
+      zohoReportsService.getSalesOrders.bind(zohoReportsService),
+      '7_days'
+    );
+    
+    console.log('📄 Fetching invoices from last 7 days...');
+    const invoices7Days = await this.throttledApiCall(
+      zohoReportsService.getInvoices.bind(zohoReportsService),
+      '7_days'
+    );
+    
+    console.log('📋 Fetching purchase orders from last 7 days...');
+    const purchaseOrders7Days = await this.throttledApiCall(
+      zohoReportsService.getPurchaseOrders.bind(zohoReportsService),
+      '7_days'
+    );
 
     // Process all data
     if (orders7Days.length > 0) {
       const enrichedOrders = await this.enrichOrdersWithUIDs(orders7Days);
-      await this._batchWrite(db, 'salesorders', enrichedOrders, 'salesorder_id');
+      await this._batchWrite(db, 'sales_orders', enrichedOrders, 'salesorder_id');
       
       // Process transactions
       const transactions = await this.processSalesTransactions(enrichedOrders, db);
@@ -991,23 +1075,40 @@ return {
     
     // Process purchase orders
     if (purchaseOrders7Days.length > 0) {
-      await this._batchWrite(db, 'purchaseorders', purchaseOrders7Days, 'purchaseorder_id');
+      await this._batchWrite(db, 'purchase_orders', purchaseOrders7Days, 'purchaseorder_id');
     }
     
     // Update brand backorders
     console.log('📦 Updating brand backorder information...');
     const backorderResult = await this.updateBrandBackorders();
     
-    // Customer enrichment
+    // Customer enrichment with delay
     console.log('🌍 Enriching customer data...');
-    const customerEnrichmentService = await import('./customerEnrichmentService.js');
-    const enrichmentResult = await customerEnrichmentService.default.enrichMissingCustomers();
-    console.log(`✅ Enriched ${enrichmentResult.enriched} customers`);
+    await new Promise(resolve => setTimeout(resolve, 3000)); // 3 second delay
     
-    // Sync customers
+    const customerEnrichmentService = await import('./customerEnrichmentService.js');
+    let enrichmentResult = { enriched: 0 };
+    
+    try {
+      enrichmentResult = await customerEnrichmentService.default.enrichMissingCustomers();
+      console.log(`✅ Enriched ${enrichmentResult.enriched} customers`);
+    } catch (enrichError) {
+      console.error('⚠️ Customer enrichment failed:', enrichError.message);
+    }
+    
+    // Sync customers with throttling
     console.log('👥 Syncing customers from Zoho Inventory...');
-    const customerSyncResult = await zohoReportsService.syncCustomers('all');
-    console.log(`✅ Synced ${customerSyncResult.synced} customers`);
+    let customerSyncResult = { synced: 0 };
+    
+    try {
+      customerSyncResult = await this.throttledApiCall(
+        zohoReportsService.syncCustomers.bind(zohoReportsService),
+        'all'
+      );
+      console.log(`✅ Synced ${customerSyncResult.synced} customers`);
+    } catch (customerError) {
+      console.error('⚠️ Customer sync failed:', customerError.message);
+    }
     
     // Update metadata
     await this.updateSyncMetadata('low_frequency', {
@@ -1039,13 +1140,15 @@ return {
     
   } catch (error) {
     console.error('❌ Low frequency sync failed:', error);
+    
+    // Clear the running flag on error
+    this.isRunning.set(jobType, false);
+    
     return { success: false, error: error.message };
   } finally {
     this.isRunning.set(jobType, false);
   }
 }
-
-
 
   /**
    * Sync and normalize invoices

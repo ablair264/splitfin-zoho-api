@@ -403,7 +403,7 @@ class ZohoReportsService {
       // If agent filtering is needed, get agent's customers from orders
       let filteredCustomers = customers;
       if (agentId) {
-        const ordersSnapshot = await db.collection('salesorders')
+        const ordersSnapshot = await db.collection('sales_orders')
           .where('salesperson_id', '==', agentId)
           .where('date', '>=', startDate.toISOString().split('T')[0])
           .where('date', '<=', endDate.toISOString().split('T')[0])
@@ -629,7 +629,7 @@ class ZohoReportsService {
       const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
       
       // 1. Get gross revenue from sales orders
-      const ordersSnapshot = await db.collection('salesorders')
+      const ordersSnapshot = await db.collection('sales_orders')
         .where('date', '>=', startDate.toISOString().split('T')[0])
         .where('date', '<=', endDate.toISOString().split('T')[0])
         .get();
@@ -683,7 +683,7 @@ class ZohoReportsService {
       const taxAmount = grossRevenue - netRevenue;
       
       // 4. Get cost data from purchase orders
-      const purchaseOrdersSnapshot = await db.collection('purchaseorders')
+      const purchaseOrdersSnapshot = await db.collection('purchase_orders')
         .where('date', '>=', startDate.toISOString().split('T')[0])
         .where('date', '<=', endDate.toISOString().split('T')[0])
         .get();
@@ -1091,7 +1091,7 @@ async syncCustomers(dateRange = '7_days') {
     }
     
     // 2. Get all sales orders to calculate customer metrics
-    const ordersSnapshot = await db.collection('salesorders').get();
+    const ordersSnapshot = await db.collection('sales_orders').get();
     const ordersByCustomer = new Map();
     
     ordersSnapshot.forEach(doc => {
@@ -1148,7 +1148,7 @@ async syncCustomers(dateRange = '7_days') {
     let count = 0;
     
     for (const customer of enrichedCustomers) {
-      const docRef = db.collection('customer_data').doc(customer.customer_id);
+      const docRef = db.collection('customers').doc(customer.customer_id);
       batch.set(docRef, customer, { merge: true });
       count++;
       
