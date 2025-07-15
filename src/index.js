@@ -6,6 +6,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import axios from 'axios';
 import { createZohoSalesOrder } from './services/salesOrder.js';
 import { syncCustomerWithZoho, syncAllCustomers } from './services/customerSync.js';
 import { createZohoContact } from './services/createContact.js';
@@ -27,6 +28,7 @@ import dmBrandsRoutes from './routes/dmBrandsRoutes.js';
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
 import { updateZohoContact } from './services/updateContact.js';
+import customerEnrichmentService from './services/customerEnrichmentService.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -43,7 +45,7 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
   'http://localhost:3000',
   'https://splitfin.co.uk',
-  'https://splitfin-zoho-api.onrender.com'
+  'https://splitfin-zoho-api.onrender.com',
   'http://localhost:5175',
 ];
 
