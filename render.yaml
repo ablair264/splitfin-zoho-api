@@ -8,18 +8,8 @@ services:
     env: node
     plan: starter # or whatever plan you're using
     buildCommand: |
-      # Clean previous builds
-      rm -rf node_modules package-lock.json
-      npm cache clean --force
-      
-      # Install critical dependencies first
-      npm install lines-and-columns@2.0.3
-      
-      # Install all dependencies
+      rm -rf package-lock.json
       npm install --production=false
-      
-      # Verify puppeteer installation
-      node -e "require('puppeteer')"
     startCommand: npm start
     envVars:
       - key: NODE_ENV
