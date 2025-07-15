@@ -1,5 +1,4 @@
 // server/src/index.js - Cleaned and organized version
-import admin from 'firebase-admin';
 import './config/firebase.js';
 import express from 'express';
 import cors from 'cors';
