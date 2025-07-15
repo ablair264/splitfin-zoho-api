@@ -246,7 +246,7 @@ router.get('/collections/:collection', validateDateRange, getUserContext, async 
     const { collection } = req.params;
     const { dateRange = '30_days', startDate, endDate, limit = 100 } = req.query;
     
-    const validCollections = ['orders', 'invoices', 'sales_transactions', 'customers', 'products'];
+    const validCollections = ['sales_orders', 'invoices', 'sales_transactions', 'customers', 'products'];
     if (!validCollections.includes(collection)) {
       return res.status(400).json({
         success: false,
@@ -264,7 +264,7 @@ router.get('/collections/:collection', validateDateRange, getUserContext, async 
     let query = db.collection(collection);
     
     // Apply date filters based on collection
-    if (collection === 'orders') {
+    if (collection === 'sales_orders') {
       query = query.where('date', '>=', startISO.toISOString())
                    .where('date', '<=', endISO.toISOString());
     } else if (collection === 'invoices') {
@@ -277,7 +277,7 @@ router.get('/collections/:collection', validateDateRange, getUserContext, async 
     
     // Apply agent filter if sales agent
     if (req.userContext.role === 'salesAgent' && req.userContext.zohospID) {
-      if (collection === 'orders' || collection === 'sales_transactions') {
+      if (collection === 'sales_orders' || collection === 'sales_transactions') {
         query = query.where('salesperson_id', '==', req.userContext.zohospID);
       }
     }
@@ -364,7 +364,7 @@ router.get('/sync-status', getUserContext, async (req, res) => {
     
     // Get collection counts
     const [ordersCount, invoicesCount, transactionsCount, customersCount] = await Promise.all([
-      db.collection('orders').count().get(),
+      db.collection('sales_orders').count().get(),
       db.collection('invoices').count().get(),
       db.collection('sales_transactions').count().get(),
       db.collection('customers').count().get()
