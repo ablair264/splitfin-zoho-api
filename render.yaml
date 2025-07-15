@@ -7,11 +7,27 @@ services:
     name: splitfin-zoho-api
     env: node
     plan: starter # or whatever plan you're using
-    buildCommand: npm install
+    buildCommand: |
+      # Clean previous builds
+      rm -rf node_modules package-lock.json
+      npm cache clean --force
+      
+      # Install critical dependencies first
+      npm install lines-and-columns@2.0.3
+      
+      # Install all dependencies
+      npm install --production=false
+      
+      # Verify puppeteer installation
+      node -e "require('puppeteer')"
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: false
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/project/.cache/puppeteer
       - key: ZOHO_CLIENT_ID
         fromService: splitfin-zoho-api
         fromEnvVar: ZOHO_CLIENT_ID
