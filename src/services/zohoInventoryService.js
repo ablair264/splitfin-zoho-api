@@ -357,7 +357,7 @@ class ZohoInventoryService {
     };
     
     // Get all current items from Firebase
-    const firebaseItemsSnapshot = await   'items_data').get();
+    const firebaseItemsSnapshot = await this.db.collection('items_data').get();
     const firebaseItemsMap = new Map();
     
     firebaseItemsSnapshot.forEach(doc => {
