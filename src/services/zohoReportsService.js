@@ -1233,3 +1233,19 @@ async getCustomerDetail(customerId) {
 }
 
 export default new ZohoReportsService();
+
+// --- CLI Entrypoint ---
+if (typeof require !== 'undefined' && require.main === module) {
+  (async () => {
+    try {
+      const clear = process.argv.includes('--clear');
+      console.log(`\n🚀 Starting Zoho migration and metrics calculation (clear=${clear})...`);
+      await exports.runFullMigration({ clear });
+      console.log('✅ Migration and metrics calculation complete.');
+      process.exit(0);
+    } catch (err) {
+      console.error('❌ Migration failed:', err);
+      process.exit(1);
+    }
+  })();
+}

@@ -27,6 +27,7 @@ import dmBrandsRoutes from './routes/dmBrandsRoutes.js';
 import { getSyncStatus } from './syncInventory.js';
 import { updateZohoContact } from './services/updateContact.js';
 import customerEnrichmentService from './services/customerEnrichmentService.js';
+import zohoReportsService from './services/zohoReportsService.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -97,6 +98,20 @@ app.post('/api/zoho/create-contact', createZohoContact);
 app.post('/api/zoho/salesorder', createZohoSalesOrder);
 app.post('/api/customers/sync', syncCustomerWithZoho);
 app.post('/api/customers/sync-all', syncAllCustomers);
+
+// ── Admin Migration Endpoint ──────────────────────────────────────────────
+// WARNING: Protect this endpoint in production!
+app.post('/admin/run-zoho-migration', async (req, res) => {
+  // Optionally add authentication here!
+  try {
+    const { clear } = req.body; // pass { clear: true } to wipe collections
+    await zohoReportsService.runFullMigration({ clear: !!clear });
+    res.json({ success: true, message: 'Migration and metrics complete.' });
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // ── Root & Health Endpoints ─────────────────────────────────────────
 app.get('/', (req, res) => {
