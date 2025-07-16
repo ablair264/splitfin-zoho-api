@@ -5,15 +5,15 @@ services:
     name: splitfin-zoho-api
     runtime: node
     plan: starter
-    buildCommand: npm ci --production=false
+    buildCommand: npm ci --production=false --prefer-offline --no-audit
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
         value: true
-      - key: PUPPETEER_CACHE_DIR
-        value: /opt/render/project/.cache/puppeteer
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/google-chrome
       - key: NODE_OPTIONS
         value: "--max-old-space-size=1024"
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
