@@ -9,12 +9,9 @@
     "dev": "nodemon src/index.js",
     "test": "jest",
     "test:firebase": "node test-firebase.js",
-    "build": "bash build.sh",
-    "postinstall": "npm rebuild"
+    "build": "bash build.sh"
   },
   "dependencies": {
-    "@google-cloud/firestore": "^7.11.3",
-    "@google-cloud/storage": "^7.16.0",
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.6.0",
     "bcryptjs": "^2.4.3",
@@ -26,37 +23,27 @@
     "express-rate-limit": "^7.1.5",
     "express-validator": "^7.0.1",
     "firebase-admin": "^13.4.0",
-    "google-trends-api": "^4.9.2",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
-    "natural": "^6.10.4",
     "node-cache": "^5.1.2",
     "node-fetch": "^3.3.2",
     "p-limit": "^6.2.0",
     "postmark": "^4.0.5",
-    "puppeteer": "^22.8.2",
     "qs": "^6.11.2",
-    "string-similarity": "^4.0.4",
     "uuid": "^9.0.1",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "jspdf": "^2.5.1",
+    "html2canvas": "^1.4.1"
   },
   "devDependencies": {
     "jest": "^29.7.0",
     "nodemon": "^3.0.2",
     "supertest": "^6.3.3"
   },
-  "overrides": {
-    "puppeteer": {
-      "lines-and-columns": "^2.0.3"
-    }
-  },
   "engines": {
     "node": ">=20.0.0"
-  },
-  "resolutions": {
-    "@google-cloud/firestore": "^7.11.3"
   },
   "keywords": [
     "inventory",
