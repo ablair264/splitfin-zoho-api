@@ -55,11 +55,18 @@ function initializeFirebase() {
       credential: admin.credential.cert(serviceAccount),
     });
     
+    // Force initialize Firestore to catch any module resolution issues early
+    try {
+      firestoreDb = admin.firestore();
+    } catch (firestoreError) {
+      console.error('❌ Firestore initialization failed:', firestoreError.message);
+      throw new Error(`Firestore module resolution failed: ${firestoreError.message}`);
+    }
+    
     console.log('✅ Firebase Admin SDK initialized successfully.');
     console.log(`📁 Connected to project: ${serviceAccount.project_id}`);
     
-    // Initialize Firestore with settings
-    firestoreDb = admin.firestore();
+    // Configure Firestore settings (already initialized above)
     firestoreDb.settings({
       ignoreUndefinedProperties: true
     });
