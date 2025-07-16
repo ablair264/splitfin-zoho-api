@@ -89,7 +89,6 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/ai-insights', aiInsightsRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/oauth', authRoutes);
-app.use('/api/purchase-analysis', purchaseAnalysisRoutes);
 app.use('/api/search-trends', searchTrendsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/email', emailRoutes);  // ← ADD THIS LINE HERE
