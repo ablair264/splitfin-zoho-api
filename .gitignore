@@ -28,4 +28,4 @@ yarn-error.log*
 .vscode/
 .idea/
 *.sublime-project
-*.sublime-workspace
+*.sublime-workspacenode_modules/
