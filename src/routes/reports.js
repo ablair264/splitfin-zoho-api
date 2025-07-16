@@ -114,8 +114,8 @@ router.get('/dashboard', validateDateRange, getUserContext, async (req, res) => 
     
     console.log(`📊 Dashboard request: User ${userId}, Range: ${dateRange}`);
     
-    // Use the collection-based dashboard service with timeout protection
-    const dashboardData = await collectionDashboardService.getDashboardDataWithTimeout(
+    // Use the collection-based dashboard service
+    const dashboardData = await collectionDashboardService.getDashboardData(
       userId, 
       dateRange, 
       customDateRange

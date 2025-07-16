@@ -51,9 +51,6 @@
   "overrides": {
     "puppeteer": {
       "lines-and-columns": "^2.0.3"
-    },
-    "@google-cloud/firestore": {
-      "main": "build/src/index.js"
     }
   },
   "engines": {
