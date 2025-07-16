@@ -1,6 +1,7 @@
 // server/src/services/zohoReportsService.js
 import axios from 'axios';
 import admin from 'firebase-admin';
+import '../config/firebase.js';
 import { getAccessToken } from '../api/zoho.js';
 import zohoInventoryService from './zohoInventoryService.js';
 
@@ -1235,12 +1236,268 @@ async getCustomerDetail(customerId) {
 export default new ZohoReportsService();
 
 // --- CLI Entrypoint ---
-if (typeof require !== 'undefined' && require.main === module) {
+export async function runFullMigration({ clear }) {
+  const db = admin.firestore();
+  const startDate = new Date('2023-03-21T00:00:00Z');
+  const startDateStr = startDate.toISOString().split('T')[0];
+  console.log('🔄 Starting full migration from Zoho Inventory after', startDateStr);
+
+  // 1. Optionally clear collections
+  if (clear) {
+    console.log('🧹 Clearing sales_orders and invoices collections...');
+    // Helper to delete all docs in a collection (and subcollections)
+    async function deleteCollection(collName) {
+      const snapshot = await db.collection(collName).get();
+      for (const doc of snapshot.docs) {
+        // Delete subcollections (order_line_items, etc.)
+        const subcollections = await doc.ref.listCollections();
+        for (const sub of subcollections) {
+          const subSnap = await sub.get();
+          for (const subDoc of subSnap.docs) {
+            await subDoc.ref.delete();
+          }
+        }
+        await doc.ref.delete();
+      }
+      console.log(`✅ Cleared ${collName}`);
+    }
+    await deleteCollection('sales_orders');
+    await deleteCollection('invoices');
+  }
+
+  // 2. Fetch all items for brand enrichment
+  console.log('📦 Fetching all items for brand enrichment...');
+  const items = await zohoInventoryService.fetchAllProducts();
+  const itemIdToBrand = {};
+  for (const item of items) {
+    if (item.item_id && item.brand_normalized) {
+      itemIdToBrand[item.item_id] = item.brand_normalized;
+    }
+  }
+
+  // 3. Fetch all sales orders after startDate
+  console.log('🛒 Fetching sales orders from Zoho Inventory...');
+  const allSalesOrders = await zohoInventoryService.fetchPaginatedData(
+    '/salesorders',
+    { date_start: startDateStr, sort_column: 'date', sort_order: 'A' },
+    'salesorders'
+  );
+  console.log(`Found ${allSalesOrders.length} sales orders`);
+
+  // 4. Write sales orders and enrich subcollections with batching
+  console.log('📝 Writing sales orders to Firestore with batching...');
+  const batchSize = 500;
+  let processedCount = 0;
+  
+  for (let i = 0; i < allSalesOrders.length; i += batchSize) {
+    const batch = db.batch();
+    const batchOrders = allSalesOrders.slice(i, i + batchSize);
+    
+    for (const order of batchOrders) {
+      const salesorder_id = order.salesorder_id;
+      const docRef = db.collection('sales_orders').doc(salesorder_id);
+      batch.set(docRef, order, { merge: true });
+
+      // Add order line items to batch
+      if (order.line_items && Array.isArray(order.line_items)) {
+        for (const line of order.line_items) {
+          if (line.line_item_id && line.item_id) {
+            line.brand_normalized = itemIdToBrand[line.item_id] || null;
+            batch.set(docRef.collection('order_line_items').doc(line.line_item_id), line, { merge: true });
+          }
+        }
+      }
+
+      // Link to sales_agents/customers_orders
+      if (order.salesperson_id) {
+        const agentRef = db.collection('sales_agents').doc(order.salesperson_id);
+        batch.set(agentRef.collection('customers_orders').doc(salesorder_id), order, { merge: true });
+      }
+
+      // Add customer to assigned_customers if not present
+      if (order.salesperson_id && order.customer_id) {
+        const agentRef = db.collection('sales_agents').doc(order.salesperson_id);
+        const assignedRef = agentRef.collection('assigned_customers').doc(order.customer_id);
+        batch.set(assignedRef, { customer_id: order.customer_id }, { merge: true });
+      }
+    }
+    
+    await batch.commit();
+    processedCount += batchOrders.length;
+    console.log(`  Processed ${processedCount}/${allSalesOrders.length} sales orders`);
+    
+    // Rate limiting between batches
+    if (i + batchSize < allSalesOrders.length) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  console.log('✅ Sales orders and subcollections migrated');
+
+  // 5. Fetch all invoices after startDate
+  console.log('🧾 Fetching invoices from Zoho Inventory...');
+  const allInvoices = await zohoInventoryService.fetchPaginatedData(
+    '/invoices',
+    { date_start: startDateStr, sort_column: 'date', sort_order: 'A' },
+    'invoices'
+  );
+  console.log(`Found ${allInvoices.length} invoices`);
+
+  // 6. Write invoices and link to sales_agents/customers_invoices with batching
+  console.log('📝 Writing invoices to Firestore with batching...');
+  processedCount = 0;
+  
+  for (let i = 0; i < allInvoices.length; i += batchSize) {
+    const batch = db.batch();
+    const batchInvoices = allInvoices.slice(i, i + batchSize);
+    
+    for (const invoice of batchInvoices) {
+      const invoice_id = invoice.invoice_id;
+      const docRef = db.collection('invoices').doc(invoice_id);
+      batch.set(docRef, invoice, { merge: true });
+
+      if (invoice.salesperson_id) {
+        const agentRef = db.collection('sales_agents').doc(invoice.salesperson_id);
+        batch.set(agentRef.collection('customers_invoices').doc(invoice_id), invoice, { merge: true });
+      }
+    }
+    
+    await batch.commit();
+    processedCount += batchInvoices.length;
+    console.log(`  Processed ${processedCount}/${allInvoices.length} invoices`);
+    
+    // Rate limiting between batches
+    if (i + batchSize < allInvoices.length) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  console.log('✅ Invoices and subcollections migrated');
+
+  // 7. Calculate metrics for all requested date ranges
+  const dateRanges = [
+    { label: '7_days', days: 7 },
+    { label: 'last_week', days: 7, last: true },
+    { label: 'this_month', month: 0 },
+    { label: 'last_month', month: -1 },
+    { label: 'this_quarter', quarter: 0 },
+    { label: 'last_quarter', quarter: -1 },
+    { label: 'this_year', year: 0 },
+    { label: 'last_year', year: -1 },
+    { label: '2023', year: 2023 },
+    { label: '2024', year: 2024 },
+    { label: '2025', year: 2025 }
+  ];
+
+  function getRange(label) {
+    const now = new Date();
+    let start, end;
+    switch (label) {
+      case '7_days':
+        end = now;
+        start = new Date(now);
+        start.setDate(now.getDate() - 7);
+        break;
+      case 'last_week':
+        end = new Date(now);
+        end.setDate(now.getDate() - now.getDay());
+        start = new Date(end);
+        start.setDate(end.getDate() - 7);
+        break;
+      case 'this_month':
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        end = now;
+        break;
+      case 'last_month':
+        start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        end = new Date(now.getFullYear(), now.getMonth(), 0);
+        break;
+      case 'this_quarter':
+        const q = Math.floor(now.getMonth() / 3);
+        start = new Date(now.getFullYear(), q * 3, 1);
+        end = now;
+        break;
+      case 'last_quarter':
+        const lastQ = Math.floor(now.getMonth() / 3) - 1;
+        start = new Date(now.getFullYear(), lastQ * 3, 1);
+        end = new Date(now.getFullYear(), lastQ * 3 + 3, 0);
+        break;
+      case 'this_year':
+        start = new Date(now.getFullYear(), 0, 1);
+        end = now;
+        break;
+      case 'last_year':
+        start = new Date(now.getFullYear() - 1, 0, 1);
+        end = new Date(now.getFullYear() - 1, 11, 31);
+        break;
+      case '2023':
+      case '2024':
+      case '2025':
+        start = new Date(Number(label), 0, 1);
+        end = new Date(Number(label), 11, 31);
+        break;
+      default:
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        end = now;
+    }
+    return { start, end };
+  }
+
+  console.log('📈 Calculating metrics for date ranges...');
+  for (const range of dateRanges) {
+    const { start, end } = getRange(range.label);
+    // Example: Calculate total sales, orders, invoices, etc. for this range
+    // You can expand this logic as needed for your dashboard
+    const salesOrdersSnap = await db.collection('sales_orders')
+      .where('date', '>=', start.toISOString().split('T')[0])
+      .where('date', '<=', end.toISOString().split('T')[0])
+      .get();
+    const totalOrders = salesOrdersSnap.size;
+    let totalRevenue = 0;
+    salesOrdersSnap.forEach(doc => {
+      totalRevenue += parseFloat(doc.data().total || 0);
+    });
+
+    const invoicesSnap = await db.collection('invoices')
+      .where('date', '>=', start.toISOString().split('T')[0])
+      .where('date', '<=', end.toISOString().split('T')[0])
+      .get();
+    const totalInvoices = invoicesSnap.size;
+    let totalInvoiced = 0;
+    invoicesSnap.forEach(doc => {
+      totalInvoiced += parseFloat(doc.data().total || 0);
+    });
+
+    // Store metrics in a collection for dashboard use
+    await db.collection('dashboard_metrics').doc(range.label).set({
+      range: range.label,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      totalOrders,
+      totalRevenue,
+      totalInvoices,
+      totalInvoiced,
+      lastUpdated: new Date().toISOString()
+    }, { merge: true });
+
+    console.log(`  - ${range.label}: Orders=${totalOrders}, Revenue=${totalRevenue.toFixed(2)}, Invoices=${totalInvoices}, Invoiced=${totalInvoiced.toFixed(2)}`);
+  }
+  console.log('✅ Metrics calculated and stored');
+
+  console.log('🎉 Full migration and metrics calculation complete!');
+}
+
+// --- CLI Entrypoint ---
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+if (import.meta.url === `file://${process.argv[1]}`) {
   (async () => {
     try {
       const clear = process.argv.includes('--clear');
       console.log(`\n🚀 Starting Zoho migration and metrics calculation (clear=${clear})...`);
-      await exports.runFullMigration({ clear });
+      await runFullMigration({ clear });
       console.log('✅ Migration and metrics calculation complete.');
       process.exit(0);
     } catch (err) {

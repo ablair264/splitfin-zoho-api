@@ -1,5 +1,5 @@
 // src/services/cronDataSyncService.js
-// Cleaned up version with proper incremental syncing, brand handling, and API throttling
+// Enhanced version with improved throttling, batching, and error handling
 
 import admin from 'firebase-admin';
 import zohoReportsService from './zohoReportsService.js';
@@ -12,12 +12,24 @@ class CronDataSyncService {
     this.isRunning = new Map();
     this.lastSync = {};
     
-    // API Rate Limiting Configuration
+    // Enhanced API Rate Limiting Configuration
     this.rateLimiter = {
-      maxRequestsPerMinute: 100, // Zoho's typical limit
+      maxRequestsPerMinute: 80, // More conservative limit
       requestQueue: [],
       lastRequestTime: 0,
-      minDelayBetweenRequests: 600 // 600ms between requests = ~100 requests/minute
+      minDelayBetweenRequests: 750, // 750ms between requests = ~80 requests/minute
+      burstLimit: 5, // Max concurrent requests
+      activeRequests: 0,
+      retryAttempts: 3,
+      retryDelay: 5000 // 5 seconds
+    };
+    
+    // Batch processing configuration
+    this.batchConfig = {
+      firestoreBatchSize: 400,
+      apiBatchSize: 50,
+      delayBetweenBatches: 1000, // 1 second
+      maxConcurrentBatches: 3
     };
     
     // Brand mappings for sales transactions
@@ -40,29 +52,85 @@ class CronDataSyncService {
   }
   
   /**
-   * Rate-limited API call wrapper
+   * Enhanced rate-limited API call wrapper with retry logic
    */
   async throttledApiCall(apiFunction, ...args) {
     const now = Date.now();
     const timeSinceLastRequest = now - this.rateLimiter.lastRequestTime;
     
+    // Wait if we're going too fast
     if (timeSinceLastRequest < this.rateLimiter.minDelayBetweenRequests) {
       const delay = this.rateLimiter.minDelayBetweenRequests - timeSinceLastRequest;
       await new Promise(resolve => setTimeout(resolve, delay));
     }
     
+    // Check burst limit
+    if (this.rateLimiter.activeRequests >= this.rateLimiter.burstLimit) {
+      const waitTime = this.rateLimiter.minDelayBetweenRequests * 2;
+      console.log(`⏳ Burst limit reached, waiting ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
     this.rateLimiter.lastRequestTime = Date.now();
+    this.rateLimiter.activeRequests++;
     
     try {
-      return await apiFunction(...args);
+      const result = await apiFunction(...args);
+      this.rateLimiter.activeRequests--;
+      return result;
     } catch (error) {
-      // Check if it's a rate limit error
-      if (error.message?.includes('rate limit') || error.code === 429) {
-        console.log('⚠️ Rate limit hit, waiting 60 seconds...');
-        await new Promise(resolve => setTimeout(resolve, 60000)); // Wait 1 minute
-        return await apiFunction(...args); // Retry once
+      this.rateLimiter.activeRequests--;
+      
+      // Enhanced error handling with retry logic
+      if (this.shouldRetry(error)) {
+        return await this.retryApiCall(apiFunction, args, error);
       }
       throw error;
+    }
+  }
+  
+  /**
+   * Determine if an error should trigger a retry
+   */
+  shouldRetry(error) {
+    const retryableErrors = [
+      'rate limit',
+      '429',
+      'too many requests',
+      'timeout',
+      'network error',
+      'ECONNRESET',
+      'ETIMEDOUT'
+    ];
+    
+    const errorMessage = (error.message || '').toLowerCase();
+    const errorCode = error.code || error.status || '';
+    
+    return retryableErrors.some(retryable => 
+      errorMessage.includes(retryable) || 
+      errorCode.toString().includes(retryable)
+    );
+  }
+  
+  /**
+   * Retry API call with exponential backoff
+   */
+  async retryApiCall(apiFunction, args, originalError) {
+    for (let attempt = 1; attempt <= this.rateLimiter.retryAttempts; attempt++) {
+      const delay = this.rateLimiter.retryDelay * Math.pow(2, attempt - 1);
+      console.log(`🔄 Retry attempt ${attempt}/${this.rateLimiter.retryAttempts} in ${delay}ms...`);
+      
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      try {
+        return await apiFunction(...args);
+      } catch (retryError) {
+        if (attempt === this.rateLimiter.retryAttempts) {
+          console.error(`❌ All retry attempts failed for API call`);
+          throw retryError;
+        }
+        console.warn(`⚠️ Retry ${attempt} failed:`, retryError.message);
+      }
     }
   }
   
@@ -1226,22 +1294,28 @@ async mediumFrequencySync() {
   }
 
   /**
-   * Helper function to write data in batches
+   * Enhanced batch write with better error handling and progress tracking
    */
   async _batchWrite(db, collectionName, dataArray, idKey) {
     if (!dataArray || dataArray.length === 0) {
-      return;
+      console.log(`📝 No data to write to ${collectionName}`);
+      return { success: true, count: 0 };
     }
 
     const collectionRef = db.collection(collectionName);
-    const BATCH_SIZE = 400;
+    const BATCH_SIZE = this.batchConfig.firestoreBatchSize;
     
     let currentBatch = db.batch();
     let currentBatchSize = 0;
     let batchCount = 0;
+    let successCount = 0;
     let skippedCount = 0;
+    let errorCount = 0;
     
-    for (const item of dataArray) {
+    console.log(`📝 Writing ${dataArray.length} items to ${collectionName} in batches of ${BATCH_SIZE}...`);
+    
+    for (let i = 0; i < dataArray.length; i++) {
+      const item = dataArray[i];
       const docId = item[idKey];
       
       if (!docId || String(docId).trim() === '') {
@@ -1255,34 +1329,95 @@ async mediumFrequencySync() {
         if (currentBatchSize >= BATCH_SIZE) {
           await currentBatch.commit();
           batchCount++;
+          successCount += currentBatchSize;
           currentBatch = db.batch();
           currentBatchSize = 0;
+          
+          // Progress logging
+          if (batchCount % 5 === 0) {
+            console.log(`  📦 Batch ${batchCount}: ${successCount}/${dataArray.length} items written`);
+          }
+          
+          // Rate limiting between batches
+          if (i < dataArray.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, this.batchConfig.delayBetweenBatches));
+          }
         }
         
         const docRef = collectionRef.doc(cleanDocId);
         const itemWithMetadata = {
           ...item,
           _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
-          _syncSource: 'zoho_api'
+          _syncSource: 'zoho_api',
+          _batchId: batchCount
         };
         
         currentBatch.set(docRef, itemWithMetadata, { merge: true });
         currentBatchSize++;
         
       } catch (error) {
-        console.error(`Error processing document ${cleanDocId}:`, error.message);
-        skippedCount++;
+        console.error(`❌ Error processing document ${cleanDocId}:`, error.message);
+        errorCount++;
       }
     }
     
+    // Commit final batch
     if (currentBatchSize > 0) {
-      await currentBatch.commit();
-      batchCount++;
+      try {
+        await currentBatch.commit();
+        batchCount++;
+        successCount += currentBatchSize;
+      } catch (error) {
+        console.error(`❌ Error committing final batch:`, error.message);
+        errorCount += currentBatchSize;
+      }
     }
     
-    if (skippedCount > 0) {
-      console.log(`⚠️  Skipped ${skippedCount} documents in ${collectionName}`);
+    console.log(`✅ ${collectionName}: ${successCount} written, ${skippedCount} skipped, ${errorCount} errors in ${batchCount} batches`);
+    
+    return { 
+      success: errorCount === 0, 
+      count: successCount, 
+      skipped: skippedCount, 
+      errors: errorCount,
+      batches: batchCount
+    };
+  }
+
+  /**
+   * Enhanced batch processing for API calls
+   */
+  async _batchApiCall(apiFunction, dataArray, batchSize = this.batchConfig.apiBatchSize) {
+    if (!dataArray || dataArray.length === 0) {
+      return [];
     }
+    
+    const results = [];
+    console.log(`🔄 Processing ${dataArray.length} items in API batches of ${batchSize}...`);
+    
+    for (let i = 0; i < dataArray.length; i += batchSize) {
+      const batch = dataArray.slice(i, i + batchSize);
+      
+      try {
+        const batchResult = await this.throttledApiCall(apiFunction, batch);
+        results.push(...(Array.isArray(batchResult) ? batchResult : [batchResult]));
+        
+        // Progress logging
+        const processed = Math.min(i + batchSize, dataArray.length);
+        console.log(`  📡 API Batch: ${processed}/${dataArray.length} items processed`);
+        
+        // Rate limiting between API batches
+        if (i + batchSize < dataArray.length) {
+          await new Promise(resolve => setTimeout(resolve, this.batchConfig.delayBetweenBatches * 2));
+        }
+        
+      } catch (error) {
+        console.error(`❌ API batch failed:`, error.message);
+        // Continue with next batch instead of failing completely
+      }
+    }
+    
+    return results;
   }
 
   /**
