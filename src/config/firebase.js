@@ -1,4 +1,5 @@
 import admin from 'firebase-admin';
+import { Firestore } from '@google-cloud/firestore';
 
 // Only load dotenv in development
 if (process.env.NODE_ENV !== 'production') {
@@ -23,7 +24,12 @@ function initializeFirebase() {
     // Check if Firebase is already initialized
     if (admin.apps.length > 0) {
       firebaseApp = admin.apps[0];
-      firestoreDb = admin.firestore();
+      // Use direct Firestore import for existing apps too
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      firestoreDb = new Firestore({
+        projectId: serviceAccount.project_id,
+        credentials: serviceAccount
+      });
       authService = admin.auth();
       console.log('✅ Using existing Firebase Admin SDK instance.');
       return { app: firebaseApp, db: firestoreDb, auth: authService };
@@ -57,7 +63,12 @@ function initializeFirebase() {
     
     // Force initialize Firestore to catch any module resolution issues early
     try {
-      firestoreDb = admin.firestore();
+      // Use direct Firestore import to avoid module resolution issues
+      firestoreDb = new Firestore({
+        projectId: serviceAccount.project_id,
+        keyFilename: undefined, // We're using credentials directly
+        credentials: serviceAccount
+      });
     } catch (firestoreError) {
       console.error('❌ Firestore initialization failed:', firestoreError.message);
       throw new Error(`Firestore module resolution failed: ${firestoreError.message}`);
