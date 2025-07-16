@@ -1,119 +1,73 @@
 import admin from 'firebase-admin';
-import { Firestore } from '@google-cloud/firestore';
+import dotenv from 'dotenv';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-// Only load dotenv in development
-if (process.env.NODE_ENV !== 'production') {
-  import('dotenv').then(dotenv => dotenv.config());
-}
+dotenv.config();
 
-// Global Firebase instance
-let firebaseApp = null;
-let firestoreDb = null;
-let authService = null;
-
-/**
- * Initialize Firebase Admin SDK with proper error handling
- */
-function initializeFirebase() {
-  // Prevent multiple initializations
-  if (firebaseApp) {
-    return { app: firebaseApp, db: firestoreDb, auth: authService };
-  }
-
+// Initialize Firebase Admin SDK
+if (!admin.apps.length) {
   try {
-    // Check if Firebase is already initialized
-    if (admin.apps.length > 0) {
-      firebaseApp = admin.apps[0];
-      // Use direct Firestore import for existing apps too
-      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-      firestoreDb = new Firestore({
-        projectId: serviceAccount.project_id,
-        credentials: serviceAccount
-      });
-      authService = admin.auth();
-      console.log('✅ Using existing Firebase Admin SDK instance.');
-      return { app: firebaseApp, db: firestoreDb, auth: authService };
-    }
-
-    // Check if we have the service account JSON
-    if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-      throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON environment variable is not set');
-    }
-    
-    // Parse the service account from the environment variable
     let serviceAccount;
-    try {
-      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-    } catch (parseError) {
-      throw new Error(`Invalid JSON in FIREBASE_SERVICE_ACCOUNT_JSON: ${parseError.message}`);
-    }
     
-    // Validate required fields
-    const requiredFields = ['project_id', 'private_key', 'client_email'];
-    for (const field of requiredFields) {
-      if (!serviceAccount[field]) {
-        throw new Error(`Missing required field in service account: ${field}`);
+    // First, try to get service account from environment variable
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+      console.log('🔍 Using Firebase service account from environment variable');
+      try {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      } catch (parseError) {
+        console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', parseError);
+        throw new Error('Invalid JSON in FIREBASE_SERVICE_ACCOUNT_JSON environment variable');
+      }
+    } else {
+      // Fallback to reading from file (for local development)
+      console.log('🔍 Using Firebase service account from file');
+      try {
+        const __filename = fileURLToPath(import.meta.url);
+        const __dirname = dirname(__filename);
+        const serviceAccountPath = join(__dirname, '../../serviceAccountKey.json');
+        serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
+      } catch (fileError) {
+        console.error('❌ Failed to read service account file:', fileError);
+        throw new Error('No Firebase credentials found. Set FIREBASE_SERVICE_ACCOUNT_JSON environment variable or provide serviceAccountKey.json file');
       }
     }
     
-    // Initialize Firebase Admin SDK
-    firebaseApp = admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
-    
-    // Force initialize Firestore to catch any module resolution issues early
-    try {
-      // Use direct Firestore import to avoid module resolution issues
-      firestoreDb = new Firestore({
-        projectId: serviceAccount.project_id,
-        keyFilename: undefined, // We're using credentials directly
-        credentials: serviceAccount
-      });
-    } catch (firestoreError) {
-      console.error('❌ Firestore initialization failed:', firestoreError.message);
-      throw new Error(`Firestore module resolution failed: ${firestoreError.message}`);
+    // Validate service account has required fields
+    if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
+      throw new Error('Invalid service account: missing required fields');
     }
     
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
     console.log('✅ Firebase Admin SDK initialized successfully.');
-    console.log(`📁 Connected to project: ${serviceAccount.project_id}`);
+    console.log(`📊 Connected to project: ${serviceAccount.project_id}`);
     
-    // Configure Firestore settings (already initialized above)
-    firestoreDb.settings({
+    // Configure Firestore settings
+    admin.firestore().settings({
       ignoreUndefinedProperties: true
     });
     console.log('✅ Firestore configured to ignore undefined properties.');
     
-    // Initialize Auth service
-    authService = admin.auth();
-    
-    return { app: firebaseApp, db: firestoreDb, auth: authService };
-    
   } catch (error) {
     console.error('❌ Firebase Admin SDK initialization failed:', error.message);
     
-    // In production, we want to know immediately if Firebase fails
+    // Provide helpful error messages
     if (process.env.NODE_ENV === 'production') {
-      console.error('🚨 Critical: Firebase initialization failed in production');
-      console.error('Full error:', error);
-      process.exit(1);
+      console.error('💡 In production: Ensure FIREBASE_SERVICE_ACCOUNT_JSON is set in your environment variables');
+      console.error('💡 The value should be the entire JSON content of your service account key file');
     } else {
-      console.warn('⚠️  Running in development mode without Firebase');
-      return { app: null, db: null, auth: null };
+      console.error('💡 In development: Either set FIREBASE_SERVICE_ACCOUNT_JSON or ensure serviceAccountKey.json exists');
     }
+    
+    // Exit if Firebase can't be initialized, as it's critical
+    process.exit(1); 
   }
 }
-
-// Initialize Firebase immediately
-const { app, db, auth } = initializeFirebase();
 
 // Export the initialized services
-export { db, auth };
+export const db = admin.firestore();
+export const auth = admin.auth();
 export default admin;
-
-// Export a function to get Firebase services (for lazy loading)
-export function getFirebaseServices() {
-  if (!firebaseApp) {
-    return initializeFirebase();
-  }
-  return { app: firebaseApp, db: firestoreDb, auth: authService };
-}
