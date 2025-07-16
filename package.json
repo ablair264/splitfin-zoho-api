@@ -8,7 +8,9 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "jest",
-    "test:firebase": "node test-firebase.js"
+    "test:firebase": "node test-firebase.js",
+    "build": "bash build.sh",
+    "postinstall": "npm rebuild"
   },
   "dependencies": {
     "@google-cloud/firestore": "^7.11.3",
