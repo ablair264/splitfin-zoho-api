@@ -19,7 +19,6 @@ import cronRoutes from './routes/cron.js';
 import aiInsightsRoutes from './routes/ai_insights.js';
 import productsRoutes from './routes/products.js';
 import authRoutes from './routes/auth.js';
-import purchaseAnalysisRoutes from './routes/purchaseAnalysis.js';
 import searchTrendsRoutes from './routes/searchTrends.js';
 import emailRoutes from './routes/email.js';
 import dmBrandsRoutes from './routes/dmBrandsRoutes.js';
@@ -89,7 +88,6 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/ai-insights', aiInsightsRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/oauth', authRoutes);
-app.use('/api/search-trends', searchTrendsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/email', emailRoutes);  // ← ADD THIS LINE HERE
 app.use('/api/dm-brands', dmBrandsRoutes);
