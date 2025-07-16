@@ -248,7 +248,7 @@ class CollectionDashboardService {
     const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
     const totalOrders = orders.length;
     const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
-    const outstandingInvoices = invoices.filter(inv => inv.status !== 'paid').reduce((sum, inv) => sum + (inv.balance || 0), 0);
+    const outstandingInvoices = Array.isArray(invoices) ? invoices.filter(inv => inv.status !== 'paid').reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0;
 
     // Build dashboard response
     return {
@@ -258,7 +258,7 @@ class CollectionDashboardService {
         averageOrderValue,
         outstandingInvoices,
         totalCustomers: customers.length,
-        marketplaceOrders: orders.filter(o => o.is_marketplace_order).length,
+        marketplaceOrders: Array.isArray(orders) ? orders.filter(o => o.is_marketplace_order).length : 0,
       },
       customers,
       orders,
@@ -375,7 +375,7 @@ class CollectionDashboardService {
     const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
     const totalOrders = orders.length;
     const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
-    const outstandingInvoices = invoices.filter(inv => inv.status !== 'paid').reduce((sum, inv) => sum + (inv.balance || 0), 0);
+    const outstandingInvoices = Array.isArray(invoices) ? invoices.filter(inv => inv.status !== 'paid').reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0;
     // Build dashboard response
     return {
       metrics: {
@@ -384,7 +384,7 @@ class CollectionDashboardService {
         averageOrderValue,
         outstandingInvoices,
         totalCustomers: customers.length,
-        marketplaceOrders: orders.filter(o => o.is_marketplace_order).length,
+        marketplaceOrders: Array.isArray(orders) ? orders.filter(o => o.is_marketplace_order).length : 0,
       },
       customers,
       orders,
