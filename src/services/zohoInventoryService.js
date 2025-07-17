@@ -2,6 +2,7 @@
 import axios from 'axios';
 import admin from 'firebase-admin';
 import { getAccessToken } from '../api/zoho.js';
+import { zohoRateLimitedRequest } from './zohoRateLimiter.js';
 
 // Salesperson name to ID mapping (Zoho Inventory returns names, not IDs)
 const SALESPERSON_MAPPING = {
@@ -154,20 +155,16 @@ class ZohoInventoryService {
 
     while (hasMore) {
       try {
-        const response = await this.makeRateLimitedRequest(async () => {
-          const token = await this.getAccessToken();
-          
-          return await axios.get(url, {
-            params: {
-              ...params,
-              organization_id: this.organizationId,
-              page,
-              per_page: ZOHO_CONFIG.pagination.defaultPerPage
-            },
-            headers: { Authorization: `Zoho-oauthtoken ${token}` },
-            timeout: 30000
-          });
-        });
+        const response = await zohoRateLimitedRequest(async () => axios.get(url, {
+          params: {
+            ...params,
+            organization_id: this.organizationId,
+            page,
+            per_page: ZOHO_CONFIG.pagination.defaultPerPage
+          },
+          headers: { Authorization: `Zoho-oauthtoken ${await this.getAccessToken()}` },
+          timeout: 30000
+        }));
 
         const items = response.data[dataKey] || [];
         
@@ -228,7 +225,7 @@ class ZohoInventoryService {
    */
   async getSalesOrder(orderId) {
     try {
-      const response = await this.makeRateLimitedRequest(async () => {
+      const response = await zohoRateLimitedRequest(async () => {
         const accessToken = await this.getAccessToken();
         
         return await axios.get(
@@ -301,18 +298,24 @@ class ZohoInventoryService {
     
     try {
       // First, get all items in a single paginated request
-      const allItems = await this.fetchPaginatedData(
+      const allItems = await zohoRateLimitedRequest(async () => axios.get(
         `${this.baseUrl}/items`,
-        {},
-        'items'
-      );
+        {
+          params: {
+            organization_id: this.organizationId,
+            per_page: ZOHO_CONFIG.pagination.defaultPerPage
+          },
+          headers: { Authorization: `Zoho-oauthtoken ${await this.getAccessToken()}` },
+          timeout: 30000
+        }
+      ));
       
-      console.log(`✅ Fetched ${allItems.length} products from Zoho`);
+      console.log(`✅ Fetched ${allItems.data.items.length} products from Zoho`);
       
       // Most item data is already in the list response
       // Only fetch full details if absolutely necessary
       // For now, return the items as-is since they contain most needed fields
-      return allItems.map(item => ({
+      return allItems.data.items.map(item => ({
         ...item,
         brand_normalized: this.normalizeBrandName(item.vendor_name || item.brand || '')
       }));
@@ -328,7 +331,7 @@ class ZohoInventoryService {
    */
   async getItemDetails(itemId, token) {
     try {
-      const response = await this.makeRateLimitedRequest(async () => {
+      const response = await zohoRateLimitedRequest(async () => {
         return await axios.get(`${this.baseUrl}/items/${itemId}`, {
           params: {
             organization_id: this.organizationId
@@ -470,16 +473,23 @@ class ZohoInventoryService {
       };
 
       // Fetch all orders with pagination
-      const salesOrderList = await this.fetchPaginatedData(
+      const salesOrderList = await zohoRateLimitedRequest(async () => axios.get(
         `${this.baseUrl}/salesorders`,
-        params,
-        'salesorders'
-      );
+        {
+          params: {
+            ...params,
+            organization_id: this.organizationId,
+            per_page: ZOHO_CONFIG.pagination.defaultPerPage
+          },
+          headers: { Authorization: `Zoho-oauthtoken ${await this.getAccessToken()}` },
+          timeout: 30000
+        }
+      ));
       
-      console.log(`Found ${salesOrderList.length} orders.`);
+      console.log(`Found ${salesOrderList.data.salesorders.length} orders.`);
 
       // Add salesperson_id to each order if missing
-      salesOrderList.forEach(order => {
+      salesOrderList.data.salesorders.forEach(order => {
         if (!order.salesperson_id && order.salesperson_name) {
           const id = getSalespersonId(order.salesperson_name);
           if (id) {
@@ -490,23 +500,23 @@ class ZohoInventoryService {
 
       // Only fetch details if line items are not included in list response
       // Check if first order has line_items
-      if (salesOrderList.length > 0 && !salesOrderList[0].line_items) {
+      if (salesOrderList.data.salesorders.length > 0 && !salesOrderList.data.salesorders[0].line_items) {
         console.log('Line items not included in list response, fetching details...');
         
         // Fetch details in smaller batches to avoid rate limits
         const detailBatchSize = 10;
         const detailedOrders = [];
         
-        for (let i = 0; i < salesOrderList.length; i += detailBatchSize) {
-          const batch = salesOrderList.slice(i, i + detailBatchSize);
+        for (let i = 0; i < salesOrderList.data.salesorders.length; i += detailBatchSize) {
+          const batch = salesOrderList.data.salesorders.slice(i, i + detailBatchSize);
           const batchDetails = await Promise.all(
             batch.map(orderHeader => this.getSalesOrder(orderHeader.salesorder_id))
           );
           
           detailedOrders.push(...batchDetails.filter(order => order !== null));
           
-          if (i + detailBatchSize < salesOrderList.length) {
-            console.log(`  Fetched details for ${detailedOrders.length}/${salesOrderList.length} orders...`);
+          if (i + detailBatchSize < salesOrderList.data.salesorders.length) {
+            console.log(`  Fetched details for ${detailedOrders.length}/${salesOrderList.data.salesorders.length} orders...`);
             await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
           }
         }
@@ -515,7 +525,7 @@ class ZohoInventoryService {
         return detailedOrders;
       } else {
         // Line items already included, return as-is
-        return salesOrderList;
+        return salesOrderList.data.salesorders;
       }
 
     } catch (error) {
@@ -784,17 +794,24 @@ class ZohoInventoryService {
         date_end: endDate.toISOString().split('T')[0]
       };
 
-      const purchaseOrderList = await this.fetchPaginatedData(
+      const purchaseOrderList = await zohoRateLimitedRequest(async () => axios.get(
         `${this.baseUrl}/purchaseorders`,
-        params,
-        'purchaseorders'
-      );
+        {
+          params: {
+            ...params,
+            organization_id: this.organizationId,
+            per_page: ZOHO_CONFIG.pagination.defaultPerPage
+          },
+          headers: { Authorization: `Zoho-oauthtoken ${await this.getAccessToken()}` },
+          timeout: 30000
+        }
+      ));
 
-      console.log(`Found ${purchaseOrderList.length} purchase orders.`);
+      console.log(`Found ${purchaseOrderList.data.purchaseorders.length} purchase orders.`);
 
       // Return list data if it contains necessary fields
       // Only fetch details if absolutely needed
-      return purchaseOrderList;
+      return purchaseOrderList.data.purchaseorders;
 
     } catch (error) {
       console.error('❌ Error fetching purchase orders:', error);
@@ -807,7 +824,7 @@ class ZohoInventoryService {
    */
   async getPurchaseOrderDetail(purchaseorder_id) {
     try {
-      const response = await this.makeRateLimitedRequest(async () => {
+      const response = await zohoRateLimitedRequest(async () => {
         const token = await this.getAccessToken();
         
         return await axios.get(

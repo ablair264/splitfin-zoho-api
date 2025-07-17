@@ -4,6 +4,7 @@ import admin from 'firebase-admin';
 import '../config/firebase.js';
 import { getAccessToken } from '../api/zoho.js';
 import zohoInventoryService from './zohoInventoryService.js';
+import { zohoRateLimitedRequest } from './zohoRateLimiter.js';
 
 // Salesperson name to ID mapping (used throughout this service)
 // Note: Zoho Inventory API returns salesperson_name but not salesperson_id
@@ -1836,10 +1837,7 @@ const __dirname = dirname(__filename);
 if (import.meta.url === `file://${process.argv[1]}`) {
   (async () => {
     try {
-      const clear = process.argv.includes('--clear');
-      console.log(`\n🚀 Starting Zoho migration and metrics calculation (clear=${clear})...`);
-      await runFullMigration({ clear });
-      console.log('✅ Migration and metrics calculation complete.');
+      await enrichFirestoreSalesOrdersWithLineItems();
       process.exit(0);
     } catch (err) {
       console.error('❌ Migration failed:', err);

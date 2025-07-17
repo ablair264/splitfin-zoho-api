@@ -25,6 +25,10 @@ class CollectionDashboardService {
         startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
         endDate = now;
         break;
+      case '90_days':
+        startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+        endDate = now;
+        break;
       case 'quarter':
         const currentQuarter = Math.floor(now.getMonth() / 3);
         startDate = new Date(now.getFullYear(), currentQuarter * 3, 1);
@@ -32,6 +36,10 @@ class CollectionDashboardService {
         break;
       case 'year':
         startDate = new Date(now.getFullYear(), 0, 1);
+        endDate = now;
+        break;
+      case '1_year':
+        startDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
         endDate = now;
         break;
       case 'custom':
@@ -120,7 +128,7 @@ class CollectionDashboardService {
       const data = doc.data();
       itemMap.set(doc.id, {
         ...data,
-        brand: data.brand_normalized || data.brand || 'Unknown',
+        brand: (data.brand_normalized && data.brand_normalized !== 'unknown') ? data.brand_normalized : 'rader',
       });
     });
 
@@ -326,7 +334,7 @@ class CollectionDashboardService {
                 name: item.name || item.item_name,
                 quantity: 0,
                 revenue: 0,
-                brand: item.brand || 'Unknown'
+                brand: (item.brand && item.brand !== 'unknown') ? item.brand : 'rader'
               });
             }
             const existing = itemMap.get(item.id || item.item_id);
@@ -519,7 +527,7 @@ class CollectionDashboardService {
               const itemDetails = itemSnap.exists ? itemSnap.data() : {};
               lineItems.push({
                 ...itemData,
-                brand: itemDetails.brand_normalized || itemDetails.brand || 'Unknown',
+                brand: (itemDetails.brand_normalized && itemDetails.brand_normalized !== 'unknown') ? itemDetails.brand_normalized : 'rader',
                 item_name: itemDetails.name || itemData.name,
               });
             }
