@@ -5,6 +5,13 @@ import '../config/firebase.js';
 import { getAccessToken } from '../api/zoho.js';
 import zohoInventoryService from './zohoInventoryService.js';
 import { zohoRateLimitedRequest } from './zohoRateLimiter.js';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import fs from 'fs';
+import csv from 'csv-parser';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Salesperson name to ID mapping (used throughout this service)
 // Note: Zoho Inventory API returns salesperson_name but not salesperson_id
@@ -230,6 +237,10 @@ class ZohoReportsService {
         startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
         endDate = now;
         break;
+      case '90_days':
+        startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+        endDate = now;
+        break;
       case 'quarter':
         const currentQuarter = Math.floor(now.getMonth() / 3);
         startDate = new Date(now.getFullYear(), currentQuarter * 3, 1);
@@ -237,6 +248,10 @@ class ZohoReportsService {
         break;
       case 'year':
         startDate = new Date(now.getFullYear(), 0, 1);
+        endDate = now;
+        break;
+      case '1_year':
+        startDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
         endDate = now;
         break;
       case 'this_month':
@@ -1664,7 +1679,9 @@ export async function runFullMigration({ clear }) {
     { label: 'last_year', year: -1 },
     { label: '2023', year: 2023 },
     { label: '2024', year: 2024 },
-    { label: '2025', year: 2025 }
+    { label: '2025', year: 2025 },
+    { label: '90_days', days: 90 },
+    { label: '1_year', year: 1 }
   ];
 
   function getRange(label) {
@@ -1713,6 +1730,14 @@ export async function runFullMigration({ clear }) {
       case '2025':
         start = new Date(Number(label), 0, 1);
         end = new Date(Number(label), 11, 31);
+        break;
+      case '90_days':
+        start = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+        end = now;
+        break;
+      case '1_year':
+        start = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+        end = now;
         break;
       default:
         start = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1766,12 +1791,21 @@ export async function runFullMigration({ clear }) {
 }
 
 /**
+ * CLI Usage:
+ *   node server/src/services/zohoReportsService.js [startAfterId]
+ *   - If startAfterId is provided, resume enrichment from that sales_order document ID (exclusive).
+ *   - If omitted, processes all sales orders from the beginning.
+ */
+
+/**
  * Enrich Firestore sales_orders with line_items from Zoho
  * For each sales order in Firestore, fetch the full sales order from Zoho,
  * and write each line item as a document in the order_line_items subcollection,
  * enriching with brand (from itemIdToBrand mapping).
+ *
+ * @param {string} [startAfterId] - Optional sales_order document ID to resume after (exclusive)
  */
-export async function enrichFirestoreSalesOrdersWithLineItems() {
+export async function enrichFirestoreSalesOrdersWithLineItems(startAfterId) {
   const db = admin.firestore();
   const zohoReportsService = new ZohoReportsService();
 
@@ -1789,15 +1823,23 @@ export async function enrichFirestoreSalesOrdersWithLineItems() {
   const salesOrdersSnap = await db.collection('sales_orders').get();
   console.log(`Found ${salesOrdersSnap.size} sales orders`);
 
-  // 3. For each sales order, fetch line_items from Zoho and write to subcollection
+  // 3. Optionally skip until startAfterId
+  let skip = !!startAfterId;
   let processed = 0;
+  let found = !startAfterId;
   for (const doc of salesOrdersSnap.docs) {
-    const salesorder_id = doc.id;
+    if (skip && !found) {
+      if (doc.id === startAfterId) {
+        found = true;
+        continue; // skip the startAfterId itself
+      }
+      continue;
+    }
     try {
       // Fetch full sales order from Zoho
-      const zohoOrder = await zohoReportsService.getSalesOrderDetail(salesorder_id);
+      const zohoOrder = await zohoReportsService.getSalesOrderDetail(doc.id);
       if (!zohoOrder || !Array.isArray(zohoOrder.line_items)) {
-        console.warn(`No line_items for sales order ${salesorder_id}`);
+        console.warn(`No line_items for sales order ${doc.id}`);
         continue;
       }
 
@@ -1805,15 +1847,30 @@ export async function enrichFirestoreSalesOrdersWithLineItems() {
       const batch = db.batch();
       for (const line of zohoOrder.line_items) {
         if (!line.line_item_id || !line.item_id) continue;
-        line.brand_normalized = itemIdToBrand[line.item_id] || null;
-        batch.set(
-          db.collection('sales_orders')
-            .doc(salesorder_id)
-            .collection('order_line_items')
-            .doc(line.line_item_id),
-          line,
-          { merge: true }
-        );
+        let brand_normalized = null;
+        if (line.product_id) {
+          if (itemIdToBrand[line.product_id]) {
+            brand_normalized = itemIdToBrand[line.product_id];
+          }
+        }
+        const lineItemId = line.product_id ? `${line.product_id}_${line.line_item_id}` : `row_${line.line_item_id}`;
+        const lineItemRef = db.collection('sales_orders')
+          .doc(doc.id)
+          .collection('order_line_items')
+          .doc(lineItemId);
+        const lineItemDoc = await lineItemRef.get();
+        if (lineItemDoc.exists) {
+          // Only update brand_normalized field
+          if (brand_normalized) {
+            batch.update(lineItemRef, { brand_normalized });
+          }
+        } else {
+          // Create the full document, including brand_normalized if present
+          if (brand_normalized) {
+            line.brand_normalized = brand_normalized;
+          }
+          batch.set(lineItemRef, line, { merge: true });
+        }
       }
       await batch.commit();
       processed++;
@@ -1821,24 +1878,102 @@ export async function enrichFirestoreSalesOrdersWithLineItems() {
         console.log(`Processed ${processed}/${salesOrdersSnap.size} sales orders`);
       }
     } catch (err) {
-      console.error(`❌ Failed for sales order ${salesorder_id}:`, err.message);
+      console.error(`❌ Failed for sales order ${doc.id}:`, err.message);
     }
   }
   console.log('✅ All sales orders enriched with line_items');
 }
 
+/**
+ * Import order line items from a CSV file and write to Firestore
+ * @param {string} csvFilePath - Path to the CSV file
+ */
+export async function importOrderLineItemsFromCSV(csvFilePath) {
+  const db = admin.firestore();
+  console.log(`📥 Reading CSV: ${csvFilePath}`);
+  const salesOrderLineItems = new Map();
+  const brandCache = new Map();
+
+  // 1. Read and group CSV rows by salesorder_id
+  await new Promise((resolve, reject) => {
+    fs.createReadStream(csvFilePath)
+      .pipe(csv())
+      .on('data', (row) => {
+        const salesorder_id = row.salesorder_id;
+        if (!salesorder_id) return;
+        if (!salesOrderLineItems.has(salesorder_id)) {
+          salesOrderLineItems.set(salesorder_id, []);
+        }
+        salesOrderLineItems.get(salesorder_id).push(row);
+      })
+      .on('end', resolve)
+      .on('error', reject);
+  });
+
+  console.log(`Found ${salesOrderLineItems.size} unique sales orders in CSV.`);
+
+  // 2. For each salesorder_id, write line items
+  let processedOrders = 0;
+  for (const [salesorder_id, lineItems] of salesOrderLineItems.entries()) {
+    const orderRef = db.collection('sales_orders').doc(salesorder_id);
+    const orderDoc = await orderRef.get();
+    if (!orderDoc.exists) {
+      console.warn(`⚠️  sales_orders/${salesorder_id} not found, skipping.`);
+      continue;
+    }
+    const batch = db.batch();
+    for (let idx = 0; idx < lineItems.length; idx++) {
+      const row = lineItems[idx];
+      let brand_normalized = null;
+      if (row.product_id) {
+        if (brandCache.has(row.product_id)) {
+          brand_normalized = brandCache.get(row.product_id);
+        } else {
+          const itemSnap = await db.collection('items_data').doc(row.product_id).get();
+          if (itemSnap.exists) {
+            brand_normalized = itemSnap.data().brand_normalized || null;
+            brandCache.set(row.product_id, brand_normalized);
+          }
+        }
+      }
+      // Use product_id + idx as doc ID, or fallback to idx
+      const lineItemId = row.product_id ? `${row.product_id}_${idx}` : `row_${idx}`;
+      const lineItemRef = orderRef.collection('order_line_items').doc(lineItemId);
+      const lineItemDoc = await lineItemRef.get();
+      if (lineItemDoc.exists) {
+        // Only update brand_normalized field
+        if (brand_normalized) {
+          batch.update(lineItemRef, { brand_normalized });
+        }
+      } else {
+        // Create the full document, including brand_normalized if present
+        if (brand_normalized) {
+          row.brand_normalized = brand_normalized;
+        }
+        batch.set(lineItemRef, row, { merge: true });
+      }
+    }
+    await batch.commit();
+    processedOrders++;
+    if (processedOrders % 10 === 0) {
+      console.log(`Processed ${processedOrders}/${salesOrderLineItems.size} sales orders`);
+    }
+  }
+  console.log('✅ CSV import complete.');
+}
+
 // --- CLI Entrypoint ---
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 if (import.meta.url === `file://${process.argv[1]}`) {
   (async () => {
     try {
-      await enrichFirestoreSalesOrdersWithLineItems();
-      process.exit(0);
+      if (process.argv[2] === 'import-csv' && process.argv[3]) {
+        await importOrderLineItemsFromCSV(process.argv[3]);
+        process.exit(0);
+      } else {
+        const startAfterId = process.argv[2];
+        await enrichFirestoreSalesOrdersWithLineItems(startAfterId);
+        process.exit(0);
+      }
     } catch (err) {
       console.error('❌ Migration failed:', err);
       process.exit(1);

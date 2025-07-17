@@ -8,13 +8,16 @@ const router = express.Router();
 
 // Middleware to validate date range
 function validateDateRange(req, res, next) {
-  const validRanges = ['today', '7_days', '30_days', 'quarter', 'year', 'this_month', 'last_month', 'this_year', 'custom'];
+  const allowedRanges = [
+    'today', '7_days', '30_days', '90_days', 'quarter', 'year', '1_year',
+    'this_month', 'last_month', 'this_year', 'custom'
+  ];
   const { dateRange } = req.query;
   
-  if (dateRange && !validRanges.includes(dateRange)) {
+  if (dateRange && !allowedRanges.includes(dateRange)) {
     return res.status(400).json({
       success: false,
-      error: `Invalid date range. Must be one of: ${validRanges.join(', ')}`
+      error: `Invalid date range. Must be one of: ${allowedRanges.join(', ')}`
     });
   }
   
