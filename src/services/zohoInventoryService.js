@@ -3,6 +3,20 @@ import axios from 'axios';
 import admin from 'firebase-admin';
 import { getAccessToken } from '../api/zoho.js';
 
+// Salesperson name to ID mapping (Zoho Inventory returns names, not IDs)
+const SALESPERSON_MAPPING = {
+  'Hannah Neale': '310656000000642003',
+  'Dave Roberts': '310656000000642005',
+  'Kate Ellis': '310656000000642007',
+  'Stephen Stroud': '310656000000642009',
+  'Nick Barr': '310656000000642011',
+  'Gay Croker': '310656000000642013',
+  'Steph Gillard': '310656000002136698',
+  'Marcus Johnson': '310656000002136700',
+  'Georgia Middler': '310656000026622107',
+  'matt': '310656000000059361'
+};
+
 const ZOHO_CONFIG = {
   baseUrls: {
     crm: 'https://www.zohoapis.eu/crm/v5',
@@ -13,8 +27,75 @@ const ZOHO_CONFIG = {
   pagination: {
     defaultPerPage: 200,
     maxPerPage: 200
+  },
+  rateLimit: {
+    maxRequestsPerMinute: 50, // Conservative limit (Zoho allows 60)
+    delayBetweenRequests: 1500, // 1.5 seconds between requests
+    delayBetweenBatches: 3000, // 3 seconds between batches
+    retryDelay: 5000, // 5 seconds initial retry delay
+    maxRetries: 3
   }
 };
+
+// Request queue and rate limiter
+class RateLimiter {
+  constructor() {
+    this.queue = [];
+    this.processing = false;
+    this.requestCount = 0;
+    this.windowStart = Date.now();
+    this.requestTimes = [];
+  }
+
+  async addRequest(fn) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ fn, resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.processing || this.queue.length === 0) return;
+    
+    this.processing = true;
+    
+    while (this.queue.length > 0) {
+      // Clean up old request times (older than 1 minute)
+      const oneMinuteAgo = Date.now() - 60000;
+      this.requestTimes = this.requestTimes.filter(time => time > oneMinuteAgo);
+      
+      // Check if we're within rate limit
+      if (this.requestTimes.length >= ZOHO_CONFIG.rateLimit.maxRequestsPerMinute) {
+        // Wait until the oldest request is more than 1 minute old
+        const oldestRequest = this.requestTimes[0];
+        const waitTime = oldestRequest + 60000 - Date.now() + 1000; // Add 1s buffer
+        console.log(`⏳ Rate limit approaching, waiting ${Math.ceil(waitTime/1000)}s...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      const { fn, resolve, reject } = this.queue.shift();
+      
+      try {
+        // Record request time
+        this.requestTimes.push(Date.now());
+        
+        // Execute the request
+        const result = await fn();
+        resolve(result);
+        
+        // Delay before next request
+        await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenRequests));
+      } catch (error) {
+        reject(error);
+      }
+    }
+    
+    this.processing = false;
+  }
+}
+
+const rateLimiter = new RateLimiter();
 
 class ZohoInventoryService {
   constructor() {
@@ -33,7 +114,26 @@ class ZohoInventoryService {
   }
 
   /**
-   * Generic paginated fetch with caching (from zohoReportsService)
+   * Make a rate-limited request with retry logic
+   */
+  async makeRateLimitedRequest(requestFn, retryCount = 0) {
+    try {
+      return await rateLimiter.addRequest(requestFn);
+    } catch (error) {
+      if (error.response?.status === 429 || error.message?.includes('exceeded the maximum')) {
+        if (retryCount < ZOHO_CONFIG.rateLimit.maxRetries) {
+          const delay = ZOHO_CONFIG.rateLimit.retryDelay * Math.pow(2, retryCount);
+          console.log(`🔄 Rate limit hit, retrying in ${delay/1000}s... (attempt ${retryCount + 1}/${ZOHO_CONFIG.rateLimit.maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return this.makeRateLimitedRequest(requestFn, retryCount + 1);
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Generic paginated fetch with caching and rate limiting
    */
   async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
     const cacheKey = `${url}_${JSON.stringify(params)}`;
@@ -50,36 +150,68 @@ class ZohoInventoryService {
     let page = 1;
     let hasMore = true;
 
+    console.log(`🔄 Fetching paginated data from ${url}`);
+
     while (hasMore) {
       try {
-        const token = await this.getAccessToken();
-        
-        const response = await axios.get(url, {
-          params: {
-            ...params,
-            organization_id: this.organizationId,
-            page,
-            per_page: ZOHO_CONFIG.pagination.defaultPerPage
-          },
-          headers: { Authorization: `Zoho-oauthtoken ${token}` },
-          timeout: 30000
+        const response = await this.makeRateLimitedRequest(async () => {
+          const token = await this.getAccessToken();
+          
+          return await axios.get(url, {
+            params: {
+              ...params,
+              organization_id: this.organizationId,
+              page,
+              per_page: ZOHO_CONFIG.pagination.defaultPerPage
+            },
+            headers: { Authorization: `Zoho-oauthtoken ${token}` },
+            timeout: 30000
+          });
         });
 
         const items = response.data[dataKey] || [];
         
+        // Log total count if available (helpful for debugging)
+        if (response.data.page_context?.total) {
+          console.log(`  Total records available: ${response.data.page_context.total}`);
+        }
+        
         if (items.length === 0) {
+          console.log(`✅ No more data found on page ${page}, stopping pagination.`);
           hasMore = false;
         } else {
           allData.push(...items);
-          page++;
-          await new Promise(resolve => setTimeout(resolve, 100)); // Rate limiting
+          console.log(`  Page ${page}: Fetched ${items.length} items (total: ${allData.length})`);
+          
+          // Check if we got less than the requested amount - indicates last page
+          if (items.length < ZOHO_CONFIG.pagination.defaultPerPage) {
+            console.log(`  Page ${page} returned ${items.length} items (less than ${ZOHO_CONFIG.pagination.defaultPerPage}), this is likely the last page.`);
+            hasMore = false;
+          } else {
+            // Continue to next page
+            page++;
+            
+            // Check page_context if available (Zoho sometimes provides this)
+            if (response.data.page_context) {
+              hasMore = response.data.page_context.has_more_page || false;
+              if (!hasMore) {
+                console.log(`  Page context indicates no more pages.`);
+              }
+            }
+          }
         }
 
       } catch (error) {
-        console.warn(`⚠️ Error on page ${page}:`, error.message);
+        console.error(`⚠️ Error on page ${page}:`, error.message);
+        if (error.response?.status === 429) {
+          throw error; // Re-throw rate limit errors to trigger retry
+        }
+        hasMore = false;
         break;
       }
     }
+
+    console.log(`✅ Completed pagination: ${allData.length} total items fetched`);
 
     if (useCache && allData.length > 0) {
       this.cache.set(cacheKey, {
@@ -92,23 +224,25 @@ class ZohoInventoryService {
   }
 
   /**
-   * Get specific sales order with line items
+   * Get specific sales order with line items (with rate limiting)
    */
   async getSalesOrder(orderId) {
     try {
-      const accessToken = await this.getAccessToken();
-      
-      const response = await axios.get(
-        `${this.baseUrl}/salesorders/${orderId}`,
-        {
-          headers: {
-            'Authorization': `Zoho-oauthtoken ${accessToken}`
-          },
-          params: {
-            organization_id: this.organizationId
+      const response = await this.makeRateLimitedRequest(async () => {
+        const accessToken = await this.getAccessToken();
+        
+        return await axios.get(
+          `${this.baseUrl}/salesorders/${orderId}`,
+          {
+            headers: {
+              'Authorization': `Zoho-oauthtoken ${accessToken}`
+            },
+            params: {
+              organization_id: this.organizationId
+            }
           }
-        }
-      );
+        );
+      });
       
       const order = response.data?.salesorder;
       
@@ -116,6 +250,23 @@ class ZohoInventoryService {
         // Ensure customer name is included
         if (!order.customer_name && order.customer_id) {
           order.customer_name = `Customer ${order.customer_id}`;
+        }
+        
+        // Add salesperson_id from name if not present
+        if (!order.salesperson_id && order.salesperson_name) {
+          // Try exact match first
+          if (SALESPERSON_MAPPING[order.salesperson_name]) {
+            order.salesperson_id = SALESPERSON_MAPPING[order.salesperson_name];
+          } else {
+            // Try case-insensitive match
+            const lowerName = order.salesperson_name.toLowerCase();
+            for (const [name, id] of Object.entries(SALESPERSON_MAPPING)) {
+              if (name.toLowerCase() === lowerName) {
+                order.salesperson_id = id;
+                break;
+              }
+            }
+          }
         }
         
         // Process line items
@@ -143,52 +294,28 @@ class ZohoInventoryService {
   }
 
   /**
-   * Fetch all products with full details (from productSyncService)
+   * Fetch all products with full details (optimized with batching)
    */
   async fetchAllProducts() {
     console.log('🔄 Fetching all products from Zoho Inventory...');
     
     try {
-      const token = await this.getAccessToken();
-      const allProducts = [];
-      let page = 1;
-      let hasMore = true;
+      // First, get all items in a single paginated request
+      const allItems = await this.fetchPaginatedData(
+        `${this.baseUrl}/items`,
+        {},
+        'items'
+      );
       
-      while (hasMore) {
-        const response = await axios.get(`${this.baseUrl}/items`, {
-          params: {
-            organization_id: this.organizationId,
-            page: page,
-            per_page: 200
-          },
-          headers: {
-            Authorization: `Zoho-oauthtoken ${token}`
-          },
-          timeout: 30000
-        });
-        
-        const items = response.data.items || [];
-        
-        if (items.length === 0) {
-          hasMore = false;
-        } else {
-          // Get full details for each item
-          for (const item of items) {
-            const fullItem = await this.getItemDetails(item.item_id, token);
-            if (fullItem) {
-              allProducts.push(fullItem);
-            }
-          }
-          
-          console.log(`Fetched page ${page}, total products so far: ${allProducts.length}`);
-          page++;
-          
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-      }
+      console.log(`✅ Fetched ${allItems.length} products from Zoho`);
       
-      console.log(`✅ Fetched ${allProducts.length} products from Zoho`);
-      return allProducts;
+      // Most item data is already in the list response
+      // Only fetch full details if absolutely necessary
+      // For now, return the items as-is since they contain most needed fields
+      return allItems.map(item => ({
+        ...item,
+        brand_normalized: this.normalizeBrandName(item.vendor_name || item.brand || '')
+      }));
       
     } catch (error) {
       console.error('❌ Error fetching products:', error);
@@ -197,18 +324,20 @@ class ZohoInventoryService {
   }
 
   /**
-   * Get full item details
+   * Get full item details (only if needed, with rate limiting)
    */
   async getItemDetails(itemId, token) {
     try {
-      const response = await axios.get(`${this.baseUrl}/items/${itemId}`, {
-        params: {
-          organization_id: this.organizationId
-        },
-        headers: {
-          Authorization: `Zoho-oauthtoken ${token || await this.getAccessToken()}`
-        },
-        timeout: 30000
+      const response = await this.makeRateLimitedRequest(async () => {
+        return await axios.get(`${this.baseUrl}/items/${itemId}`, {
+          params: {
+            organization_id: this.organizationId
+          },
+          headers: {
+            Authorization: `Zoho-oauthtoken ${token || await this.getAccessToken()}`
+          },
+          timeout: 30000
+        });
       });
       
       return response.data.item;
@@ -220,7 +349,7 @@ class ZohoInventoryService {
   }
 
   /**
-   * Sync products to Firebase
+   * Sync products to Firebase (optimized)
    */
   async syncProductsToFirebase() {
     console.log('🚀 Starting product sync to Firebase...');
@@ -278,6 +407,9 @@ class ZohoInventoryService {
           await batch.commit();
           console.log(`✅ Synced ${count} products...`);
           batch = this.db.batch();
+          
+          // Add delay between batches
+          await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
         }
       }
       
@@ -302,7 +434,7 @@ class ZohoInventoryService {
   }
 
   /**
-   * Get sales orders for a date range
+   * Get sales orders for a date range (optimized to avoid individual detail fetches)
    */
   async getSalesOrders(dateRange = '30_days', customDateRange = null, agentId = null) {
     try {
@@ -317,25 +449,74 @@ class ZohoInventoryService {
         params.salesperson_id = agentId;
       }
 
+      // Helper to get salesperson ID from name
+      const getSalespersonId = (salespersonName) => {
+        if (!salespersonName) return null;
+        
+        // Try exact match first
+        if (SALESPERSON_MAPPING[salespersonName]) {
+          return SALESPERSON_MAPPING[salespersonName];
+        }
+        
+        // Try case-insensitive match
+        const lowerName = salespersonName.toLowerCase();
+        for (const [name, id] of Object.entries(SALESPERSON_MAPPING)) {
+          if (name.toLowerCase() === lowerName) {
+            return id;
+          }
+        }
+        
+        return null;
+      };
+
+      // Fetch all orders with pagination
       const salesOrderList = await this.fetchPaginatedData(
         `${this.baseUrl}/salesorders`,
         params,
         'salesorders'
       );
       
-      console.log(`Found ${salesOrderList.length} orders. Fetching details...`);
+      console.log(`Found ${salesOrderList.length} orders.`);
 
-      const detailedOrders = [];
-      for (const orderHeader of salesOrderList) {
-        const orderDetail = await this.getSalesOrder(orderHeader.salesorder_id);
-        if (orderDetail) {
-          detailedOrders.push(orderDetail);
+      // Add salesperson_id to each order if missing
+      salesOrderList.forEach(order => {
+        if (!order.salesperson_id && order.salesperson_name) {
+          const id = getSalespersonId(order.salesperson_name);
+          if (id) {
+            order.salesperson_id = id;
+          }
         }
-        await new Promise(resolve => setTimeout(resolve, 50)); 
-      }
+      });
 
-      console.log(`✅ Successfully fetched details for ${detailedOrders.length} orders.`);
-      return detailedOrders;
+      // Only fetch details if line items are not included in list response
+      // Check if first order has line_items
+      if (salesOrderList.length > 0 && !salesOrderList[0].line_items) {
+        console.log('Line items not included in list response, fetching details...');
+        
+        // Fetch details in smaller batches to avoid rate limits
+        const detailBatchSize = 10;
+        const detailedOrders = [];
+        
+        for (let i = 0; i < salesOrderList.length; i += detailBatchSize) {
+          const batch = salesOrderList.slice(i, i + detailBatchSize);
+          const batchDetails = await Promise.all(
+            batch.map(orderHeader => this.getSalesOrder(orderHeader.salesorder_id))
+          );
+          
+          detailedOrders.push(...batchDetails.filter(order => order !== null));
+          
+          if (i + detailBatchSize < salesOrderList.length) {
+            console.log(`  Fetched details for ${detailedOrders.length}/${salesOrderList.length} orders...`);
+            await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
+          }
+        }
+        
+        console.log(`✅ Successfully fetched details for ${detailedOrders.length} orders.`);
+        return detailedOrders;
+      } else {
+        // Line items already included, return as-is
+        return salesOrderList;
+      }
 
     } catch (error) {
       console.error('❌ Error fetching sales orders:', error);
@@ -344,246 +525,252 @@ class ZohoInventoryService {
   }
   
   async syncProductsWithChangeDetection() {
-  console.log('🔄 Starting product sync with change detection...');
-  
-  try {
-    const startTime = Date.now();
-    const stats = {
-      total: 0,
-      updated: 0,
-      new: 0,
-      deactivated: 0,
-      errors: 0
-    };
+    console.log('🔄 Starting product sync with change detection...');
     
-    // Get all current items from Firebase
-    const firebaseItemsSnapshot = await this.db.collection('items_data').get();
-    const firebaseItemsMap = new Map();
-    
-    firebaseItemsSnapshot.forEach(doc => {
-      firebaseItemsMap.set(doc.id, doc.data());
-    });
-    
-    console.log(`📊 Found ${firebaseItemsMap.size} items in Firebase`);
-    
-    // Fetch all products from Zoho
-    const zohoProducts = await this.fetchAllProducts();
-    console.log(`📊 Found ${zohoProducts.length} items in Zoho`);
-    
-    // Track which Zoho items we've seen
-    const zohoItemIds = new Set();
-    
-    let batch = this.db.batch();
-    let batchCount = 0;
-    
-    // Process each Zoho product
-    for (const zohoProduct of zohoProducts) {
-      stats.total++;
-      zohoItemIds.add(zohoProduct.item_id);
-      
-      const firebaseItem = firebaseItemsMap.get(zohoProduct.item_id);
-      
-      // Prepare the updated product data
-      const updatedProduct = {
-        item_id: zohoProduct.item_id,
-        name: zohoProduct.name || '',
-        item_name: zohoProduct.name || '', // Some queries use item_name
-        sku: zohoProduct.sku || '',
-        ean: zohoProduct.ean || zohoProduct.upc || '',
-        
-        // Pricing
-        rate: parseFloat(zohoProduct.rate || 0),
-        selling_price: parseFloat(zohoProduct.rate || 0), // Alias for compatibility
-        purchase_rate: parseFloat(zohoProduct.purchase_rate || 0),
-        
-        // Manufacturer/Brand (ensure compatibility with your brand queries)
-        Manufacturer: zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || '',
-        manufacturer: (zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || '').toLowerCase(),
-        vendor_id: zohoProduct.vendor_id || '',
-        vendor_name: zohoProduct.vendor_name || '',
-        
-        // Stock levels
-        available_stock: parseInt(zohoProduct.available_for_sale_stock || 0),
-        actual_available_stock: parseInt(zohoProduct.actual_available_for_sale_stock || 0),
-        stock_on_hand: parseInt(zohoProduct.stock_on_hand || 0),
-        reorder_level: parseInt(zohoProduct.reorder_level || 0),
-        
-        // Product details
-        description: zohoProduct.description || '',
-        category: zohoProduct.category_name || '',
-        status: zohoProduct.status || 'active',
-        unit: zohoProduct.unit || '',
-        
-        // Images
-        imageUrl: zohoProduct.image_url || '',
-        image_document_id: zohoProduct.image_document_id || '',
-        
-        // Timestamps
-        created_time: zohoProduct.created_time,
-        last_modified_time: zohoProduct.last_modified_time,
-        _source: 'zoho_inventory',
-        _synced_at: admin.firestore.FieldValue.serverTimestamp()
+    try {
+      const startTime = Date.now();
+      const stats = {
+        total: 0,
+        updated: 0,
+        new: 0,
+        deactivated: 0,
+        errors: 0
       };
       
-      // Check if this is a new item or an update
-      if (!firebaseItem) {
-        stats.new++;
-        console.log(`✨ New item: ${zohoProduct.name} (${zohoProduct.sku})`);
-      } else {
-        // Check for changes
-        const hasChanges = this.detectProductChanges(firebaseItem, updatedProduct);
+      // Get all current items from Firebase
+      const firebaseItemsSnapshot = await this.db.collection('items_data').get();
+      const firebaseItemsMap = new Map();
+      
+      firebaseItemsSnapshot.forEach(doc => {
+        firebaseItemsMap.set(doc.id, doc.data());
+      });
+      
+      console.log(`📊 Found ${firebaseItemsMap.size} items in Firebase`);
+      
+      // Fetch all products from Zoho
+      const zohoProducts = await this.fetchAllProducts();
+      console.log(`📊 Found ${zohoProducts.length} items in Zoho`);
+      
+      // Track which Zoho items we've seen
+      const zohoItemIds = new Set();
+      
+      let batch = this.db.batch();
+      let batchCount = 0;
+      
+      // Process each Zoho product
+      for (const zohoProduct of zohoProducts) {
+        stats.total++;
+        zohoItemIds.add(zohoProduct.item_id);
         
-        if (hasChanges) {
-          stats.updated++;
-          console.log(`📝 Updated item: ${zohoProduct.name} - Changes detected`);
+        const firebaseItem = firebaseItemsMap.get(zohoProduct.item_id);
+        
+        // Prepare the updated product data
+        const updatedProduct = {
+          item_id: zohoProduct.item_id,
+          name: zohoProduct.name || '',
+          item_name: zohoProduct.name || '', // Some queries use item_name
+          sku: zohoProduct.sku || '',
+          ean: zohoProduct.ean || zohoProduct.upc || '',
           
-          // Log specific status changes
-          if (firebaseItem.status !== updatedProduct.status) {
-            console.log(`   Status changed: ${firebaseItem.status} → ${updatedProduct.status}`);
-            if (updatedProduct.status === 'inactive') {
-              stats.deactivated++;
+          // Pricing
+          rate: parseFloat(zohoProduct.rate || 0),
+          selling_price: parseFloat(zohoProduct.rate || 0), // Alias for compatibility
+          purchase_rate: parseFloat(zohoProduct.purchase_rate || 0),
+          
+          // Manufacturer/Brand (ensure compatibility with your brand queries)
+          Manufacturer: zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || '',
+          manufacturer: (zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || '').toLowerCase(),
+          vendor_id: zohoProduct.vendor_id || '',
+          vendor_name: zohoProduct.vendor_name || '',
+          
+          // Stock levels
+          available_stock: parseInt(zohoProduct.available_for_sale_stock || 0),
+          actual_available_stock: parseInt(zohoProduct.actual_available_for_sale_stock || 0),
+          stock_on_hand: parseInt(zohoProduct.stock_on_hand || 0),
+          reorder_level: parseInt(zohoProduct.reorder_level || 0),
+          
+          // Product details
+          description: zohoProduct.description || '',
+          category: zohoProduct.category_name || '',
+          status: zohoProduct.status || 'active',
+          unit: zohoProduct.unit || '',
+          
+          // Images
+          imageUrl: zohoProduct.image_url || '',
+          image_document_id: zohoProduct.image_document_id || '',
+          
+          // Timestamps
+          created_time: zohoProduct.created_time,
+          last_modified_time: zohoProduct.last_modified_time,
+          _source: 'zoho_inventory',
+          _synced_at: admin.firestore.FieldValue.serverTimestamp()
+        };
+        
+        // Check if this is a new item or an update
+        if (!firebaseItem) {
+          stats.new++;
+          console.log(`✨ New item: ${zohoProduct.name} (${zohoProduct.sku})`);
+        } else {
+          // Check for changes
+          const hasChanges = this.detectProductChanges(firebaseItem, updatedProduct);
+          
+          if (hasChanges) {
+            stats.updated++;
+            console.log(`📝 Updated item: ${zohoProduct.name} - Changes detected`);
+            
+            // Log specific status changes
+            if (firebaseItem.status !== updatedProduct.status) {
+              console.log(`   Status changed: ${firebaseItem.status} → ${updatedProduct.status}`);
+              if (updatedProduct.status === 'inactive') {
+                stats.deactivated++;
+              }
             }
           }
         }
-      }
-      
-      // Add to batch
-      const docRef = this.db.collection('items_data').doc(zohoProduct.item_id);
-      batch.set(docRef, updatedProduct, { merge: true });
-      batchCount++;
-      
-      // Commit batch if needed
-      if (batchCount >= 400) {
-        await batch.commit();
-        batch = this.db.batch();
-        batchCount = 0;
-        console.log(`💾 Committed batch of 400 items...`);
-      }
-    }
-    
-    // Commit remaining items
-    if (batchCount > 0) {
-      await batch.commit();
-    }
-    
-    // Check for items that exist in Firebase but not in Zoho (possibly deleted)
-    const missingInZoho = [];
-    firebaseItemsMap.forEach((item, itemId) => {
-      if (!zohoItemIds.has(itemId) && item.status === 'active') {
-        missingInZoho.push({
-          item_id: itemId,
-          name: item.name,
-          sku: item.sku
-        });
-      }
-    });
-    
-    // Mark missing items as inactive
-    if (missingInZoho.length > 0) {
-      console.log(`⚠️  Found ${missingInZoho.length} items in Firebase that are missing in Zoho`);
-      
-      batch = this.db.batch();
-      batchCount = 0;
-      
-      for (const item of missingInZoho) {
-        console.log(`   Marking as inactive: ${item.name} (${item.sku})`);
-        const docRef = this.db.collection('items_data').doc(item.item_id);
-        batch.update(docRef, {
-          status: 'inactive',
-          _deactivated_reason: 'Not found in Zoho Inventory',
-          _deactivated_at: admin.firestore.FieldValue.serverTimestamp()
-        });
-        stats.deactivated++;
+        
+        // Add to batch
+        const docRef = this.db.collection('items_data').doc(zohoProduct.item_id);
+        batch.set(docRef, updatedProduct, { merge: true });
         batchCount++;
         
+        // Commit batch if needed
         if (batchCount >= 400) {
           await batch.commit();
           batch = this.db.batch();
           batchCount = 0;
+          console.log(`💾 Committed batch of 400 items...`);
+          
+          // Add delay between batches
+          await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
         }
       }
       
+      // Commit remaining items
       if (batchCount > 0) {
         await batch.commit();
       }
-    }
-    
-    // Update sync metadata
-    await this.db.collection('sync_metadata').doc('products_sync').set({
-      lastSync: admin.firestore.FieldValue.serverTimestamp(),
-      duration: Date.now() - startTime,
-      stats: stats,
-      status: 'completed'
-    });
-    
-    console.log('\n✅ Product sync completed!');
-    console.log(`📊 Summary:`);
-    console.log(`   Total processed: ${stats.total}`);
-    console.log(`   New items: ${stats.new}`);
-    console.log(`   Updated items: ${stats.updated}`);
-    console.log(`   Deactivated items: ${stats.deactivated}`);
-    console.log(`   Duration: ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
-    
-    return { success: true, stats };
-    
-  } catch (error) {
-    console.error('❌ Product sync failed:', error);
-    
-    // Update sync metadata with error
-    await this.db.collection('sync_metadata').doc('products_sync').set({
-      lastSync: admin.firestore.FieldValue.serverTimestamp(),
-      status: 'failed',
-      error: error.message
-    }, { merge: true });
-    
-    throw error;
-  }
-}
-
-/**
- * Detect changes between Firebase and Zoho product data
- */
-detectProductChanges(firebaseItem, zohoItem) {
-  // Fields to check for changes
-  const fieldsToCheck = [
-    'name',
-    'sku',
-    'status',
-    'rate',
-    'selling_price',
-    'available_stock',
-    'actual_available_stock',
-    'stock_on_hand',
-    'vendor_name',
-    'description',
-    'category',
-    'reorder_level'
-  ];
-  
-  for (const field of fieldsToCheck) {
-    // Handle numeric comparisons
-    if (['rate', 'selling_price', 'available_stock', 'actual_available_stock', 'stock_on_hand', 'reorder_level'].includes(field)) {
-      const fbValue = parseFloat(firebaseItem[field] || 0);
-      const zohoValue = parseFloat(zohoItem[field] || 0);
       
-      if (Math.abs(fbValue - zohoValue) > 0.01) {
-        return true;
+      // Check for items that exist in Firebase but not in Zoho (possibly deleted)
+      const missingInZoho = [];
+      firebaseItemsMap.forEach((item, itemId) => {
+        if (!zohoItemIds.has(itemId) && item.status === 'active') {
+          missingInZoho.push({
+            item_id: itemId,
+            name: item.name,
+            sku: item.sku
+          });
+        }
+      });
+      
+      // Mark missing items as inactive
+      if (missingInZoho.length > 0) {
+        console.log(`⚠️  Found ${missingInZoho.length} items in Firebase that are missing in Zoho`);
+        
+        batch = this.db.batch();
+        batchCount = 0;
+        
+        for (const item of missingInZoho) {
+          console.log(`   Marking as inactive: ${item.name} (${item.sku})`);
+          const docRef = this.db.collection('items_data').doc(item.item_id);
+          batch.update(docRef, {
+            status: 'inactive',
+            _deactivated_reason: 'Not found in Zoho Inventory',
+            _deactivated_at: admin.firestore.FieldValue.serverTimestamp()
+          });
+          stats.deactivated++;
+          batchCount++;
+          
+          if (batchCount >= 400) {
+            await batch.commit();
+            batch = this.db.batch();
+            batchCount = 0;
+            
+            // Add delay between batches
+            await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
+          }
+        }
+        
+        if (batchCount > 0) {
+          await batch.commit();
+        }
       }
-    } else {
-      // String comparison
-      if ((firebaseItem[field] || '') !== (zohoItem[field] || '')) {
-        return true;
-      }
+      
+      // Update sync metadata
+      await this.db.collection('sync_metadata').doc('products_sync').set({
+        lastSync: admin.firestore.FieldValue.serverTimestamp(),
+        duration: Date.now() - startTime,
+        stats: stats,
+        status: 'completed'
+      });
+      
+      console.log('\n✅ Product sync completed!');
+      console.log(`📊 Summary:`);
+      console.log(`   Total processed: ${stats.total}`);
+      console.log(`   New items: ${stats.new}`);
+      console.log(`   Updated items: ${stats.updated}`);
+      console.log(`   Deactivated items: ${stats.deactivated}`);
+      console.log(`   Duration: ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
+      
+      return { success: true, stats };
+      
+    } catch (error) {
+      console.error('❌ Product sync failed:', error);
+      
+      // Update sync metadata with error
+      await this.db.collection('sync_metadata').doc('products_sync').set({
+        lastSync: admin.firestore.FieldValue.serverTimestamp(),
+        status: 'failed',
+        error: error.message
+      }, { merge: true });
+      
+      throw error;
     }
   }
-  
-  // Check if last_modified_time is different
-  if (firebaseItem.last_modified_time !== zohoItem.last_modified_time) {
-    return true;
+
+  /**
+   * Detect changes between Firebase and Zoho product data
+   */
+  detectProductChanges(firebaseItem, zohoItem) {
+    // Fields to check for changes
+    const fieldsToCheck = [
+      'name',
+      'sku',
+      'status',
+      'rate',
+      'selling_price',
+      'available_stock',
+      'actual_available_stock',
+      'stock_on_hand',
+      'vendor_name',
+      'description',
+      'category',
+      'reorder_level'
+    ];
+    
+    for (const field of fieldsToCheck) {
+      // Handle numeric comparisons
+      if (['rate', 'selling_price', 'available_stock', 'actual_available_stock', 'stock_on_hand', 'reorder_level'].includes(field)) {
+        const fbValue = parseFloat(firebaseItem[field] || 0);
+        const zohoValue = parseFloat(zohoItem[field] || 0);
+        
+        if (Math.abs(fbValue - zohoValue) > 0.01) {
+          return true;
+        }
+      } else {
+        // String comparison
+        if ((firebaseItem[field] || '') !== (zohoItem[field] || '')) {
+          return true;
+        }
+      }
+    }
+    
+    // Check if last_modified_time is different
+    if (firebaseItem.last_modified_time !== zohoItem.last_modified_time) {
+      return true;
+    }
+    
+    return false;
   }
-  
-  return false;
-}
 
   /**
    * Get purchase orders
@@ -603,18 +790,11 @@ detectProductChanges(firebaseItem, zohoItem) {
         'purchaseorders'
       );
 
-      console.log(`Found ${purchaseOrderList.length} purchase orders. Fetching details...`);
+      console.log(`Found ${purchaseOrderList.length} purchase orders.`);
 
-      const detailedPurchaseOrders = [];
-      for (const poHeader of purchaseOrderList) {
-        const poDetail = await this.getPurchaseOrderDetail(poHeader.purchaseorder_id);
-        if (poDetail) {
-          detailedPurchaseOrders.push(poDetail);
-        }
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
-
-      return detailedPurchaseOrders;
+      // Return list data if it contains necessary fields
+      // Only fetch details if absolutely needed
+      return purchaseOrderList;
 
     } catch (error) {
       console.error('❌ Error fetching purchase orders:', error);
@@ -623,16 +803,20 @@ detectProductChanges(firebaseItem, zohoItem) {
   }
 
   /**
-   * Get purchase order detail
+   * Get purchase order detail (with rate limiting)
    */
   async getPurchaseOrderDetail(purchaseorder_id) {
     try {
-      const url = `${this.baseUrl}/purchaseorders/${purchaseorder_id}`;
-      const token = await this.getAccessToken();
-      
-      const response = await axios.get(url, {
-        params: { organization_id: this.organizationId },
-        headers: { Authorization: `Zoho-oauthtoken ${token}` }
+      const response = await this.makeRateLimitedRequest(async () => {
+        const token = await this.getAccessToken();
+        
+        return await axios.get(
+          `${this.baseUrl}/purchaseorders/${purchaseorder_id}`,
+          {
+            params: { organization_id: this.organizationId },
+            headers: { Authorization: `Zoho-oauthtoken ${token}` }
+          }
+        );
       });
 
       return response.data?.purchaseorder;

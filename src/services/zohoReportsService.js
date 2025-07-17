@@ -5,6 +5,21 @@ import '../config/firebase.js';
 import { getAccessToken } from '../api/zoho.js';
 import zohoInventoryService from './zohoInventoryService.js';
 
+// Salesperson name to ID mapping (used throughout this service)
+// Note: Zoho Inventory API returns salesperson_name but not salesperson_id
+const SALESPERSON_MAPPING = {
+  'Hannah Neale': '310656000000642003',
+  'Dave Roberts': '310656000000642005',
+  'Kate Ellis': '310656000000642007',
+  'Stephen Stroud': '310656000000642009',
+  'Nick Barr': '310656000000642011',
+  'Gay Croker': '310656000000642013',
+  'Steph Gillard': '310656000002136698',
+  'Marcus Johnson': '310656000002136700',
+  'Georgia Middler': '310656000026622107',
+  'matt': '310656000000059361'
+};
+
 const ZOHO_CONFIG = {
   baseUrls: {
     crm: 'https://www.zohoapis.eu/crm/v5',
@@ -15,8 +30,65 @@ const ZOHO_CONFIG = {
   pagination: {
     defaultPerPage: 200,
     maxPerPage: 200
+  },
+  rateLimit: {
+    maxRequestsPerMinute: 50,
+    delayBetweenRequests: 1500,
+    delayBetweenBatches: 3000,
+    retryDelay: 5000,
+    maxRetries: 3
   }
 };
+
+// Shared rate limiter
+class RateLimiter {
+  constructor() {
+    this.queue = [];
+    this.processing = false;
+    this.requestTimes = [];
+  }
+
+  async addRequest(fn) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ fn, resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.processing || this.queue.length === 0) return;
+    
+    this.processing = true;
+    
+    while (this.queue.length > 0) {
+      const oneMinuteAgo = Date.now() - 60000;
+      this.requestTimes = this.requestTimes.filter(time => time > oneMinuteAgo);
+      
+      if (this.requestTimes.length >= ZOHO_CONFIG.rateLimit.maxRequestsPerMinute) {
+        const oldestRequest = this.requestTimes[0];
+        const waitTime = oldestRequest + 60000 - Date.now() + 1000;
+        console.log(`⏳ Rate limit approaching, waiting ${Math.ceil(waitTime/1000)}s...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      const { fn, resolve, reject } = this.queue.shift();
+      
+      try {
+        this.requestTimes.push(Date.now());
+        const result = await fn();
+        resolve(result);
+        await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenRequests));
+      } catch (error) {
+        reject(error);
+      }
+    }
+    
+    this.processing = false;
+  }
+}
+
+const rateLimiter = new RateLimiter();
 
 class ZohoReportsService {
   constructor() {
@@ -25,7 +97,26 @@ class ZohoReportsService {
   }
 
   /**
-   * Generic function for paginated Zoho requests with caching
+   * Make a rate-limited request with retry logic
+   */
+  async makeRateLimitedRequest(requestFn, retryCount = 0) {
+    try {
+      return await rateLimiter.addRequest(requestFn);
+    } catch (error) {
+      if (error.response?.status === 429 || error.message?.includes('exceeded the maximum')) {
+        if (retryCount < ZOHO_CONFIG.rateLimit.maxRetries) {
+          const delay = ZOHO_CONFIG.rateLimit.retryDelay * Math.pow(2, retryCount);
+          console.log(`🔄 Rate limit hit, retrying in ${delay/1000}s... (attempt ${retryCount + 1}/${ZOHO_CONFIG.rateLimit.maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return this.makeRateLimitedRequest(requestFn, retryCount + 1);
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Generic function for paginated Zoho requests with caching and rate limiting
    */
   async fetchPaginatedData(url, params = {}, dataKey = 'data', useCache = true) {
     const cacheKey = `${url}_${JSON.stringify(params)}`;
@@ -40,56 +131,68 @@ class ZohoReportsService {
 
     const allData = [];
     let page = 1;
-    let pageToken = null;
     const perPage = ZOHO_CONFIG.pagination.defaultPerPage;
-    const maxLoops = 100;
-    let currentLoop = 0;
+    let hasMore = true;
 
     console.log(`🔄 Fetching paginated data from ${url}`);
 
-    while (currentLoop < maxLoops) {
+    while (hasMore) {
       try {
-        const token = await getAccessToken();
-        
-        const requestParams = { ...params };
-        if (pageToken) {
-          requestParams.page_token = pageToken;
-        } else {
-          requestParams.page = page;
-          requestParams.per_page = perPage;
-        }
+        const response = await this.makeRateLimitedRequest(async () => {
+          const token = await getAccessToken();
+          
+          const requestParams = { 
+            ...params,
+            page,
+            per_page: perPage
+          };
 
-        const response = await axios.get(url, {
-          params: requestParams,
-          headers: { Authorization: `Zoho-oauthtoken ${token}` },
-          timeout: 30000
+          return await axios.get(url, {
+            params: requestParams,
+            headers: { Authorization: `Zoho-oauthtoken ${token}` },
+            timeout: 30000
+          });
         });
 
         const data = response.data;
         const items = Array.isArray(data[dataKey]) ? data[dataKey] : data.data || [];
         
+        // Log total count if available (helpful for debugging)
+        if (data.page_context?.total) {
+          console.log(`  Total records available: ${data.page_context.total}`);
+        }
+        
         if (items.length === 0) {
-          console.log(`✅ No more data found, stopping pagination.`);
-          break;
-        }
-        
-        allData.push(...items);
-        
-        const nextPageToken = data.info?.next_page_token;
-
-        if (nextPageToken) {
-          pageToken = nextPageToken;
+          console.log(`✅ No more data found on page ${page}, stopping pagination.`);
+          hasMore = false;
         } else {
-          console.log(`✅ No page_token found, assuming this is the last page.`);
-          break;
+          allData.push(...items);
+          console.log(`  Page ${page}: Fetched ${items.length} items (total: ${allData.length})`);
+          
+          // Check if we got less than the requested amount - indicates last page
+          if (items.length < perPage) {
+            console.log(`  Page ${page} returned ${items.length} items (less than ${perPage}), this is likely the last page.`);
+            hasMore = false;
+          } else {
+            // Continue to next page
+            page++;
+            
+            // Check page_context if available (Zoho sometimes provides this)
+            if (data.page_context) {
+              hasMore = data.page_context.has_more_page || false;
+              if (!hasMore) {
+                console.log(`  Page context indicates no more pages.`);
+              }
+            }
+          }
         }
-
-        page++;
-        currentLoop++;
-        await new Promise(resolve => setTimeout(resolve, 100));
 
       } catch (error) {
         console.warn(`⚠️ Error on page ${page}:`, error.message);
+        if (error.response?.status === 429) {
+          throw error; // Re-throw to trigger retry
+        }
+        hasMore = false;
         break;
       }
     }
@@ -201,15 +304,19 @@ class ZohoReportsService {
       const agentStats = new Map();
 
       salesOrders.forEach(order => {
+        // Use salesperson_id (which should now be populated from the name mapping)
         if (order.salesperson_id) {
           const agentId = order.salesperson_id;
-          const agentInfo = userMap.get(agentId) || { name: order.salesperson_name || 'Unknown' };
+          const agentInfo = userMap.get(agentId) || { 
+            name: order.salesperson_name || 'Unknown',
+            email: ''
+          };
           
           if (!agentStats.has(agentId)) {
             agentStats.set(agentId, {
               agentId,
               agentUid: agentInfo.id,
-              agentName: agentInfo.name,
+              agentName: agentInfo.name || order.salesperson_name || 'Unknown',
               agentEmail: agentInfo.email || '',
               totalRevenue: 0,
               totalOrders: 0,
@@ -280,103 +387,103 @@ class ZohoReportsService {
   /**
    * Get brand performance data - UPDATED to use actual collections
    */
- async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
-  try {
-    const db = admin.firestore();
-    const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-    
-    // Brand mappings
-    const brandMappings = {
-      'rader': ['rader', 'räder', 'Rader', 'Räder'],
-      'relaxound': ['relaxound', 'Relaxound'],
-      'myflame': ['my flame', 'My Flame', 'myflame', 'MyFlame', 'My Flame Lifestyle'],
-      'blomus': ['blomus', 'Blomus'],
-      'remember': ['remember', 'Remember'],
-      'elvang': ['elvang', 'Elvang']
-    };
-    
-    // Query sales_transactions for the date range
-    const transactionsSnapshot = await db.collection('sales_transactions')
-      .where('order_date', '>=', startDate.toISOString().split('T')[0])
-      .where('order_date', '<=', endDate.toISOString().split('T')[0])
-      .get();
-    
-    const brandStats = new Map();
-    
-    // Initialize all brands
-    Object.entries(brandMappings).forEach(([key, variants]) => {
-      brandStats.set(key, {
-        name: variants[variants.length - 1], // Use the properly capitalized version
-        revenue: 0,
-        quantity: 0,
-        orders: new Set(),
-        products: new Set(),
-        marketplace_orders: new Set(),
-        direct_orders: new Set()
-      });
-    });
-    
-    // Process transactions
-    transactionsSnapshot.forEach(doc => {
-      const trans = doc.data();
+  async getBrandPerformance(dateRange = '30_days', customDateRange = null) {
+    try {
+      const db = admin.firestore();
+      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
       
-      // Find which brand this belongs to
-      let brandKey = null;
+      // Brand mappings
+      const brandMappings = {
+        'rader': ['rader', 'räder', 'Rader', 'Räder'],
+        'relaxound': ['relaxound', 'Relaxound'],
+        'myflame': ['my flame', 'My Flame', 'myflame', 'MyFlame', 'My Flame Lifestyle'],
+        'blomus': ['blomus', 'Blomus'],
+        'remember': ['remember', 'Remember'],
+        'elvang': ['elvang', 'Elvang']
+      };
+      
+      // Query sales_transactions for the date range
+      const transactionsSnapshot = await db.collection('sales_transactions')
+        .where('order_date', '>=', startDate.toISOString().split('T')[0])
+        .where('order_date', '<=', endDate.toISOString().split('T')[0])
+        .get();
+      
+      const brandStats = new Map();
+      
+      // Initialize all brands
       Object.entries(brandMappings).forEach(([key, variants]) => {
-        if (variants.some(variant => 
-          variant.toLowerCase() === (trans.brand || '').toLowerCase()
-        )) {
-          brandKey = key;
+        brandStats.set(key, {
+          name: variants[variants.length - 1], // Use the properly capitalized version
+          revenue: 0,
+          quantity: 0,
+          orders: new Set(),
+          products: new Set(),
+          marketplace_orders: new Set(),
+          direct_orders: new Set()
+        });
+      });
+      
+      // Process transactions
+      transactionsSnapshot.forEach(doc => {
+        const trans = doc.data();
+        
+        // Find which brand this belongs to
+        let brandKey = null;
+        Object.entries(brandMappings).forEach(([key, variants]) => {
+          if (variants.some(variant => 
+            variant.toLowerCase() === (trans.brand || '').toLowerCase()
+          )) {
+            brandKey = key;
+          }
+        });
+        
+        if (brandKey && brandStats.has(brandKey)) {
+          const stats = brandStats.get(brandKey);
+          stats.revenue += trans.total || 0;
+          stats.quantity += trans.quantity || 0;
+          stats.orders.add(trans.order_id);
+          stats.products.add(trans.item_id);
+          
+          if (trans.is_marketplace_order) {
+            stats.marketplace_orders.add(trans.order_id);
+          } else {
+            stats.direct_orders.add(trans.order_id);
+          }
         }
       });
       
-      if (brandKey && brandStats.has(brandKey)) {
-        const stats = brandStats.get(brandKey);
-        stats.revenue += trans.total || 0;
-        stats.quantity += trans.quantity || 0;
-        stats.orders.add(trans.order_id);
-        stats.products.add(trans.item_id);
-        
-        if (trans.is_marketplace_order) {
-          stats.marketplace_orders.add(trans.order_id);
-        } else {
-          stats.direct_orders.add(trans.order_id);
+      // Convert to array
+      const brands = Array.from(brandStats.values()).map(stats => ({
+        name: stats.name,
+        revenue: stats.revenue,
+        quantity: stats.quantity,
+        orderCount: stats.orders.size,
+        productCount: stats.products.size,
+        marketplace_orders: stats.marketplace_orders.size,
+        direct_orders: stats.direct_orders.size,
+        market_share: 0
+      })).sort((a, b) => b.revenue - a.revenue);
+      
+      // Calculate market share
+      const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
+      brands.forEach(brand => {
+        brand.market_share = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
+      });
+      
+      return {
+        brands,
+        summary: {
+          totalBrands: brands.length,
+          totalRevenue,
+          topBrand: brands[0] || null
         }
-      }
-    });
-    
-    // Convert to array
-    const brands = Array.from(brandStats.values()).map(stats => ({
-      name: stats.name,
-      revenue: stats.revenue,
-      quantity: stats.quantity,
-      orderCount: stats.orders.size,
-      productCount: stats.products.size,
-      marketplace_orders: stats.marketplace_orders.size,
-      direct_orders: stats.direct_orders.size,
-      market_share: 0
-    })).sort((a, b) => b.revenue - a.revenue);
-    
-    // Calculate market share
-    const totalRevenue = brands.reduce((sum, brand) => sum + brand.revenue, 0);
-    brands.forEach(brand => {
-      brand.market_share = totalRevenue > 0 ? (brand.revenue / totalRevenue) * 100 : 0;
-    });
-    
-    return {
-      brands,
-      summary: {
-        totalBrands: brands.length,
-        totalRevenue,
-        topBrand: brands[0] || null
-      }
-    };
-    
-  } catch (error) {
-    console.error('❌ Error fetching brand performance:', error);
-    throw error;
+      };
+      
+    } catch (error) {
+      console.error('❌ Error fetching brand performance:', error);
+      throw error;
+    }
   }
-}
 
   /**
    * Get customer analytics - UPDATED to use actual customers collection
@@ -404,8 +511,14 @@ class ZohoReportsService {
       // If agent filtering is needed, get agent's customers from orders
       let filteredCustomers = customers;
       if (agentId) {
+        // Check if agentId is actually a name
+        let actualAgentId = agentId;
+        if (SALESPERSON_MAPPING[agentId]) {
+          actualAgentId = SALESPERSON_MAPPING[agentId];
+        }
+        
         const ordersSnapshot = await db.collection('sales_orders')
-          .where('salesperson_id', '==', agentId)
+          .where('salesperson_id', '==', actualAgentId)
           .where('date', '>=', startDate.toISOString().split('T')[0])
           .where('date', '<=', endDate.toISOString().split('T')[0])
           .get();
@@ -508,6 +621,25 @@ class ZohoReportsService {
         params,
         'invoices'
       );
+
+      // Add salesperson_id to invoices if missing
+      invoices.forEach(invoice => {
+        if (!invoice.salesperson_id && invoice.salesperson_name) {
+          // Try exact match first
+          if (SALESPERSON_MAPPING[invoice.salesperson_name]) {
+            invoice.salesperson_id = SALESPERSON_MAPPING[invoice.salesperson_name];
+          } else {
+            // Try case-insensitive match
+            const lowerName = invoice.salesperson_name.toLowerCase();
+            for (const [name, id] of Object.entries(SALESPERSON_MAPPING)) {
+              if (name.toLowerCase() === lowerName) {
+                invoice.salesperson_id = id;
+                break;
+              }
+            }
+          }
+        }
+      });
 
       // Set today's date for comparison
       const today = new Date();
@@ -731,16 +863,20 @@ class ZohoReportsService {
   }
 
   /**
-   * Get purchase order detail with line items
+   * Get purchase order detail with line items (with rate limiting)
    */
   async getPurchaseOrderDetail(purchaseorder_id) {
     try {
-      const url = `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders/${purchaseorder_id}`;
-      const token = await getAccessToken();
-      
-      const response = await axios.get(url, {
-        params: { organization_id: ZOHO_CONFIG.orgId },
-        headers: { Authorization: `Zoho-oauthtoken ${token}` }
+      const response = await this.makeRateLimitedRequest(async () => {
+        const token = await getAccessToken();
+        
+        return await axios.get(
+          `${ZOHO_CONFIG.baseUrls.inventory}/purchaseorders/${purchaseorder_id}`,
+          {
+            params: { organization_id: ZOHO_CONFIG.orgId },
+            headers: { Authorization: `Zoho-oauthtoken ${token}` }
+          }
+        );
       });
 
       const purchaseOrder = response.data?.purchaseorder;
@@ -773,17 +909,21 @@ class ZohoReportsService {
   }
 
   /**
-   * Get sales order detail with brand information
+   * Get sales order detail with brand information (with rate limiting)
    */
   async getSalesOrderDetail(salesorder_id) {
     try {
       const db = admin.firestore();
-      const url = `${ZOHO_CONFIG.baseUrls.inventory}/salesorders/${salesorder_id}`;
-      const token = await getAccessToken();
-      
-      const response = await axios.get(url, {
-        params: { organization_id: ZOHO_CONFIG.orgId },
-        headers: { Authorization: `Zoho-oauthtoken ${token}` }
+      const response = await this.makeRateLimitedRequest(async () => {
+        const token = await getAccessToken();
+        
+        return await axios.get(
+          `${ZOHO_CONFIG.baseUrls.inventory}/salesorders/${salesorder_id}`,
+          {
+            params: { organization_id: ZOHO_CONFIG.orgId },
+            headers: { Authorization: `Zoho-oauthtoken ${token}` }
+          }
+        );
       });
 
       const order = response.data?.salesorder;
@@ -831,7 +971,7 @@ class ZohoReportsService {
   }
 
   /**
-   * Get comprehensive dashboard data
+   * Get comprehensive dashboard data (optimized to reduce parallel requests)
    */
   async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
     try {
@@ -846,31 +986,43 @@ class ZohoReportsService {
       
       const userData = userDoc.data();
       const isAgent = userData.role === 'salesAgent';
-      const agentId = userData.zohospID; // For Zoho API filtering
+      const agentId = userData.zohospID; // For Zoho API filtering - this should be the Zoho ID
       const userUid = userId; // Firebase UID
       
-      // Fetch data based on role
-      const [
-        revenue,
-        salesOrders,
-        invoices,
-        agentPerformance,
-        brandPerformance,
-        customerAnalytics,
-        items,
-        purchaseOrders
-      ] = await Promise.all([
-        this.getRevenueAnalysis(dateRange, customDateRange),
-        this.getSalesOrders(dateRange, customDateRange, isAgent ? agentId : null),
-        isAgent ? 
-          this.getAgentInvoices(agentId, dateRange, customDateRange) : 
-          this.getInvoices(dateRange, customDateRange),
-        !isAgent ? this.getAgentPerformance(dateRange, customDateRange) : null,
-        this.getBrandPerformance(dateRange, customDateRange),
-        this.getCustomerAnalytics(dateRange, customDateRange, isAgent ? agentId : null),
-        this.getItems(),
-        this.getPurchaseOrders(dateRange, customDateRange)
-      ]);
+      // Validate agentId format if it's an agent
+      if (isAgent && agentId) {
+        // Check if the agentId looks like a Zoho ID (should be numeric)
+        if (!/^\d+$/.test(agentId)) {
+          console.warn(`⚠️  Agent ${userData.name} has invalid zohospID: ${agentId}`);
+        }
+      }
+      
+      // Fetch data sequentially to avoid rate limits
+      console.log('📊 Fetching revenue analysis...');
+      const revenue = await this.getRevenueAnalysis(dateRange, customDateRange);
+      
+      console.log('📊 Fetching sales orders...');
+      const salesOrders = await this.getSalesOrders(dateRange, customDateRange, isAgent ? agentId : null);
+      
+      console.log('📊 Fetching invoices...');
+      const invoices = isAgent ? 
+        await this.getAgentInvoices(agentId, dateRange, customDateRange) : 
+        await this.getInvoices(dateRange, customDateRange);
+      
+      console.log('📊 Fetching performance data...');
+      const agentPerformance = !isAgent ? await this.getAgentPerformance(dateRange, customDateRange) : null;
+      
+      const brandPerformance = await this.getBrandPerformance(dateRange, customDateRange);
+      
+      console.log('📊 Fetching customer analytics...');
+      const customerAnalytics = await this.getCustomerAnalytics(dateRange, customDateRange, isAgent ? agentId : null);
+      
+      // Use cached items if available
+      console.log('📊 Fetching items...');
+      const items = await this.getItems();
+      
+      console.log('📊 Fetching purchase orders...');
+      const purchaseOrders = await this.getPurchaseOrders(dateRange, customDateRange);
 
       // Calculate overview metrics
       const overview = {
@@ -985,217 +1137,237 @@ class ZohoReportsService {
       .slice(0, 10);
   }
 
-
-// Add this to zohoReportsService.js
-
-/**
- * Get customers from Zoho Inventory
- */
-async getCustomers(dateRange = 'all', customDateRange = null) {
-  try {
-    console.log(`📥 Fetching customers from Zoho Inventory...`);
-    
-    const params = {
-      organization_id: ZOHO_CONFIG.orgId
-    };
-    
-    // Add date filter if not 'all'
-    if (dateRange !== 'all') {
-      const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
-      // Zoho Inventory uses date filters differently
-      params.created_date_start = startDate.toISOString().split('T')[0];
-      params.created_date_end = endDate.toISOString().split('T')[0];
-    }
-    
-    // Fetch from Zoho Inventory Contacts endpoint
-    const customers = await this.fetchPaginatedData(
-      `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
-      params,
-      'contacts'  // Note: Zoho Inventory uses 'contacts' as the data key
-    );
-    
-    console.log(`✅ Fetched ${customers.length} customers from Zoho Inventory`);
-    
-    // Transform to your expected format
-    return customers.map(customer => ({
-      customer_id: customer.contact_id,
-      customer_name: customer.contact_name || customer.company_name || 'Unknown',
-      company_name: customer.company_name || customer.contact_name || '',
-      email: customer.email || '',
-      Primary_Email: customer.email || '',
-      phone: customer.phone || customer.mobile || '',
-      billing_address: customer.billing_address || {},
-      shipping_address: customer.shipping_address || {},
-      currency_code: customer.currency_code || 'GBP',
-      payment_terms: customer.payment_terms || 0,
-      status: customer.status || 'active',
-      created_time: customer.created_time,
-      last_modified_time: customer.last_modified_time,
-      // Zoho Inventory provides these fields directly
-      outstanding_receivable_amount: customer.outstanding_receivable_amount || 0,
-      unused_credits_receivable_amount: customer.unused_credits_receivable_amount || 0,
-      // Fields to be enriched from orders
-      total_spent: 0,
-      order_count: 0,
-      last_order_date: null,
-      first_order_date: null,
-      average_order_value: 0,
-      segment: 'New'
-    }));
-    
-  } catch (error) {
-    console.error('❌ Error fetching customers from Zoho Inventory:', error);
-    return [];
-  }
-}
-
-async getSalesOrderById(salesOrderId) {
-  try {
-    const response = await this.makeZohoRequest(
-      `/salesorders/${salesOrderId}`,
-      'GET'
-    );
-    return response.salesorder;
-  } catch (error) {
-    console.error(`Error fetching sales order ${salesOrderId}:`, error);
-    return null;
-  }
-}
-
-async getCustomerById(customerId) {
-  try {
-    const response = await this.makeZohoRequest(
-      `/contacts/${customerId}`,
-      'GET'
-    );
-    return response.contact;
-  } catch (error) {
-    console.error(`Error fetching customer ${customerId}:`, error);
-    return null;
-  }
-}
-
-/**
- * Sync customers from Zoho Inventory to Firestore and enrich with order data
- */
-async syncCustomers(dateRange = '7_days') {
-  try {
-    console.log('👥 Syncing customers from Zoho Inventory...');
-    const db = admin.firestore();
-    
-    // 1. Fetch customers from Zoho Inventory
-    const zohoCustomers = await this.getCustomers(dateRange);
-    
-    if (zohoCustomers.length === 0) {
-      console.log('No customers found in Zoho Inventory');
-      return { synced: 0, enriched: 0 };
-    }
-    
-    // 2. Get all sales orders to calculate customer metrics
-    const ordersSnapshot = await db.collection('sales_orders').get();
-    const ordersByCustomer = new Map();
-    
-    ordersSnapshot.forEach(doc => {
-      const order = doc.data();
-      if (order.customer_id) {
-        if (!ordersByCustomer.has(order.customer_id)) {
-          ordersByCustomer.set(order.customer_id, []);
-        }
-        ordersByCustomer.get(order.customer_id).push(order);
+  /**
+   * Get customers from Zoho Inventory
+   */
+  async getCustomers(dateRange = 'all', customDateRange = null) {
+    try {
+      console.log(`📥 Fetching customers from Zoho Inventory...`);
+      
+      const params = {
+        organization_id: ZOHO_CONFIG.orgId
+      };
+      
+      // Add date filter if not 'all'
+      if (dateRange !== 'all') {
+        const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
+        // Zoho Inventory uses date filters differently
+        params.created_date_start = startDate.toISOString().split('T')[0];
+        params.created_date_end = endDate.toISOString().split('T')[0];
       }
-    });
-    
-    // 3. Enrich customer data with order metrics
-    const enrichedCustomers = zohoCustomers.map(customer => {
-      const customerOrders = ordersByCustomer.get(customer.customer_id) || [];
       
-      // Calculate metrics
-      const totalSpent = customerOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
-      const orderCount = customerOrders.length;
-      const averageOrderValue = orderCount > 0 ? totalSpent / orderCount : 0;
+      // Fetch from Zoho Inventory Contacts endpoint
+      const customers = await this.fetchPaginatedData(
+        `${ZOHO_CONFIG.baseUrls.inventory}/contacts`,
+        params,
+        'contacts'  // Note: Zoho Inventory uses 'contacts' as the data key
+      );
       
-      // Get first and last order dates
-      const orderDates = customerOrders
-        .map(order => new Date(order.date))
-        .sort((a, b) => a - b);
+      console.log(`✅ Fetched ${customers.length} customers from Zoho Inventory`);
       
-      const firstOrderDate = orderDates[0] || null;
-      const lastOrderDate = orderDates[orderDates.length - 1] || null;
+      // Transform to your expected format
+      return customers.map(customer => ({
+        customer_id: customer.contact_id,
+        customer_name: customer.contact_name || customer.company_name || 'Unknown',
+        company_name: customer.company_name || customer.contact_name || '',
+        email: customer.email || '',
+        Primary_Email: customer.email || '',
+        phone: customer.phone || customer.mobile || '',
+        billing_address: customer.billing_address || {},
+        shipping_address: customer.shipping_address || {},
+        currency_code: customer.currency_code || 'GBP',
+        payment_terms: customer.payment_terms || 0,
+        status: customer.status || 'active',
+        created_time: customer.created_time,
+        last_modified_time: customer.last_modified_time,
+        // Zoho Inventory provides these fields directly
+        outstanding_receivable_amount: customer.outstanding_receivable_amount || 0,
+        unused_credits_receivable_amount: customer.unused_credits_receivable_amount || 0,
+        // Fields to be enriched from orders
+        total_spent: 0,
+        order_count: 0,
+        last_order_date: null,
+        first_order_date: null,
+        average_order_value: 0,
+        segment: 'New'
+      }));
       
-      // Determine segment based on total spent or outstanding amount
-      let segment = 'New';
-      const totalValue = totalSpent + (customer.outstanding_receivable_amount || 0);
+    } catch (error) {
+      console.error('❌ Error fetching customers from Zoho Inventory:', error);
+      return [];
+    }
+  }
+
+  async getSalesOrderById(salesOrderId) {
+    try {
+      const response = await this.makeRateLimitedRequest(async () => {
+        const token = await getAccessToken();
+        
+        return await axios.get(
+          `${ZOHO_CONFIG.baseUrls.inventory}/salesorders/${salesOrderId}`,
+          {
+            params: { organization_id: ZOHO_CONFIG.orgId },
+            headers: { Authorization: `Zoho-oauthtoken ${token}` }
+          }
+        );
+      });
+      return response.salesorder;
+    } catch (error) {
+      console.error(`Error fetching sales order ${salesOrderId}:`, error);
+      return null;
+    }
+  }
+
+  async getCustomerById(customerId) {
+    try {
+      const response = await this.makeRateLimitedRequest(async () => {
+        const token = await getAccessToken();
+        
+        return await axios.get(
+          `${ZOHO_CONFIG.baseUrls.inventory}/contacts/${customerId}`,
+          {
+            params: { organization_id: ZOHO_CONFIG.orgId },
+            headers: { Authorization: `Zoho-oauthtoken ${token}` }
+          }
+        );
+      });
+      return response.contact;
+    } catch (error) {
+      console.error(`Error fetching customer ${customerId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Sync customers from Zoho Inventory to Firestore and enrich with order data
+   */
+  async syncCustomers(dateRange = '7_days') {
+    try {
+      console.log('👥 Syncing customers from Zoho Inventory...');
+      const db = admin.firestore();
       
-      if (totalValue >= 10000) segment = 'VIP';
-      else if (totalValue >= 5000) segment = 'High';
-      else if (totalValue >= 1000) segment = 'Medium';
-      else if (totalValue > 0) segment = 'Low';
+      // 1. Fetch customers from Zoho Inventory
+      const zohoCustomers = await this.getCustomers(dateRange);
+      
+      if (zohoCustomers.length === 0) {
+        console.log('No customers found in Zoho Inventory');
+        return { synced: 0, enriched: 0 };
+      }
+      
+      // 2. Get all sales orders to calculate customer metrics
+      const ordersSnapshot = await db.collection('sales_orders').get();
+      const ordersByCustomer = new Map();
+      
+      ordersSnapshot.forEach(doc => {
+        const order = doc.data();
+        if (order.customer_id) {
+          if (!ordersByCustomer.has(order.customer_id)) {
+            ordersByCustomer.set(order.customer_id, []);
+          }
+          ordersByCustomer.get(order.customer_id).push(order);
+        }
+      });
+      
+      // 3. Enrich customer data with order metrics
+      const enrichedCustomers = zohoCustomers.map(customer => {
+        const customerOrders = ordersByCustomer.get(customer.customer_id) || [];
+        
+        // Calculate metrics
+        const totalSpent = customerOrders.reduce((sum, order) => sum + parseFloat(order.total || 0), 0);
+        const orderCount = customerOrders.length;
+        const averageOrderValue = orderCount > 0 ? totalSpent / orderCount : 0;
+        
+        // Get first and last order dates
+        const orderDates = customerOrders
+          .map(order => new Date(order.date))
+          .sort((a, b) => a - b);
+        
+        const firstOrderDate = orderDates[0] || null;
+        const lastOrderDate = orderDates[orderDates.length - 1] || null;
+        
+        // Determine segment based on total spent or outstanding amount
+        let segment = 'New';
+        const totalValue = totalSpent + (customer.outstanding_receivable_amount || 0);
+        
+        if (totalValue >= 10000) segment = 'VIP';
+        else if (totalValue >= 5000) segment = 'High';
+        else if (totalValue >= 1000) segment = 'Medium';
+        else if (totalValue > 0) segment = 'Low';
+        
+        return {
+          ...customer,
+          total_spent: totalSpent,
+          order_count: orderCount,
+          average_order_value: averageOrderValue,
+          first_order_date: firstOrderDate ? firstOrderDate.toISOString() : null,
+          last_order_date: lastOrderDate ? lastOrderDate.toISOString() : null,
+          segment,
+          _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+          _source: 'zoho_inventory'
+        };
+      });
+      
+      // 4. Write to Firestore in batches
+      let batch = db.batch();
+      let count = 0;
+      const batchSize = 400;
+      
+      for (const customer of enrichedCustomers) {
+        const docRef = db.collection('customers').doc(customer.customer_id);
+        batch.set(docRef, customer, { merge: true });
+        count++;
+        
+        if (count % batchSize === 0) {
+          await batch.commit();
+          batch = db.batch();
+          
+          // Add delay between batches
+          await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
+        }
+      }
+      
+      if (count % batchSize !== 0) {
+        await batch.commit();
+      }
+      
+      console.log(`✅ Synced ${enrichedCustomers.length} customers from Zoho Inventory`);
       
       return {
-        ...customer,
-        total_spent: totalSpent,
-        order_count: orderCount,
-        average_order_value: averageOrderValue,
-        first_order_date: firstOrderDate ? firstOrderDate.toISOString() : null,
-        last_order_date: lastOrderDate ? lastOrderDate.toISOString() : null,
-        segment,
-        _lastSynced: admin.firestore.FieldValue.serverTimestamp(),
-        _source: 'zoho_inventory'
+        synced: enrichedCustomers.length,
+        enriched: enrichedCustomers.filter(c => c.order_count > 0).length
       };
-    });
-    
-    // 4. Write to Firestore in batches
-    const batch = db.batch();
-    let count = 0;
-    
-    for (const customer of enrichedCustomers) {
-      const docRef = db.collection('customers').doc(customer.customer_id);
-      batch.set(docRef, customer, { merge: true });
-      count++;
       
-      if (count % 400 === 0) {
-        await batch.commit();
-        batch = db.batch();
-      }
+    } catch (error) {
+      console.error('❌ Error syncing customers:', error);
+      throw error;
     }
-    
-    if (count % 400 !== 0) {
-      await batch.commit();
-    }
-    
-    console.log(`✅ Synced ${enrichedCustomers.length} customers from Zoho Inventory`);
-    
-    return {
-      synced: enrichedCustomers.length,
-      enriched: enrichedCustomers.filter(c => c.order_count > 0).length
-    };
-    
-  } catch (error) {
-    console.error('❌ Error syncing customers:', error);
-    throw error;
   }
-}
 
-/**
- * Get specific customer details from Zoho Inventory
- */
-async getCustomerDetail(customerId) {
-  try {
-    const url = `${ZOHO_CONFIG.baseUrls.inventory}/contacts/${customerId}`;
-    const token = await getAccessToken();
-    
-    const response = await axios.get(url, {
-      params: { organization_id: ZOHO_CONFIG.orgId },
-      headers: { Authorization: `Zoho-oauthtoken ${token}` }
-    });
-    
-    return response.data?.contact || null;
-    
-  } catch (error) {
-    console.error(`❌ Error fetching customer ${customerId}:`, error.message);
-    return null;
+  /**
+   * Get specific customer details from Zoho Inventory
+   */
+  async getCustomerDetail(customerId) {
+    try {
+      const response = await this.makeRateLimitedRequest(async () => {
+        const token = await getAccessToken();
+        
+        return await axios.get(
+          `${ZOHO_CONFIG.baseUrls.inventory}/contacts/${customerId}`,
+          {
+            params: { organization_id: ZOHO_CONFIG.orgId },
+            headers: { Authorization: `Zoho-oauthtoken ${token}` }
+          }
+        );
+      });
+      
+      return response.data?.contact || null;
+      
+    } catch (error) {
+      console.error(`❌ Error fetching customer ${customerId}:`, error.message);
+      return null;
+    }
   }
-}
+
   /**
    * Calculate sales trends over time
    */
@@ -1235,12 +1407,33 @@ async getCustomerDetail(customerId) {
 
 export default new ZohoReportsService();
 
-// --- CLI Entrypoint ---
+// --- CLI Entrypoint for Migration ---
 export async function runFullMigration({ clear }) {
   const db = admin.firestore();
   const startDate = new Date('2023-03-21T00:00:00Z');
   const startDateStr = startDate.toISOString().split('T')[0];
   console.log('🔄 Starting full migration from Zoho Inventory after', startDateStr);
+
+  // Helper function to get salesperson ID from name
+  function getSalespersonId(salespersonName) {
+    if (!salespersonName) return null;
+    
+    // Try exact match first
+    if (SALESPERSON_MAPPING[salespersonName]) {
+      return SALESPERSON_MAPPING[salespersonName];
+    }
+    
+    // Try case-insensitive match
+    const lowerName = salespersonName.toLowerCase();
+    for (const [name, id] of Object.entries(SALESPERSON_MAPPING)) {
+      if (name.toLowerCase() === lowerName) {
+        return id;
+      }
+    }
+    
+    console.warn(`⚠️  Unknown salesperson: ${salespersonName}`);
+    return null;
+  }
 
   // 1. Optionally clear collections
   if (clear) {
@@ -1248,17 +1441,36 @@ export async function runFullMigration({ clear }) {
     // Helper to delete all docs in a collection (and subcollections)
     async function deleteCollection(collName) {
       const snapshot = await db.collection(collName).get();
-      for (const doc of snapshot.docs) {
-        // Delete subcollections (order_line_items, etc.)
-        const subcollections = await doc.ref.listCollections();
-        for (const sub of subcollections) {
-          const subSnap = await sub.get();
-          for (const subDoc of subSnap.docs) {
-            await subDoc.ref.delete();
+      let deleteCount = 0;
+      
+      // Process in batches
+      const batchSize = 500;
+      for (let i = 0; i < snapshot.docs.length; i += batchSize) {
+        const batch = db.batch();
+        const batchDocs = snapshot.docs.slice(i, i + batchSize);
+        
+        for (const doc of batchDocs) {
+          // Delete subcollections (order_line_items, etc.)
+          const subcollections = await doc.ref.listCollections();
+          for (const sub of subcollections) {
+            const subSnap = await sub.get();
+            for (const subDoc of subSnap.docs) {
+              batch.delete(subDoc.ref);
+            }
           }
+          batch.delete(doc.ref);
+          deleteCount++;
         }
-        await doc.ref.delete();
+        
+        await batch.commit();
+        console.log(`  Deleted ${deleteCount}/${snapshot.docs.length} documents from ${collName}`);
+        
+        // Add delay between batches
+        if (i + batchSize < snapshot.docs.length) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
       }
+      
       console.log(`✅ Cleared ${collName}`);
     }
     await deleteCollection('sales_orders');
@@ -1267,6 +1479,7 @@ export async function runFullMigration({ clear }) {
 
   // 2. Fetch all items for brand enrichment
   console.log('📦 Fetching all items for brand enrichment...');
+  const zohoReportsService = new ZohoReportsService();
   const items = await zohoInventoryService.fetchAllProducts();
   const itemIdToBrand = {};
   for (const item of items) {
@@ -1275,19 +1488,33 @@ export async function runFullMigration({ clear }) {
     }
   }
 
-  // 3. Fetch all sales orders after startDate
+  // 3. Fetch all sales orders after startDate with rate limiting
   console.log('🛒 Fetching sales orders from Zoho Inventory...');
-  const allSalesOrders = await zohoInventoryService.fetchPaginatedData(
-    '/salesorders',
-    { date_start: startDateStr, sort_column: 'date', sort_order: 'A' },
-    'salesorders'
+  const allSalesOrders = await zohoReportsService.fetchPaginatedData(
+    `${ZOHO_CONFIG.baseUrls.inventory}/salesorders`,
+    { 
+      organization_id: ZOHO_CONFIG.orgId,
+      date_start: startDateStr, 
+      sort_column: 'date', 
+      sort_order: 'A' 
+    },
+    'salesorders',
+    false  // Disable cache for migration
   );
   console.log(`Found ${allSalesOrders.length} sales orders`);
 
   // 4. Write sales orders and enrich subcollections with batching
   console.log('📝 Writing sales orders to Firestore with batching...');
-  const batchSize = 500;
+  const batchSize = 50; // Reduced batch size for complex operations
   let processedCount = 0;
+  
+  // Track salesperson assignments
+  const salespersonAssignments = {};
+  
+  // If we have many orders, be extra careful with rate limiting
+  if (allSalesOrders.length > 1000) {
+    console.log(`⚠️  Large dataset detected (${allSalesOrders.length} orders). Using conservative rate limiting...`);
+  }
   
   for (let i = 0; i < allSalesOrders.length; i += batchSize) {
     const batch = db.batch();
@@ -1295,6 +1522,20 @@ export async function runFullMigration({ clear }) {
     
     for (const order of batchOrders) {
       const salesorder_id = order.salesorder_id;
+      
+      // Get salesperson_id from name
+      const salesperson_id = getSalespersonId(order.salesperson_name);
+      if (salesperson_id) {
+        order.salesperson_id = salesperson_id;
+        // Track assignments
+        if (!salespersonAssignments[order.salesperson_name]) {
+          salespersonAssignments[order.salesperson_name] = 0;
+        }
+        salespersonAssignments[order.salesperson_name]++;
+      } else if (order.salesperson_name) {
+        console.warn(`⚠️  Unknown salesperson in order ${salesorder_id}: ${order.salesperson_name}`);
+      }
+      
       const docRef = db.collection('sales_orders').doc(salesorder_id);
       batch.set(docRef, order, { merge: true });
 
@@ -1309,14 +1550,14 @@ export async function runFullMigration({ clear }) {
       }
 
       // Link to sales_agents/customers_orders
-      if (order.salesperson_id) {
-        const agentRef = db.collection('sales_agents').doc(order.salesperson_id);
+      if (salesperson_id) {
+        const agentRef = db.collection('sales_agents').doc(salesperson_id);
         batch.set(agentRef.collection('customers_orders').doc(salesorder_id), order, { merge: true });
       }
 
       // Add customer to assigned_customers if not present
-      if (order.salesperson_id && order.customer_id) {
-        const agentRef = db.collection('sales_agents').doc(order.salesperson_id);
+      if (salesperson_id && order.customer_id) {
+        const agentRef = db.collection('sales_agents').doc(salesperson_id);
         const assignedRef = agentRef.collection('assigned_customers').doc(order.customer_id);
         batch.set(assignedRef, { customer_id: order.customer_id }, { merge: true });
       }
@@ -1328,17 +1569,28 @@ export async function runFullMigration({ clear }) {
     
     // Rate limiting between batches
     if (i + batchSize < allSalesOrders.length) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
     }
   }
+  
+  console.log('📊 Sales order assignments by salesperson:');
+  Object.entries(salespersonAssignments).forEach(([name, count]) => {
+    console.log(`   ${name}: ${count} orders`);
+  });
   console.log('✅ Sales orders and subcollections migrated');
 
-  // 5. Fetch all invoices after startDate
+  // 5. Fetch all invoices after startDate with rate limiting
   console.log('🧾 Fetching invoices from Zoho Inventory...');
-  const allInvoices = await zohoInventoryService.fetchPaginatedData(
-    '/invoices',
-    { date_start: startDateStr, sort_column: 'date', sort_order: 'A' },
-    'invoices'
+  const allInvoices = await zohoReportsService.fetchPaginatedData(
+    `${ZOHO_CONFIG.baseUrls.inventory}/invoices`,
+    { 
+      organization_id: ZOHO_CONFIG.orgId,
+      date_start: startDateStr, 
+      sort_column: 'date', 
+      sort_order: 'A' 
+    },
+    'invoices',
+    false  // Disable cache for migration
   );
   console.log(`Found ${allInvoices.length} invoices`);
 
@@ -1346,17 +1598,39 @@ export async function runFullMigration({ clear }) {
   console.log('📝 Writing invoices to Firestore with batching...');
   processedCount = 0;
   
+  // Track salesperson assignments for invoices
+  const invoiceSalespersonAssignments = {};
+  
+  // If we have many invoices, be extra careful with rate limiting
+  if (allInvoices.length > 1000) {
+    console.log(`⚠️  Large dataset detected (${allInvoices.length} invoices). Using conservative rate limiting...`);
+  }
+  
   for (let i = 0; i < allInvoices.length; i += batchSize) {
     const batch = db.batch();
     const batchInvoices = allInvoices.slice(i, i + batchSize);
     
     for (const invoice of batchInvoices) {
       const invoice_id = invoice.invoice_id;
+      
+      // Get salesperson_id from name
+      const salesperson_id = getSalespersonId(invoice.salesperson_name);
+      if (salesperson_id) {
+        invoice.salesperson_id = salesperson_id;
+        // Track assignments
+        if (!invoiceSalespersonAssignments[invoice.salesperson_name]) {
+          invoiceSalespersonAssignments[invoice.salesperson_name] = 0;
+        }
+        invoiceSalespersonAssignments[invoice.salesperson_name]++;
+      } else if (invoice.salesperson_name) {
+        console.warn(`⚠️  Unknown salesperson in invoice ${invoice_id}: ${invoice.salesperson_name}`);
+      }
+      
       const docRef = db.collection('invoices').doc(invoice_id);
       batch.set(docRef, invoice, { merge: true });
 
-      if (invoice.salesperson_id) {
-        const agentRef = db.collection('sales_agents').doc(invoice.salesperson_id);
+      if (salesperson_id) {
+        const agentRef = db.collection('sales_agents').doc(salesperson_id);
         batch.set(agentRef.collection('customers_invoices').doc(invoice_id), invoice, { merge: true });
       }
     }
@@ -1367,9 +1641,14 @@ export async function runFullMigration({ clear }) {
     
     // Rate limiting between batches
     if (i + batchSize < allInvoices.length) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
     }
   }
+  
+  console.log('📊 Invoice assignments by salesperson:');
+  Object.entries(invoiceSalespersonAssignments).forEach(([name, count]) => {
+    console.log(`   ${name}: ${count} invoices`);
+  });
   console.log('✅ Invoices and subcollections migrated');
 
   // 7. Calculate metrics for all requested date ranges
@@ -1444,8 +1723,8 @@ export async function runFullMigration({ clear }) {
   console.log('📈 Calculating metrics for date ranges...');
   for (const range of dateRanges) {
     const { start, end } = getRange(range.label);
-    // Example: Calculate total sales, orders, invoices, etc. for this range
-    // You can expand this logic as needed for your dashboard
+    
+    // Calculate metrics from Firestore data
     const salesOrdersSnap = await db.collection('sales_orders')
       .where('date', '>=', start.toISOString().split('T')[0])
       .where('date', '<=', end.toISOString().split('T')[0])
