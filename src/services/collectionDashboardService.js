@@ -126,10 +126,13 @@ class CollectionDashboardService {
     const itemMap = new Map();
     itemsSnapshot.docs.forEach(doc => {
       const data = doc.data();
-      itemMap.set(doc.id, {
-        ...data,
-        brand: (data.brand_normalized && data.brand_normalized !== 'unknown') ? data.brand_normalized : 'rader',
-      });
+      if (data.sku) {
+        itemMap.set(data.sku, {
+          ...data,
+          brand: data.brand_normalized || 'unknown',
+          brand_normalized: data.brand_normalized || 'unknown',
+        });
+      }
     });
 
     // Build customer map for quick lookup
@@ -150,7 +153,8 @@ class CollectionDashboardService {
       const lineItems = [];
       for (const itemDoc of lineItemsSnapshot.docs) {
         const itemData = itemDoc.data();
-        const itemDetails = itemMap.get(itemData.item_id) || {};
+        // Use sku for lookup if available
+        const itemDetails = itemData.sku ? (itemMap.get(itemData.sku) || {}) : {};
         lineItems.push({
           ...itemData,
           brand: itemDetails.brand || 'Unknown',
@@ -200,7 +204,7 @@ class CollectionDashboardService {
     const brandMap = new Map();
     orders.forEach(order => {
       order.line_items.forEach(item => {
-        const brand = item.brand || 'Unknown';
+        const brand = item.brand_normalized || item.brand || 'Unknown';
         if (!brandMap.has(brand)) {
           brandMap.set(brand, { name: brand, revenue: 0, quantity: 0, orderCount: 0 });
         }

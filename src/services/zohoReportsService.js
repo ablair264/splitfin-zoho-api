@@ -1423,559 +1423,206 @@ class ZohoReportsService {
 
 export default new ZohoReportsService();
 
-// --- CLI Entrypoint for Migration ---
-export async function runFullMigration({ clear }) {
-  const db = admin.firestore();
-  const startDate = new Date('2023-03-21T00:00:00Z');
-  const startDateStr = startDate.toISOString().split('T')[0];
-  console.log('🔄 Starting full migration from Zoho Inventory after', startDateStr);
-
-  // Helper function to get salesperson ID from name
-  function getSalespersonId(salespersonName) {
-    if (!salespersonName) return null;
-    
-    // Try exact match first
-    if (SALESPERSON_MAPPING[salespersonName]) {
-      return SALESPERSON_MAPPING[salespersonName];
-    }
-    
-    // Try case-insensitive match
-    const lowerName = salespersonName.toLowerCase();
-    for (const [name, id] of Object.entries(SALESPERSON_MAPPING)) {
-      if (name.toLowerCase() === lowerName) {
-        return id;
-      }
-    }
-    
-    console.warn(`⚠️  Unknown salesperson: ${salespersonName}`);
-    return null;
-  }
-
-  // 1. Optionally clear collections
-  if (clear) {
-    console.log('🧹 Clearing sales_orders and invoices collections...');
-    // Helper to delete all docs in a collection (and subcollections)
-    async function deleteCollection(collName) {
-      const snapshot = await db.collection(collName).get();
-      let deleteCount = 0;
-      
-      // Process in batches
-      const batchSize = 500;
-      for (let i = 0; i < snapshot.docs.length; i += batchSize) {
-        const batch = db.batch();
-        const batchDocs = snapshot.docs.slice(i, i + batchSize);
-        
-        for (const doc of batchDocs) {
-          // Delete subcollections (order_line_items, etc.)
-          const subcollections = await doc.ref.listCollections();
-          for (const sub of subcollections) {
-            const subSnap = await sub.get();
-            for (const subDoc of subSnap.docs) {
-              batch.delete(subDoc.ref);
-            }
-          }
-          batch.delete(doc.ref);
-          deleteCount++;
-        }
-        
-        await batch.commit();
-        console.log(`  Deleted ${deleteCount}/${snapshot.docs.length} documents from ${collName}`);
-        
-        // Add delay between batches
-        if (i + batchSize < snapshot.docs.length) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-      }
-      
-      console.log(`✅ Cleared ${collName}`);
-    }
-    await deleteCollection('sales_orders');
-    await deleteCollection('invoices');
-  }
-
-  // 2. Fetch all items for brand enrichment
-  console.log('📦 Fetching all items for brand enrichment...');
-  const zohoReportsService = new ZohoReportsService();
-  const items = await zohoInventoryService.fetchAllProducts();
-  const itemIdToBrand = {};
-  for (const item of items) {
-    if (item.item_id && item.brand_normalized) {
-      itemIdToBrand[item.item_id] = item.brand_normalized;
-    }
-  }
-
-  // 3. Fetch all sales orders after startDate with rate limiting
-  console.log('🛒 Fetching sales orders from Zoho Inventory...');
-  const allSalesOrders = await zohoReportsService.fetchPaginatedData(
-    `${ZOHO_CONFIG.baseUrls.inventory}/salesorders`,
-    { 
-      organization_id: ZOHO_CONFIG.orgId,
-      date_start: startDateStr, 
-      sort_column: 'date', 
-      sort_order: 'A' 
-    },
-    'salesorders',
-    false  // Disable cache for migration
-  );
-  console.log(`Found ${allSalesOrders.length} sales orders`);
-
-  // 4. Write sales orders and enrich subcollections with batching
-  console.log('📝 Writing sales orders to Firestore with batching...');
-  const batchSize = 50; // Reduced batch size for complex operations
-  let processedCount = 0;
-  
-  // Track salesperson assignments
-  const salespersonAssignments = {};
-  
-  // If we have many orders, be extra careful with rate limiting
-  if (allSalesOrders.length > 1000) {
-    console.log(`⚠️  Large dataset detected (${allSalesOrders.length} orders). Using conservative rate limiting...`);
-  }
-  
-  for (let i = 0; i < allSalesOrders.length; i += batchSize) {
-    const batch = db.batch();
-    const batchOrders = allSalesOrders.slice(i, i + batchSize);
-    
-    for (const order of batchOrders) {
-      const salesorder_id = order.salesorder_id;
-      
-      // Get salesperson_id from name
-      const salesperson_id = getSalespersonId(order.salesperson_name);
-      if (salesperson_id) {
-        order.salesperson_id = salesperson_id;
-        // Track assignments
-        if (!salespersonAssignments[order.salesperson_name]) {
-          salespersonAssignments[order.salesperson_name] = 0;
-        }
-        salespersonAssignments[order.salesperson_name]++;
-      } else if (order.salesperson_name) {
-        console.warn(`⚠️  Unknown salesperson in order ${salesorder_id}: ${order.salesperson_name}`);
-      }
-      
-      const docRef = db.collection('sales_orders').doc(salesorder_id);
-      batch.set(docRef, order, { merge: true });
-
-      // Add order line items to batch
-      if (order.line_items && Array.isArray(order.line_items)) {
-        for (const line of order.line_items) {
-          if (line.line_item_id && line.item_id) {
-            line.brand_normalized = itemIdToBrand[line.item_id] || null;
-            batch.set(docRef.collection('order_line_items').doc(line.line_item_id), line, { merge: true });
-          }
-        }
-      }
-
-      // Link to sales_agents/customers_orders
-      if (salesperson_id) {
-        const agentRef = db.collection('sales_agents').doc(salesperson_id);
-        batch.set(agentRef.collection('customers_orders').doc(salesorder_id), order, { merge: true });
-      }
-
-      // Add customer to assigned_customers if not present
-      if (salesperson_id && order.customer_id) {
-        const agentRef = db.collection('sales_agents').doc(salesperson_id);
-        const assignedRef = agentRef.collection('assigned_customers').doc(order.customer_id);
-        batch.set(assignedRef, { customer_id: order.customer_id }, { merge: true });
-      }
-    }
-    
-    await batch.commit();
-    processedCount += batchOrders.length;
-    console.log(`  Processed ${processedCount}/${allSalesOrders.length} sales orders`);
-    
-    // Rate limiting between batches
-    if (i + batchSize < allSalesOrders.length) {
-      await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
-    }
-  }
-  
-  console.log('📊 Sales order assignments by salesperson:');
-  Object.entries(salespersonAssignments).forEach(([name, count]) => {
-    console.log(`   ${name}: ${count} orders`);
-  });
-  console.log('✅ Sales orders and subcollections migrated');
-
-  // 5. Fetch all invoices after startDate with rate limiting
-  console.log('🧾 Fetching invoices from Zoho Inventory...');
-  const allInvoices = await zohoReportsService.fetchPaginatedData(
-    `${ZOHO_CONFIG.baseUrls.inventory}/invoices`,
-    { 
-      organization_id: ZOHO_CONFIG.orgId,
-      date_start: startDateStr, 
-      sort_column: 'date', 
-      sort_order: 'A' 
-    },
-    'invoices',
-    false  // Disable cache for migration
-  );
-  console.log(`Found ${allInvoices.length} invoices`);
-
-  // 6. Write invoices and link to sales_agents/customers_invoices with batching
-  console.log('📝 Writing invoices to Firestore with batching...');
-  processedCount = 0;
-  
-  // Track salesperson assignments for invoices
-  const invoiceSalespersonAssignments = {};
-  
-  // If we have many invoices, be extra careful with rate limiting
-  if (allInvoices.length > 1000) {
-    console.log(`⚠️  Large dataset detected (${allInvoices.length} invoices). Using conservative rate limiting...`);
-  }
-  
-  for (let i = 0; i < allInvoices.length; i += batchSize) {
-    const batch = db.batch();
-    const batchInvoices = allInvoices.slice(i, i + batchSize);
-    
-    for (const invoice of batchInvoices) {
-      const invoice_id = invoice.invoice_id;
-      
-      // Get salesperson_id from name
-      const salesperson_id = getSalespersonId(invoice.salesperson_name);
-      if (salesperson_id) {
-        invoice.salesperson_id = salesperson_id;
-        // Track assignments
-        if (!invoiceSalespersonAssignments[invoice.salesperson_name]) {
-          invoiceSalespersonAssignments[invoice.salesperson_name] = 0;
-        }
-        invoiceSalespersonAssignments[invoice.salesperson_name]++;
-      } else if (invoice.salesperson_name) {
-        console.warn(`⚠️  Unknown salesperson in invoice ${invoice_id}: ${invoice.salesperson_name}`);
-      }
-      
-      const docRef = db.collection('invoices').doc(invoice_id);
-      batch.set(docRef, invoice, { merge: true });
-
-      if (salesperson_id) {
-        const agentRef = db.collection('sales_agents').doc(salesperson_id);
-        batch.set(agentRef.collection('customers_invoices').doc(invoice_id), invoice, { merge: true });
-      }
-    }
-    
-    await batch.commit();
-    processedCount += batchInvoices.length;
-    console.log(`  Processed ${processedCount}/${allInvoices.length} invoices`);
-    
-    // Rate limiting between batches
-    if (i + batchSize < allInvoices.length) {
-      await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
-    }
-  }
-  
-  console.log('📊 Invoice assignments by salesperson:');
-  Object.entries(invoiceSalespersonAssignments).forEach(([name, count]) => {
-    console.log(`   ${name}: ${count} invoices`);
-  });
-  console.log('✅ Invoices and subcollections migrated');
-
-  // 7. Calculate metrics for all requested date ranges
-  const dateRanges = [
-    { label: '7_days', days: 7 },
-    { label: 'last_week', days: 7, last: true },
-    { label: 'this_month', month: 0 },
-    { label: 'last_month', month: -1 },
-    { label: 'this_quarter', quarter: 0 },
-    { label: 'last_quarter', quarter: -1 },
-    { label: 'this_year', year: 0 },
-    { label: 'last_year', year: -1 },
-    { label: '2023', year: 2023 },
-    { label: '2024', year: 2024 },
-    { label: '2025', year: 2025 },
-    { label: '90_days', days: 90 },
-    { label: '1_year', year: 1 }
-  ];
-
-  function getRange(label) {
-    const now = new Date();
-    let start, end;
-    switch (label) {
-      case '7_days':
-        end = now;
-        start = new Date(now);
-        start.setDate(now.getDate() - 7);
-        break;
-      case 'last_week':
-        end = new Date(now);
-        end.setDate(now.getDate() - now.getDay());
-        start = new Date(end);
-        start.setDate(end.getDate() - 7);
-        break;
-      case 'this_month':
-        start = new Date(now.getFullYear(), now.getMonth(), 1);
-        end = now;
-        break;
-      case 'last_month':
-        start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        end = new Date(now.getFullYear(), now.getMonth(), 0);
-        break;
-      case 'this_quarter':
-        const q = Math.floor(now.getMonth() / 3);
-        start = new Date(now.getFullYear(), q * 3, 1);
-        end = now;
-        break;
-      case 'last_quarter':
-        const lastQ = Math.floor(now.getMonth() / 3) - 1;
-        start = new Date(now.getFullYear(), lastQ * 3, 1);
-        end = new Date(now.getFullYear(), lastQ * 3 + 3, 0);
-        break;
-      case 'this_year':
-        start = new Date(now.getFullYear(), 0, 1);
-        end = now;
-        break;
-      case 'last_year':
-        start = new Date(now.getFullYear() - 1, 0, 1);
-        end = new Date(now.getFullYear() - 1, 11, 31);
-        break;
-      case '2023':
-      case '2024':
-      case '2025':
-        start = new Date(Number(label), 0, 1);
-        end = new Date(Number(label), 11, 31);
-        break;
-      case '90_days':
-        start = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-        end = now;
-        break;
-      case '1_year':
-        start = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
-        end = now;
-        break;
-      default:
-        start = new Date(now.getFullYear(), now.getMonth(), 1);
-        end = now;
-    }
-    return { start, end };
-  }
-
-  console.log('📈 Calculating metrics for date ranges...');
-  for (const range of dateRanges) {
-    const { start, end } = getRange(range.label);
-    
-    // Calculate metrics from Firestore data
-    const salesOrdersSnap = await db.collection('sales_orders')
-      .where('date', '>=', start.toISOString().split('T')[0])
-      .where('date', '<=', end.toISOString().split('T')[0])
-      .get();
-    const totalOrders = salesOrdersSnap.size;
-    let totalRevenue = 0;
-    salesOrdersSnap.forEach(doc => {
-      totalRevenue += parseFloat(doc.data().total || 0);
-    });
-
-    const invoicesSnap = await db.collection('invoices')
-      .where('date', '>=', start.toISOString().split('T')[0])
-      .where('date', '<=', end.toISOString().split('T')[0])
-      .get();
-    const totalInvoices = invoicesSnap.size;
-    let totalInvoiced = 0;
-    invoicesSnap.forEach(doc => {
-      totalInvoiced += parseFloat(doc.data().total || 0);
-    });
-
-    // Store metrics in a collection for dashboard use
-    await db.collection('dashboard_metrics').doc(range.label).set({
-      range: range.label,
-      start: start.toISOString(),
-      end: end.toISOString(),
-      totalOrders,
-      totalRevenue,
-      totalInvoices,
-      totalInvoiced,
-      lastUpdated: new Date().toISOString()
-    }, { merge: true });
-
-    console.log(`  - ${range.label}: Orders=${totalOrders}, Revenue=${totalRevenue.toFixed(2)}, Invoices=${totalInvoices}, Invoiced=${totalInvoiced.toFixed(2)}`);
-  }
-  console.log('✅ Metrics calculated and stored');
-
-  console.log('🎉 Full migration and metrics calculation complete!');
-}
+// --- CLI Migration Functions ---
 
 /**
- * CLI Usage:
- *   node server/src/services/zohoReportsService.js [startAfterId]
- *   - If startAfterId is provided, resume enrichment from that sales_order document ID (exclusive).
- *   - If omitted, processes all sales orders from the beginning.
+ * Backfill brand field on sales_orders documents by getting brand_normalized from first line item
  */
-
-/**
- * Enrich Firestore sales_orders with line_items from Zoho
- * For each sales order in Firestore, fetch the full sales order from Zoho,
- * and write each line item as a document in the order_line_items subcollection,
- * enriching with brand (from itemIdToBrand mapping).
- *
- * @param {string} [startAfterId] - Optional sales_order document ID to resume after (exclusive)
- */
-export async function enrichFirestoreSalesOrdersWithLineItems(startAfterId) {
+export async function backfillSalesOrderBrands() {
   const db = admin.firestore();
-  const zohoReportsService = new ZohoReportsService();
-
-  // 1. Build itemIdToBrand mapping
-  console.log('📦 Fetching all items for brand enrichment...');
-  const items = await (await import('./zohoInventoryService.js')).default.fetchAllProducts();
-  const itemIdToBrand = {};
-  for (const item of items) {
-    if (item.item_id && item.brand_normalized) {
-      itemIdToBrand[item.item_id] = item.brand_normalized;
-    }
-  }
-
-  // 2. Fetch all sales orders from Firestore
-  const salesOrdersSnap = await db.collection('sales_orders').get();
-  console.log(`Found ${salesOrdersSnap.size} sales orders`);
-
-  // 3. Optionally skip until startAfterId
-  let skip = !!startAfterId;
-  let processed = 0;
-  let found = !startAfterId;
-  for (const doc of salesOrdersSnap.docs) {
-    if (skip && !found) {
-      if (doc.id === startAfterId) {
-        found = true;
-        continue; // skip the startAfterId itself
-      }
-      continue;
-    }
-    try {
-      // Fetch full sales order from Zoho
-      const zohoOrder = await zohoReportsService.getSalesOrderDetail(doc.id);
-      if (!zohoOrder || !Array.isArray(zohoOrder.line_items)) {
-        console.warn(`No line_items for sales order ${doc.id}`);
-        continue;
-      }
-
-      // Write each line item to subcollection, enriching with brand
-      const batch = db.batch();
-      for (const line of zohoOrder.line_items) {
-        if (!line.line_item_id || !line.item_id) continue;
-        let brand_normalized = null;
-        if (line.product_id) {
-          if (itemIdToBrand[line.product_id]) {
-            brand_normalized = itemIdToBrand[line.product_id];
-          }
-        }
-        const lineItemId = line.product_id ? `${line.product_id}_${line.line_item_id}` : `row_${line.line_item_id}`;
-        const lineItemRef = db.collection('sales_orders')
-          .doc(doc.id)
-          .collection('order_line_items')
-          .doc(lineItemId);
-        const lineItemDoc = await lineItemRef.get();
-        if (lineItemDoc.exists) {
-          // Only update brand_normalized field
-          if (brand_normalized) {
-            batch.update(lineItemRef, { brand_normalized });
-          }
-        } else {
-          // Create the full document, including brand_normalized if present
-          if (brand_normalized) {
-            line.brand_normalized = brand_normalized;
-          }
-          batch.set(lineItemRef, line, { merge: true });
-        }
-      }
-      await batch.commit();
-      processed++;
-      if (processed % 50 === 0) {
-        console.log(`Processed ${processed}/${salesOrdersSnap.size} sales orders`);
-      }
-    } catch (err) {
-      console.error(`❌ Failed for sales order ${doc.id}:`, err.message);
-    }
-  }
-  console.log('✅ All sales orders enriched with line_items');
-}
-
-/**
- * Import order line items from a CSV file and write to Firestore
- * @param {string} csvFilePath - Path to the CSV file
- */
-export async function importOrderLineItemsFromCSV(csvFilePath) {
-  const db = admin.firestore();
-  console.log(`📥 Reading CSV: ${csvFilePath}`);
-  const salesOrderLineItems = new Map();
-  const brandCache = new Map();
-
-  // 1. Read and group CSV rows by salesorder_id
-  await new Promise((resolve, reject) => {
-    fs.createReadStream(csvFilePath)
-      .pipe(csv())
-      .on('data', (row) => {
-        const salesorder_id = row.salesorder_id;
-        if (!salesorder_id) return;
-        if (!salesOrderLineItems.has(salesorder_id)) {
-          salesOrderLineItems.set(salesorder_id, []);
-        }
-        salesOrderLineItems.get(salesorder_id).push(row);
-      })
-      .on('end', resolve)
-      .on('error', reject);
-  });
-
-  console.log(`Found ${salesOrderLineItems.size} unique sales orders in CSV.`);
-
-  // 2. For each salesorder_id, write line items
+  console.log(`🔄 Starting sales orders brand backfill...`);
+  
+  // Get all sales orders
+  const salesOrdersSnapshot = await db.collection('sales_orders').get();
+  console.log(`📦 Found ${salesOrdersSnapshot.size} sales orders to process`);
+  
   let processedOrders = 0;
-  for (const [salesorder_id, lineItems] of salesOrderLineItems.entries()) {
-    const orderRef = db.collection('sales_orders').doc(salesorder_id);
-    const orderDoc = await orderRef.get();
-    if (!orderDoc.exists) {
-      console.warn(`⚠️  sales_orders/${salesorder_id} not found, skipping.`);
+  let updatedOrders = 0;
+  let skippedOrders = 0;
+  let batch = db.batch();
+  let batchCount = 0;
+  const batchSize = 400;
+  
+  // Process each sales order
+  for (const orderDoc of salesOrdersSnapshot.docs) {
+    const orderData = orderDoc.data();
+    
+    // Skip if brand already exists
+    if (orderData.brand) {
+      skippedOrders++;
+      processedOrders++;
       continue;
     }
-    const batch = db.batch();
-    for (let idx = 0; idx < lineItems.length; idx++) {
-      const row = lineItems[idx];
-      let brand_normalized = null;
-      if (row.product_id) {
-        if (brandCache.has(row.product_id)) {
-          brand_normalized = brandCache.get(row.product_id);
-        } else {
-          const itemSnap = await db.collection('items_data').doc(row.product_id).get();
-          if (itemSnap.exists) {
-            brand_normalized = itemSnap.data().brand_normalized || null;
-            brandCache.set(row.product_id, brand_normalized);
-          }
-        }
-      }
-      // Use product_id + idx as doc ID, or fallback to idx
-      const lineItemId = row.product_id ? `${row.product_id}_${idx}` : `row_${idx}`;
-      const lineItemRef = orderRef.collection('order_line_items').doc(lineItemId);
-      const lineItemDoc = await lineItemRef.get();
-      if (lineItemDoc.exists) {
-        // Only update brand_normalized field
-        if (brand_normalized) {
-          batch.update(lineItemRef, { brand_normalized });
-        }
-      } else {
-        // Create the full document, including brand_normalized if present
-        if (brand_normalized) {
-          row.brand_normalized = brand_normalized;
-        }
-        batch.set(lineItemRef, row, { merge: true });
+    
+    // Get first line item to determine brand
+    const lineItemsSnapshot = await orderDoc.ref.collection('order_line_items')
+      .limit(1)
+      .get();
+    
+    if (!lineItemsSnapshot.empty) {
+      const firstLineItem = lineItemsSnapshot.docs[0].data();
+      const brand = firstLineItem.brand_normalized || firstLineItem.brand || 'unknown';
+      
+      // Update the sales order with brand
+      batch.update(orderDoc.ref, { 
+        brand: brand.toLowerCase(),
+        _brandBackfilled: admin.firestore.FieldValue.serverTimestamp()
+      });
+      
+      batchCount++;
+      updatedOrders++;
+      
+      // Commit batch if size reached
+      if (batchCount >= batchSize) {
+        await batch.commit();
+        console.log(`✅ Committed batch of ${batchCount} updates`);
+        batch = db.batch();
+        batchCount = 0;
+        
+        // Add delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
-    await batch.commit();
+    
     processedOrders++;
-    if (processedOrders % 10 === 0) {
-      console.log(`Processed ${processedOrders}/${salesOrderLineItems.size} sales orders`);
+    if (processedOrders % 100 === 0) {
+      console.log(`⏳ Processed ${processedOrders}/${salesOrdersSnapshot.size} sales orders...`);
     }
   }
-  console.log('✅ CSV import complete.');
+  
+  // Commit any remaining updates
+  if (batchCount > 0) {
+    await batch.commit();
+    console.log(`✅ Committed final batch of ${batchCount} updates`);
+  }
+  
+  console.log(`\n✅ Brand backfill complete!`);
+  console.log(`📊 Summary:`);
+  console.log(`   - Sales orders processed: ${processedOrders}`);
+  console.log(`   - Sales orders updated: ${updatedOrders}`);
+  console.log(`   - Sales orders skipped (already had brand): ${skippedOrders}`);
+  
+  return { processed: processedOrders, updated: updatedOrders, skipped: skippedOrders };
+}
+
+/**
+ * Update brand statistics in the brands collection based on sales data
+ */
+export async function updateBrandStatistics(dateRange = '30_days') {
+  const db = admin.firestore();
+  console.log(`📊 Updating brand statistics for ${dateRange}...`);
+  
+  const { startDate, endDate } = new ZohoReportsService().getDateRange(dateRange);
+  
+  // Get all sales orders with brands in date range
+  const ordersSnapshot = await db.collection('sales_orders')
+    .where('date', '>=', startDate.toISOString().split('T')[0])
+    .where('date', '<=', endDate.toISOString().split('T')[0])
+    .get();
+  
+  const brandStats = new Map();
+  
+  // Process each order
+  for (const orderDoc of ordersSnapshot.docs) {
+    const order = orderDoc.data();
+    const brand = order.brand || 'unknown';
+    
+    if (!brandStats.has(brand)) {
+      brandStats.set(brand, {
+        name: brand,
+        revenue: 0,
+        orders: 0,
+        items: 0,
+        customers: new Set()
+      });
+    }
+    
+    const stats = brandStats.get(brand);
+    stats.revenue += parseFloat(order.total || 0);
+    stats.orders++;
+    
+    if (order.customer_id) {
+      stats.customers.add(order.customer_id);
+    }
+    
+    // Count items from line items
+    const lineItemsSnapshot = await orderDoc.ref.collection('order_line_items').get();
+    stats.items += lineItemsSnapshot.size;
+  }
+  
+  // Update brands collection
+  let batch = db.batch();
+  let batchCount = 0;
+  
+  for (const [brandName, stats] of brandStats) {
+    const brandRef = db.collection('brands').doc(brandName);
+    
+    batch.set(brandRef, {
+      name: brandName,
+      metrics: {
+        [dateRange]: {
+          revenue: stats.revenue,
+          orders: stats.orders,
+          items: stats.items,
+          customers: stats.customers.size,
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        }
+      }
+    }, { merge: true });
+    
+    batchCount++;
+    
+    if (batchCount >= 400) {
+      await batch.commit();
+      batch = db.batch();
+      batchCount = 0;
+    }
+  }
+  
+  if (batchCount > 0) {
+    await batch.commit();
+  }
+  
+  console.log(`✅ Updated statistics for ${brandStats.size} brands`);
+  return { brandsUpdated: brandStats.size };
 }
 
 // --- CLI Entrypoint ---
 if (import.meta.url === `file://${process.argv[1]}`) {
   (async () => {
     try {
-      if (process.argv[2] === 'import-csv' && process.argv[3]) {
-        await importOrderLineItemsFromCSV(process.argv[3]);
-        process.exit(0);
-      } else {
-        const startAfterId = process.argv[2];
-        await enrichFirestoreSalesOrdersWithLineItems(startAfterId);
-        process.exit(0);
+      const command = process.argv[2];
+      
+      switch (command) {
+        case 'backfill-brands':
+          console.log('🚀 Starting brand backfill process...');
+          const backfillResult = await backfillSalesOrderBrands();
+          console.log('✅ Backfill completed:', backfillResult);
+          process.exit(0);
+          break;
+          
+        case 'update-brand-stats':
+          const dateRange = process.argv[3] || '30_days';
+          console.log(`📊 Updating brand statistics for ${dateRange}...`);
+          const statsResult = await updateBrandStatistics(dateRange);
+          console.log('✅ Brand statistics updated:', statsResult);
+          process.exit(0);
+          break;
+          
+        default:
+          console.log('\nSplitfin Brand Management CLI\n');
+          console.log('Available commands:');
+          console.log('  backfill-brands       - Add brand field to all sales orders from line items');
+          console.log('  update-brand-stats    - Update brand statistics in brands collection');
+          console.log('\nUsage:');
+          console.log('  node zohoReportsService.js backfill-brands');
+          console.log('  node zohoReportsService.js update-brand-stats [dateRange]');
+          console.log('\nDate ranges: today, 7_days, 30_days, 90_days, quarter, year');
+          process.exit(1);
       }
     } catch (err) {
-      console.error('❌ Migration failed:', err);
+      console.error('\n❌ Command failed:', err.message);
+      console.error(err.stack);
       process.exit(1);
     }
   })();
