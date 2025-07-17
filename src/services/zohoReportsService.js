@@ -1764,6 +1764,68 @@ export async function runFullMigration({ clear }) {
   console.log('🎉 Full migration and metrics calculation complete!');
 }
 
+/**
+ * Enrich Firestore sales_orders with line_items from Zoho
+ * For each sales order in Firestore, fetch the full sales order from Zoho,
+ * and write each line item as a document in the order_line_items subcollection,
+ * enriching with brand (from itemIdToBrand mapping).
+ */
+export async function enrichFirestoreSalesOrdersWithLineItems() {
+  const db = admin.firestore();
+  const zohoReportsService = new ZohoReportsService();
+
+  // 1. Build itemIdToBrand mapping
+  console.log('📦 Fetching all items for brand enrichment...');
+  const items = await (await import('./zohoInventoryService.js')).default.fetchAllProducts();
+  const itemIdToBrand = {};
+  for (const item of items) {
+    if (item.item_id && item.brand_normalized) {
+      itemIdToBrand[item.item_id] = item.brand_normalized;
+    }
+  }
+
+  // 2. Fetch all sales orders from Firestore
+  const salesOrdersSnap = await db.collection('sales_orders').get();
+  console.log(`Found ${salesOrdersSnap.size} sales orders`);
+
+  // 3. For each sales order, fetch line_items from Zoho and write to subcollection
+  let processed = 0;
+  for (const doc of salesOrdersSnap.docs) {
+    const salesorder_id = doc.id;
+    try {
+      // Fetch full sales order from Zoho
+      const zohoOrder = await zohoReportsService.getSalesOrderDetail(salesorder_id);
+      if (!zohoOrder || !Array.isArray(zohoOrder.line_items)) {
+        console.warn(`No line_items for sales order ${salesorder_id}`);
+        continue;
+      }
+
+      // Write each line item to subcollection, enriching with brand
+      const batch = db.batch();
+      for (const line of zohoOrder.line_items) {
+        if (!line.line_item_id || !line.item_id) continue;
+        line.brand_normalized = itemIdToBrand[line.item_id] || null;
+        batch.set(
+          db.collection('sales_orders')
+            .doc(salesorder_id)
+            .collection('order_line_items')
+            .doc(line.line_item_id),
+          line,
+          { merge: true }
+        );
+      }
+      await batch.commit();
+      processed++;
+      if (processed % 50 === 0) {
+        console.log(`Processed ${processed}/${salesOrdersSnap.size} sales orders`);
+      }
+    } catch (err) {
+      console.error(`❌ Failed for sales order ${salesorder_id}:`, err.message);
+    }
+  }
+  console.log('✅ All sales orders enriched with line_items');
+}
+
 // --- CLI Entrypoint ---
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
