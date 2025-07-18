@@ -445,7 +445,6 @@ router.get('/metadata', (req, res) => {
   });
 });
 
-// === Per-tab dashboard endpoints ===
 
 router.get('/dashboard/overview', validateDateRange, getUserContext, async (req, res) => {
   try {
@@ -454,6 +453,7 @@ router.get('/dashboard/overview', validateDateRange, getUserContext, async (req,
     const data = await collectionDashboardService.getOverviewData(userId, dateRange);
     res.json({ success: true, data });
   } catch (error) {
+    console.error('Error fetching overview data:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -465,6 +465,7 @@ router.get('/dashboard/orders', validateDateRange, getUserContext, async (req, r
     const data = await collectionDashboardService.getOrdersData(userId, dateRange);
     res.json({ success: true, data });
   } catch (error) {
+    console.error('Error fetching orders data:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -476,6 +477,7 @@ router.get('/dashboard/revenue', validateDateRange, getUserContext, async (req, 
     const data = await collectionDashboardService.getRevenueData(userId, dateRange);
     res.json({ success: true, data });
   } catch (error) {
+    console.error('Error fetching revenue data:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -487,6 +489,7 @@ router.get('/dashboard/invoices', validateDateRange, getUserContext, async (req,
     const data = await collectionDashboardService.getInvoicesData(userId, dateRange);
     res.json({ success: true, data });
   } catch (error) {
+    console.error('Error fetching invoices data:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -498,6 +501,7 @@ router.get('/dashboard/brands', validateDateRange, getUserContext, async (req, r
     const data = await collectionDashboardService.getBrandsData(userId, dateRange);
     res.json({ success: true, data });
   } catch (error) {
+    console.error('Error fetching brands data:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -509,8 +513,8 @@ router.get('/dashboard/forecasting', validateDateRange, getUserContext, async (r
     const data = await collectionDashboardService.getForecastingData(userId, dateRange);
     res.json({ success: true, data });
   } catch (error) {
+    console.error('Error fetching forecasting data:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
 export default router;
