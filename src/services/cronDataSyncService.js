@@ -819,8 +819,17 @@ async enrichOrdersWithUIDs(orders) {
       salespersonUid = usersByZohoId.get(order.salesperson_id).uid;
     }
     
+    // Extract brand from first line item
+    let brand = 'unknown';
+    if (order.line_items && Array.isArray(order.line_items) && order.line_items.length > 0) {
+      const firstItem = order.line_items[0];
+      brand = firstItem.brand_normalized || firstItem.brand || 'unknown';
+      brand = brand.toLowerCase().replace(/\s+/g, '-');
+    }
+    
     return {
       ...order,
+      brand: brand,
       salesperson_uid: salespersonUid || null, // Use null instead of undefined
       is_marketplace_order: isMarketplaceOrder, // Will always be boolean now
       marketplace_source: isMarketplaceOrder ? 'Amazon' : null

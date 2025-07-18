@@ -76,6 +76,14 @@ class CollectionDashboardService {
       const { startDate, endDate } = this.getDateRange(dateRange, customDateRange);
       const startISO = startDate.toISOString();
       const endISO = endDate.toISOString();
+    
+    console.log('📅 Date range for dashboard:', {
+      dateRange,
+      startDate: startISO,
+      endDate: endISO,
+      startDateOnly: startISO.split('T')[0],
+      endDateOnly: endISO.split('T')[0]
+    });
 
       // Fetch data
       let dashboardData;
@@ -107,16 +115,46 @@ class CollectionDashboardService {
     // Fetch all customers
     const customersSnapshot = await this.db.collection('customers').get();
     // Fetch all sales orders in range
+    console.log('🔍 Fetching orders with date filter:', {
+      startDate: startISO.split('T')[0],
+      endDate: endISO.split('T')[0]
+    });
+    
     const ordersSnapshot = await this.db.collection('sales_orders')
       .where('date', '>=', startISO.split('T')[0])
       .where('date', '<=', endISO.split('T')[0])
       .orderBy('date', 'desc')
       .get();
+    
+    console.log('📦 Orders fetched:', {
+      count: ordersSnapshot.size,
+      empty: ordersSnapshot.empty,
+      firstOrderDate: !ordersSnapshot.empty ? ordersSnapshot.docs[0].data().date : 'N/A'
+    });
     // Fetch all invoices in range
-    const invoicesSnapshot = await this.db.collection('invoices')
-      .where('date', '>=', startISO.split('T')[0])
-      .where('date', '<=', endISO.split('T')[0])
-      .get();
+    let invoicesSnapshot;
+    try {
+      invoicesSnapshot = await this.db.collection('invoices')
+        .where('date', '>=', startISO.split('T')[0])
+        .where('date', '<=', endISO.split('T')[0])
+        .get();
+    } catch (error) {
+      console.warn('Failed to fetch invoices with date filter, trying without filter:', error.message);
+      // Fallback: fetch all invoices and filter in memory
+      const allInvoicesSnapshot = await this.db.collection('invoices').get();
+      const startDateStr = startISO.split('T')[0];
+      const endDateStr = endISO.split('T')[0];
+      const filteredDocs = allInvoicesSnapshot.docs.filter(doc => {
+        const data = doc.data();
+        const invoiceDate = data.date || data.invoice_date || '';
+        return invoiceDate >= startDateStr && invoiceDate <= endDateStr;
+      });
+      invoicesSnapshot = {
+        docs: filteredDocs,
+        size: filteredDocs.length,
+        empty: filteredDocs.length === 0
+      };
+    }
     // Fetch all items
     const itemsSnapshot = await this.db.collection('items_data').get();
     // Fetch all agents
@@ -143,6 +181,8 @@ class CollectionDashboardService {
 
     // Process orders and fetch line items
     const orders = [];
+    let lineItemsDebug = { totalOrders: ordersSnapshot.docs.length, ordersWithLineItems: 0, totalLineItems: 0 };
+    
     for (const orderDoc of ordersSnapshot.docs) {
       const orderData = orderDoc.data();
       // Fetch line items subcollection
@@ -150,15 +190,39 @@ class CollectionDashboardService {
         .doc(orderDoc.id)
         .collection('order_line_items')
         .get();
+      
+      if (lineItemsSnapshot.size > 0) {
+        lineItemsDebug.ordersWithLineItems++;
+        lineItemsDebug.totalLineItems += lineItemsSnapshot.size;
+      }
+      
       const lineItems = [];
+      // Debug first line item structure
+      if (lineItemsSnapshot.size > 0 && lineItemsDebug.ordersWithLineItems === 1) {
+        const firstItem = lineItemsSnapshot.docs[0].data();
+        console.log('🔍 Sample line item structure:', {
+          hasTotal: 'total' in firstItem,
+          hasItemTotal: 'item_total' in firstItem,
+          hasLineItemTotal: 'line_item_total' in firstItem,
+          total: firstItem.total,
+          item_total: firstItem.item_total,
+          line_item_total: firstItem.line_item_total,
+          quantity: firstItem.quantity,
+          rate: firstItem.rate,
+          allFields: Object.keys(firstItem)
+        });
+      }
+      
       for (const itemDoc of lineItemsSnapshot.docs) {
         const itemData = itemDoc.data();
         // Use sku for lookup if available
         const itemDetails = itemData.sku ? (itemMap.get(itemData.sku) || {}) : {};
         lineItems.push({
           ...itemData,
-          brand: itemDetails.brand || 'Unknown',
-          item_name: itemDetails.name || itemData.name,
+          brand: itemDetails.brand || itemData.brand || 'Unknown',
+          brand_normalized: itemDetails.brand_normalized || itemData.brand_normalized || itemDetails.brand || itemData.brand || 'Unknown',
+          item_name: itemDetails.name || itemData.name || itemData.item_name,
+          total: itemData.item_total || itemData.total || itemData.line_item_total || 0
         });
       }
       orders.push({
@@ -167,6 +231,8 @@ class CollectionDashboardService {
         line_items: lineItems,
       });
     }
+    
+    console.log('📦 Line items debug:', lineItemsDebug);
 
     // Process invoices
     const invoices = invoicesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -202,30 +268,57 @@ class CollectionDashboardService {
 
     // Aggregate brand performance
     const brandMap = new Map();
+    let brandDebugInfo = { totalLineItems: 0, brandsFound: new Set() };
+    
     orders.forEach(order => {
       order.line_items.forEach(item => {
+        brandDebugInfo.totalLineItems++;
         const brand = item.brand_normalized || item.brand || 'Unknown';
+        brandDebugInfo.brandsFound.add(brand);
+        
         if (!brandMap.has(brand)) {
           brandMap.set(brand, { name: brand, revenue: 0, quantity: 0, orderCount: 0 });
         }
         const brandData = brandMap.get(brand);
-        brandData.revenue += item.total || 0;
-        brandData.quantity += item.quantity || 0;
+        // Fixed: Ensure numeric addition for revenue and quantity
+        const itemRevenue = parseFloat(item.total || item.item_total || 0);
+        const itemQuantity = parseInt(item.quantity || 0, 10);
+        
+        brandData.revenue += itemRevenue;
+        brandData.quantity += itemQuantity;
         brandData.orderCount += 1;
       });
     });
     const brands = Array.from(brandMap.values()).sort((a, b) => b.revenue - a.revenue);
+    
+    console.log('🏷️ Brand aggregation debug:', {
+      totalOrders: orders.length,
+      totalLineItems: brandDebugInfo.totalLineItems,
+      uniqueBrands: brandDebugInfo.brandsFound.size,
+      brandsFound: Array.from(brandDebugInfo.brandsFound),
+      brandsSummary: brands.slice(0, 5).map(b => ({ name: b.name, revenue: b.revenue, orderCount: b.orderCount }))
+    });
 
     // Aggregate top items
     const itemAggMap = new Map();
     orders.forEach(order => {
       order.line_items.forEach(item => {
         if (!itemAggMap.has(item.item_id)) {
-          itemAggMap.set(item.item_id, { id: item.item_id, name: item.item_name, quantity: 0, revenue: 0, brand: item.brand });
+          itemAggMap.set(item.item_id, { 
+            id: item.item_id, 
+            name: item.item_name || item.name || 'Unknown Item', 
+            quantity: 0, 
+            revenue: 0, 
+            brand: item.brand_normalized || item.brand || 'Unknown' 
+          });
         }
         const agg = itemAggMap.get(item.item_id);
-        agg.quantity += item.quantity || 0;
-        agg.revenue += item.total || 0;
+        // Fixed: Ensure numeric addition
+        const itemRevenue = parseFloat(item.total || item.item_total || 0);
+        const itemQuantity = parseInt(item.quantity || 0, 10);
+        
+        agg.quantity += itemQuantity;
+        agg.revenue += itemRevenue;
       });
     });
     const topItems = Array.from(itemAggMap.values()).sort((a, b) => b.revenue - a.revenue);
@@ -342,8 +435,8 @@ class CollectionDashboardService {
               });
             }
             const existing = itemMap.get(item.id || item.item_id);
-            existing.quantity += item.quantity || 0;
-            existing.revenue += item.revenue || item.total || 0;
+            existing.quantity += parseInt(item.quantity || 0, 10);
+            existing.revenue += parseFloat(item.revenue || item.total || item.item_total || 0);
           });
         }
       });
@@ -376,8 +469,9 @@ class CollectionDashboardService {
               const aggregatedItem = itemMap.get(itemData.item_id);
               lineItems.push({
                 ...itemData,
-                brand: aggregatedItem?.brand || itemData.brand || 'Unknown',
+                brand: aggregatedItem?.brand || itemData.brand_normalized || itemData.brand || 'Unknown',
                 item_name: aggregatedItem?.name || itemData.name || itemData.item_name,
+                total: itemData.item_total || itemData.total || 0
               });
             }
             orders.push({
@@ -531,8 +625,9 @@ class CollectionDashboardService {
               const itemDetails = itemSnap.exists ? itemSnap.data() : {};
               lineItems.push({
                 ...itemData,
-                brand: (itemDetails.brand_normalized && itemDetails.brand_normalized !== 'unknown') ? itemDetails.brand_normalized : 'rader',
-                item_name: itemDetails.name || itemData.name,
+                brand: itemDetails.brand_normalized || itemData.brand_normalized || itemData.brand || 'Unknown',
+                item_name: itemDetails.name || itemData.name || itemData.item_name,
+                total: itemData.item_total || itemData.total || 0
               });
             }
             orders.push({
@@ -590,8 +685,8 @@ class CollectionDashboardService {
             itemAggMap.set(item.item_id, { id: item.item_id, name: item.item_name, quantity: 0, revenue: 0, brand: item.brand });
           }
           const agg = itemAggMap.get(item.item_id);
-          agg.quantity += item.quantity || 0;
-          agg.revenue += item.total || 0;
+          agg.quantity += parseInt(item.quantity || 0, 10);
+          agg.revenue += parseFloat(item.item_total || item.total || 0);
         });
       });
       const topItems = Array.from(itemAggMap.values()).sort((a, b) => b.revenue - a.revenue);
