@@ -853,6 +853,106 @@ class CollectionDashboardService {
       };
     }
   }
+
+  // === Per-tab dashboard data methods for new API endpoints ===
+
+  /**
+   * Overview Tab: summary metrics, top items, agent performance, recent orders
+   */
+  async getOverviewData(userId, dateRange = '30_days') {
+    // Reuse getDashboardData logic
+    const dashboard = await this.getDashboardData(userId, dateRange);
+    return {
+      metrics: dashboard.metrics,
+      topItems: dashboard.topItems,
+      agentPerformance: dashboard.agentPerformance,
+      orders: dashboard.orders,
+      lastUpdated: dashboard.lastUpdated,
+      isCached: dashboard.isCached,
+      isStale: dashboard.isStale
+    };
+  }
+
+  /**
+   * Orders Tab: orders and order-related metrics
+   */
+  async getOrdersData(userId, dateRange = '30_days') {
+    const dashboard = await this.getDashboardData(userId, dateRange);
+    return {
+      orders: dashboard.orders,
+      metrics: {
+        totalOrders: dashboard.metrics?.totalOrders,
+        averageOrderValue: dashboard.metrics?.averageOrderValue,
+        marketplaceOrders: dashboard.metrics?.marketplaceOrders
+      },
+      agentPerformance: dashboard.agentPerformance,
+      brands: dashboard.brands,
+      lastUpdated: dashboard.lastUpdated
+    };
+  }
+
+  /**
+   * Revenue Tab: revenue metrics and revenue trends
+   */
+  async getRevenueData(userId, dateRange = '30_days') {
+    const dashboard = await this.getDashboardData(userId, dateRange);
+    // Optionally, add revenue trends if available
+    return {
+      metrics: {
+        totalRevenue: dashboard.metrics?.totalRevenue,
+        averageOrderValue: dashboard.metrics?.averageOrderValue,
+        outstandingInvoices: dashboard.metrics?.outstandingInvoices
+      },
+      orders: dashboard.orders,
+      agentPerformance: dashboard.agentPerformance,
+      brands: dashboard.brands,
+      lastUpdated: dashboard.lastUpdated
+    };
+  }
+
+  /**
+   * Invoices Tab: invoices and invoice metrics
+   */
+  async getInvoicesData(userId, dateRange = '30_days') {
+    const dashboard = await this.getDashboardData(userId, dateRange);
+    return {
+      invoices: dashboard.invoices,
+      metrics: {
+        outstandingInvoices: dashboard.metrics?.outstandingInvoices
+      },
+      lastUpdated: dashboard.lastUpdated
+    };
+  }
+
+  /**
+   * Brands Tab: brand performance
+   */
+  async getBrandsData(userId, dateRange = '30_days') {
+    const dashboard = await this.getDashboardData(userId, dateRange);
+    return {
+      brands: dashboard.brands,
+      metrics: {
+        totalRevenue: dashboard.metrics?.totalRevenue
+      },
+      orders: dashboard.orders,
+      lastUpdated: dashboard.lastUpdated
+    };
+  }
+
+  /**
+   * Forecasting Tab: basic forecasting data (stub)
+   */
+  async getForecastingData(userId, dateRange = '30_days') {
+    const dashboard = await this.getDashboardData(userId, dateRange);
+    // For now, just return metrics and orders for forecasting
+    return {
+      metrics: dashboard.metrics,
+      orders: dashboard.orders,
+      brands: dashboard.brands,
+      agentPerformance: dashboard.agentPerformance,
+      lastUpdated: dashboard.lastUpdated
+    };
+  }
 }
 
 export default new CollectionDashboardService();

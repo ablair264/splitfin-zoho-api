@@ -445,4 +445,72 @@ router.get('/metadata', (req, res) => {
   });
 });
 
+// === Per-tab dashboard endpoints ===
+
+router.get('/dashboard/overview', validateDateRange, getUserContext, async (req, res) => {
+  try {
+    const { dateRange = '30_days' } = req.query;
+    const { userId } = req.userContext;
+    const data = await collectionDashboardService.getOverviewData(userId, dateRange);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/dashboard/orders', validateDateRange, getUserContext, async (req, res) => {
+  try {
+    const { dateRange = '30_days' } = req.query;
+    const { userId } = req.userContext;
+    const data = await collectionDashboardService.getOrdersData(userId, dateRange);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/dashboard/revenue', validateDateRange, getUserContext, async (req, res) => {
+  try {
+    const { dateRange = '30_days' } = req.query;
+    const { userId } = req.userContext;
+    const data = await collectionDashboardService.getRevenueData(userId, dateRange);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/dashboard/invoices', validateDateRange, getUserContext, async (req, res) => {
+  try {
+    const { dateRange = '30_days' } = req.query;
+    const { userId } = req.userContext;
+    const data = await collectionDashboardService.getInvoicesData(userId, dateRange);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/dashboard/brands', validateDateRange, getUserContext, async (req, res) => {
+  try {
+    const { dateRange = '30_days' } = req.query;
+    const { userId } = req.userContext;
+    const data = await collectionDashboardService.getBrandsData(userId, dateRange);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/dashboard/forecasting', validateDateRange, getUserContext, async (req, res) => {
+  try {
+    const { dateRange = '30_days' } = req.query;
+    const { userId } = req.userContext;
+    const data = await collectionDashboardService.getForecastingData(userId, dateRange);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 export default router;
