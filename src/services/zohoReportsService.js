@@ -242,6 +242,7 @@ class ZohoReportsService {
         endDate = now;
         break;
       case 'quarter':
+        // Current calendar quarter (Q1: Jan-Mar, Q2: Apr-Jun, Q3: Jul-Sep, Q4: Oct-Dec)
         const currentQuarter = Math.floor(now.getMonth() / 3);
         startDate = new Date(now.getFullYear(), currentQuarter * 3, 1);
         endDate = now;
