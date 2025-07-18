@@ -12,6 +12,13 @@ class CollectionDashboardService {
   getDateRange(dateRange, customDateRange = null) {
     const now = new Date();
     let startDate, endDate;
+    
+    console.log('📅 Calculating date range:', {
+      dateRange,
+      currentDate: now.toISOString(),
+      currentDateLocal: now.toLocaleDateString()
+    });
+    
     switch (dateRange) {
       case 'today':
         startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -42,6 +49,34 @@ class CollectionDashboardService {
         startDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
         endDate = now;
         break;
+      case 'last_month': {
+        // Handle January edge case
+        const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        startDate = new Date(lastMonthDate.getFullYear(), lastMonthDate.getMonth(), 1);
+        endDate = new Date(lastMonthDate.getFullYear(), lastMonthDate.getMonth() + 1, 0);
+        break;
+      }
+      case 'last_quarter': {
+        const currentQ = Math.floor(now.getMonth() / 3);
+        const lastQ = currentQ - 1;
+        const lastQYear = lastQ < 0 ? now.getFullYear() - 1 : now.getFullYear();
+        const lastQMonth = lastQ < 0 ? 9 : lastQ * 3;
+        startDate = new Date(lastQYear, lastQMonth, 1);
+        endDate = new Date(lastQYear, lastQMonth + 3, 0);
+        break;
+      }
+      case 'this_year':
+        startDate = new Date(now.getFullYear(), 0, 1);
+        endDate = now;
+        break;
+      case 'last_year':
+        startDate = new Date(now.getFullYear() - 1, 0, 1);
+        endDate = new Date(now.getFullYear() - 1, 11, 31);
+        break;
+      case '12_months':
+        startDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+        endDate = now;
+        break;
       case 'custom':
         if (customDateRange) {
           startDate = new Date(customDateRange.start);
@@ -55,6 +90,14 @@ class CollectionDashboardService {
         startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
         endDate = now;
     }
+    
+    console.log('📅 Date range calculated:', {
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      startDateOnly: startDate.toISOString().split('T')[0],
+      endDateOnly: endDate.toISOString().split('T')[0]
+    });
+    
     return { startDate, endDate };
   }
 
@@ -117,7 +160,8 @@ class CollectionDashboardService {
     // Fetch all sales orders in range
     console.log('🔍 Fetching orders with date filter:', {
       startDate: startISO.split('T')[0],
-      endDate: endISO.split('T')[0]
+      endDate: endISO.split('T')[0],
+      dateRange: dateRange
     });
     
     const ordersSnapshot = await this.db.collection('sales_orders')
@@ -129,7 +173,9 @@ class CollectionDashboardService {
     console.log('📦 Orders fetched:', {
       count: ordersSnapshot.size,
       empty: ordersSnapshot.empty,
-      firstOrderDate: !ordersSnapshot.empty ? ordersSnapshot.docs[0].data().date : 'N/A'
+      firstOrderDate: !ordersSnapshot.empty ? ordersSnapshot.docs[0].data().date : 'N/A',
+      lastOrderDate: !ordersSnapshot.empty && ordersSnapshot.size > 1 ? ordersSnapshot.docs[ordersSnapshot.size - 1].data().date : 'N/A',
+      sampleDates: ordersSnapshot.docs.slice(0, 5).map(doc => doc.data().date)
     });
     // Fetch all invoices in range
     let invoicesSnapshot;
@@ -209,7 +255,13 @@ class CollectionDashboardService {
           line_item_total: firstItem.line_item_total,
           quantity: firstItem.quantity,
           rate: firstItem.rate,
-          allFields: Object.keys(firstItem)
+          item_id: firstItem.item_id,
+          product_id: firstItem.product_id,
+          variant_id: firstItem.variant_id,
+          sku: firstItem.sku,
+          name: firstItem.name,
+          item_name: firstItem.item_name,
+          allFields: Object.keys(firstItem).slice(0, 10)
         });
       }
       
@@ -273,7 +325,13 @@ class CollectionDashboardService {
     orders.forEach(order => {
       order.line_items.forEach(item => {
         brandDebugInfo.totalLineItems++;
-        const brand = item.brand_normalized || item.brand || 'Unknown';
+        let brand = item.brand_normalized || item.brand || 'Unknown';
+        
+        // Fix: Merge 'rder' into 'rader'
+        if (brand.toLowerCase() === 'rder') {
+          brand = 'rader';
+        }
+        
         brandDebugInfo.brandsFound.add(brand);
         
         if (!brandMap.has(brand)) {
@@ -289,7 +347,13 @@ class CollectionDashboardService {
         brandData.orderCount += 1;
       });
     });
-    const brands = Array.from(brandMap.values()).sort((a, b) => b.revenue - a.revenue);
+    
+    // Round all numeric values to 0 decimal places
+    const brands = Array.from(brandMap.values()).map(brand => ({
+      ...brand,
+      revenue: Math.round(brand.revenue),
+      quantity: Math.round(brand.quantity)
+    })).sort((a, b) => b.revenue - a.revenue);
     
     console.log('🏷️ Brand aggregation debug:', {
       totalOrders: orders.length,
@@ -301,18 +365,39 @@ class CollectionDashboardService {
 
     // Aggregate top items
     const itemAggMap = new Map();
+    console.log('📦 Starting item aggregation...');
+    
     orders.forEach(order => {
       order.line_items.forEach(item => {
-        if (!itemAggMap.has(item.item_id)) {
-          itemAggMap.set(item.item_id, { 
-            id: item.item_id, 
-            name: item.item_name || item.name || 'Unknown Item', 
+        // Ensure we have a valid item_id
+        let itemId = item.item_id || item.product_id || item.variant_id;
+        if (!itemId || itemId === 'undefined' || itemId === 'null') {
+          console.warn('⚠️ Line item without valid ID, using SKU fallback:', {
+            item_id: item.item_id,
+            product_id: item.product_id,
+            variant_id: item.variant_id,
+            sku: item.sku,
+            name: item.name || item.item_name
+          });
+          // Use SKU as fallback if available
+          if (item.sku) {
+            itemId = `sku_${item.sku}`;
+          } else {
+            return; // Skip if no valid identifier
+          }
+        }
+        
+        if (!itemAggMap.has(itemId)) {
+          itemAggMap.set(itemId, { 
+            id: itemId, 
+            name: item.item_name || item.name || item.description || 'Unknown Item', 
             quantity: 0, 
             revenue: 0, 
-            brand: item.brand_normalized || item.brand || 'Unknown' 
+            brand: item.brand_normalized || item.brand || 'Unknown',
+            sku: item.sku || ''
           });
         }
-        const agg = itemAggMap.get(item.item_id);
+        const agg = itemAggMap.get(itemId);
         // Fixed: Ensure numeric addition
         const itemRevenue = parseFloat(item.total || item.item_total || 0);
         const itemQuantity = parseInt(item.quantity || 0, 10);
@@ -321,7 +406,21 @@ class CollectionDashboardService {
         agg.revenue += itemRevenue;
       });
     });
-    const topItems = Array.from(itemAggMap.values()).sort((a, b) => b.revenue - a.revenue);
+    
+    console.log('📦 Item aggregation complete:', {
+      totalUniqueItems: itemAggMap.size,
+      topItemsSample: Array.from(itemAggMap.values()).slice(0, 3).map(i => ({
+        name: i.name,
+        quantity: i.quantity,
+        revenue: i.revenue
+      }))
+    });
+    // Round all numeric values to 0 decimal places
+    const topItems = Array.from(itemAggMap.values()).map(item => ({
+      ...item,
+      revenue: Math.round(item.revenue),
+      quantity: Math.round(item.quantity)
+    })).sort((a, b) => b.revenue - a.revenue);
 
     // Aggregate agent performance (using daily_aggregates)
     const agentPerformance = [];
@@ -343,17 +442,17 @@ class CollectionDashboardService {
       agentPerformance.push({
         agentId: agent.id,
         agentName: agent.agentName || agent.name,
-        totalRevenue,
-        totalOrders,
+        totalRevenue: Math.round(totalRevenue),
+        totalOrders: Math.round(totalOrders),
         uniqueCustomers: uniqueCustomers.size,
       });
     }
 
-    // Aggregate metrics
-    const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
+    // Aggregate metrics - round to 0 decimal places
+    const totalRevenue = Math.round(orders.reduce((sum, order) => sum + (order.total || 0), 0));
     const totalOrders = orders.length;
-    const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
-    const outstandingInvoices = Array.isArray(invoices) ? invoices.filter(inv => inv.status !== 'paid').reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0;
+    const averageOrderValue = Math.round(totalOrders > 0 ? totalRevenue / totalOrders : 0);
+    const outstandingInvoices = Math.round(Array.isArray(invoices) ? invoices.filter(inv => inv.status !== 'paid').reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0);
 
     // Build dashboard response
     return {
@@ -426,12 +525,18 @@ class CollectionDashboardService {
         if (agg.topItems && Array.isArray(agg.topItems)) {
           agg.topItems.forEach(item => {
             if (!itemMap.has(item.id || item.item_id)) {
+              let brandName = (item.brand && item.brand !== 'unknown') ? item.brand : 'rader';
+              // Fix: Merge 'rder' into 'rader'
+              if (brandName.toLowerCase() === 'rder') {
+                brandName = 'rader';
+              }
+              
               itemMap.set(item.id || item.item_id, {
                 id: item.id || item.item_id,
                 name: item.name || item.item_name,
                 quantity: 0,
                 revenue: 0,
-                brand: (item.brand && item.brand !== 'unknown') ? item.brand : 'rader'
+                brand: brandName
               });
             }
             const existing = itemMap.get(item.id || item.item_id);
@@ -467,9 +572,15 @@ class CollectionDashboardService {
               const itemData = itemDoc.data();
               // Try to get item details from our aggregated data first
               const aggregatedItem = itemMap.get(itemData.item_id);
+              // Fix brand name
+              let brandName = aggregatedItem?.brand || itemData.brand_normalized || itemData.brand || 'Unknown';
+              if (brandName.toLowerCase() === 'rder') {
+                brandName = 'rader';
+              }
+              
               lineItems.push({
                 ...itemData,
-                brand: aggregatedItem?.brand || itemData.brand_normalized || itemData.brand || 'Unknown',
+                brand: brandName,
                 item_name: aggregatedItem?.name || itemData.name || itemData.item_name,
                 total: itemData.item_total || itemData.total || 0
               });
@@ -533,7 +644,13 @@ class CollectionDashboardService {
       }
 
       // Convert aggregated items to array and sort by revenue
-      const topItems = Array.from(itemMap.values()).sort((a, b) => b.revenue - a.revenue);
+      const topItems = Array.from(itemMap.values())
+        .map(item => ({
+          ...item,
+          revenue: Math.round(item.revenue),
+          quantity: Math.round(item.quantity)
+        }))
+        .sort((a, b) => b.revenue - a.revenue);
       
       // Calculate outstanding invoices
       const outstandingInvoices = invoices
@@ -543,10 +660,10 @@ class CollectionDashboardService {
       // Build agent-specific response
       return {
         metrics: {
-          totalRevenue,
-          totalOrders,
-          averageOrderValue: totalOrders > 0 ? totalRevenue / totalOrders : 0,
-          outstandingInvoices,
+          totalRevenue: Math.round(totalRevenue),
+          totalOrders: Math.round(totalOrders),
+          averageOrderValue: Math.round(totalOrders > 0 ? totalRevenue / totalOrders : 0),
+          outstandingInvoices: Math.round(outstandingInvoices),
           totalCustomers: customers.length,
           marketplaceOrders: orders.filter(o => o.is_marketplace_order).length,
         },
@@ -623,9 +740,15 @@ class CollectionDashboardService {
               const itemRef = this.db.collection('items_data').doc(itemData.item_id);
               const itemSnap = await itemRef.get();
               const itemDetails = itemSnap.exists ? itemSnap.data() : {};
+              // Fix brand name
+              let brandName = itemDetails.brand_normalized || itemData.brand_normalized || itemData.brand || 'Unknown';
+              if (brandName.toLowerCase() === 'rder') {
+                brandName = 'rader';
+              }
+              
               lineItems.push({
                 ...itemData,
-                brand: itemDetails.brand_normalized || itemData.brand_normalized || itemData.brand || 'Unknown',
+                brand: brandName,
                 item_name: itemDetails.name || itemData.name || itemData.item_name,
                 total: itemData.item_total || itemData.total || 0
               });
@@ -673,7 +796,10 @@ class CollectionDashboardService {
         const period = customerPeriodMetrics[customer.customer_id] || { total_spent: 0, order_count: 0, last_order_date: null };
         return {
           ...customer,
-          period_metrics: period,
+          period_metrics: {
+            ...period,
+            total_spent: Math.round(period.total_spent)
+          },
         };
       });
       
@@ -682,20 +808,32 @@ class CollectionDashboardService {
       orders.forEach(order => {
         order.line_items.forEach(item => {
           if (!itemAggMap.has(item.item_id)) {
-            itemAggMap.set(item.item_id, { id: item.item_id, name: item.item_name, quantity: 0, revenue: 0, brand: item.brand });
+            let brandName = item.brand || 'Unknown';
+            // Fix: Merge 'rder' into 'rader'
+            if (brandName.toLowerCase() === 'rder') {
+              brandName = 'rader';
+            }
+            
+            itemAggMap.set(item.item_id, { id: item.item_id, name: item.item_name, quantity: 0, revenue: 0, brand: brandName });
           }
           const agg = itemAggMap.get(item.item_id);
           agg.quantity += parseInt(item.quantity || 0, 10);
           agg.revenue += parseFloat(item.item_total || item.total || 0);
         });
       });
-      const topItems = Array.from(itemAggMap.values()).sort((a, b) => b.revenue - a.revenue);
+      const topItems = Array.from(itemAggMap.values())
+        .map(item => ({
+          ...item,
+          revenue: Math.round(item.revenue),
+          quantity: Math.round(item.quantity)
+        }))
+        .sort((a, b) => b.revenue - a.revenue);
       
       // Aggregate metrics
-      const totalRevenue = orders.reduce((sum, order) => sum + (order.total || 0), 0);
+      const totalRevenue = Math.round(orders.reduce((sum, order) => sum + (order.total || 0), 0));
       const totalOrders = orders.length;
-      const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
-      const outstandingInvoices = Array.isArray(invoices) ? invoices.filter(inv => inv.status !== 'paid').reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0;
+      const averageOrderValue = Math.round(totalOrders > 0 ? totalRevenue / totalOrders : 0);
+      const outstandingInvoices = Math.round(Array.isArray(invoices) ? invoices.filter(inv => inv.status !== 'paid').reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0);
       
       // Build dashboard response
       return {
