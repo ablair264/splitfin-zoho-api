@@ -291,33 +291,122 @@ class ZohoInventoryService {
   }
 
   /**
-   * Fetch all products with full details (optimized with batching)
+   * Fetch all products with full details (using pagination) - SORTING REMOVED
    */
   async fetchAllProducts() {
     console.log('🔄 Fetching all products from Zoho Inventory...');
     
     try {
-      // First, get all items in a single paginated request
-      const allItems = await zohoRateLimitedRequest(async () => axios.get(
-        `${this.baseUrl}/items`,
-        {
-          params: {
-            organization_id: this.organizationId,
-            per_page: ZOHO_CONFIG.pagination.defaultPerPage
-          },
-          headers: { Authorization: `Zoho-oauthtoken ${await this.getAccessToken()}` },
-          timeout: 30000
+      const allItems = [];
+      const seenItemIds = new Set(); // Track unique items
+      let page = 1;
+      let hasMore = true;
+      const perPage = 200; // Maximum allowed by Zoho
+      const maxPages = 50; // Safety limit
+      let consecutiveEmptyPages = 0;
+      
+      while (hasMore && page <= maxPages) {
+        try {
+          console.log(`📄 Fetching page ${page}...`);
+          const response = await zohoRateLimitedRequest(async () => {
+            const token = await this.getAccessToken();
+            return axios.get(`${this.baseUrl}/items`, {
+              params: {
+                organization_id: this.organizationId,
+                page,
+                per_page: perPage
+                // REMOVED: sort_column and sort_order parameters
+              },
+              headers: { 
+                Authorization: `Zoho-oauthtoken ${token}` 
+              },
+              timeout: 30000
+            });
+          });
+          
+          const items = response.data.items || [];
+          const pageContext = response.data.page_context || {};
+          
+          // Log page context info if available
+          if (pageContext.total) {
+            console.log(`  Total items available: ${pageContext.total}`);
+          }
+          
+          if (items.length === 0) {
+            consecutiveEmptyPages++;
+            console.log(`  No items on page ${page} (${consecutiveEmptyPages} consecutive empty pages)`);
+            
+            // Stop if we get 2 consecutive empty pages
+            if (consecutiveEmptyPages >= 2) {
+              console.log(`  Stopping due to consecutive empty pages`);
+              hasMore = false;
+            } else {
+              page++;
+            }
+          } else {
+            consecutiveEmptyPages = 0; // Reset counter
+            
+            // Add only unique items
+            let newItemsCount = 0;
+            for (const item of items) {
+              if (!seenItemIds.has(item.item_id)) {
+                seenItemIds.add(item.item_id);
+                allItems.push(item);
+                newItemsCount++;
+              }
+            }
+            
+            console.log(`  Page ${page}: ${items.length} items received, ${newItemsCount} new unique items added (total: ${allItems.length})`);
+            
+            // Determine if we should continue
+            if (newItemsCount === 0) {
+              console.log(`  No new items found, stopping pagination`);
+              hasMore = false;
+            } else if (items.length < perPage) {
+              console.log(`  Received ${items.length} items (less than ${perPage}), this is the last page`);
+              hasMore = false;
+            } else if (pageContext.has_more_page === false) {
+              console.log(`  API indicates no more pages`);
+              hasMore = false;
+            } else if (pageContext.total && allItems.length >= pageContext.total) {
+              console.log(`  Reached total item count (${pageContext.total})`);
+              hasMore = false;
+            } else {
+              page++;
+              // Add delay between pages
+              await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenRequests));
+            }
+          }
+        } catch (error) {
+          console.error(`❌ Error fetching page ${page}:`, error.message);
+          
+          // Check for specific errors
+          if (error.response?.status === 404) {
+            console.log(`  404 error - no more pages available`);
+            hasMore = false;
+          } else if (error.response?.data?.message?.includes('page parameter is invalid')) {
+            console.log(`  Invalid page parameter - likely exceeded available pages`);
+            hasMore = false;
+          } else if (allItems.length > 0) {
+            // Continue with what we have
+            console.log(`⚠️  Continuing with ${allItems.length} items fetched so far`);
+            hasMore = false;
+          } else {
+            throw error;
+          }
         }
-      ));
+      }
       
-      console.log(`✅ Fetched ${allItems.data.items.length} products from Zoho`);
+      if (page > maxPages) {
+        console.warn(`⚠️  Reached maximum page limit (${maxPages})`);
+      }
       
-      // Most item data is already in the list response
-      // Only fetch full details if absolutely necessary
-      // For now, return the items as-is since they contain most needed fields
-      return allItems.data.items.map(item => ({
+      console.log(`✅ Fetched ${allItems.length} unique products from Zoho`);
+      
+      // Process and normalize the items
+      return allItems.map(item => ({
         ...item,
-        brand_normalized: this.normalizeBrandName(item.vendor_name || item.brand || '')
+        brand_normalized: this.normalizeBrandName(item.vendor_name || item.brand || item.cf_brand || item.brand_name || '')
       }));
       
     } catch (error) {
@@ -588,8 +677,11 @@ class ZohoInventoryService {
           purchase_rate: parseFloat(zohoProduct.purchase_rate || 0),
           
           // Manufacturer/Brand (ensure compatibility with your brand queries)
-          Manufacturer: zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || '',
-          manufacturer: (zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || '').toLowerCase(),
+          // Check multiple possible fields for brand information
+          Manufacturer: zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || zohoProduct.brand_name || '',
+          manufacturer: (zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || zohoProduct.brand_name || '').toLowerCase(),
+          brand: zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || zohoProduct.brand_name || '',
+          brand_normalized: this.normalizeBrandName(zohoProduct.brand || zohoProduct.cf_brand || zohoProduct.vendor_name || zohoProduct.brand_name || ''),
           vendor_id: zohoProduct.vendor_id || '',
           vendor_name: zohoProduct.vendor_name || '',
           
@@ -660,50 +752,64 @@ class ZohoInventoryService {
         await batch.commit();
       }
       
+      // DEACTIVATION REMOVED: Commenting out to prevent incorrect deactivation of products
+      // This was causing issues where active products were being marked as inactive
+      // even though they exist in Zoho Inventory
+      /*
       // Check for items that exist in Firebase but not in Zoho (possibly deleted)
       const missingInZoho = [];
       firebaseItemsMap.forEach((item, itemId) => {
         if (!zohoItemIds.has(itemId) && item.status === 'active') {
-          missingInZoho.push({
-            item_id: itemId,
-            name: item.name,
-            sku: item.sku
-          });
+          // Only mark as missing if it's not a manually created item
+          if (item._source === 'zoho_inventory') {
+            missingInZoho.push({
+              item_id: itemId,
+              name: item.name,
+              sku: item.sku
+            });
+          }
         }
       });
       
-      // Mark missing items as inactive
+      // Mark missing items as inactive (but be conservative)
       if (missingInZoho.length > 0) {
         console.log(`⚠️  Found ${missingInZoho.length} items in Firebase that are missing in Zoho`);
         
-        batch = this.db.batch();
-        batchCount = 0;
-        
-        for (const item of missingInZoho) {
-          console.log(`   Marking as inactive: ${item.name} (${item.sku})`);
-          const docRef = this.db.collection('items_data').doc(item.item_id);
-          batch.update(docRef, {
-            status: 'inactive',
-            _deactivated_reason: 'Not found in Zoho Inventory',
-            _deactivated_at: admin.firestore.FieldValue.serverTimestamp()
-          });
-          stats.deactivated++;
-          batchCount++;
+        // If more than 100 items are missing, there might be an API issue
+        if (missingInZoho.length > 100) {
+          console.log(`❌ Too many missing items (${missingInZoho.length}). Skipping deactivation to prevent data loss.`);
+          console.log('   This might indicate an API pagination issue or incomplete sync.');
+        } else {
+          batch = this.db.batch();
+          batchCount = 0;
           
-          if (batchCount >= 400) {
-            await batch.commit();
-            batch = this.db.batch();
-            batchCount = 0;
+          for (const item of missingInZoho) {
+            console.log(`   Marking as inactive: ${item.name} (${item.sku})`);
+            const docRef = this.db.collection('items_data').doc(item.item_id);
+            batch.update(docRef, {
+              status: 'inactive',
+              _deactivated_reason: 'Not found in Zoho Inventory',
+              _deactivated_at: admin.firestore.FieldValue.serverTimestamp()
+            });
+            stats.deactivated++;
+            batchCount++;
             
-            // Add delay between batches
-            await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
+            if (batchCount >= 400) {
+              await batch.commit();
+              batch = this.db.batch();
+              batchCount = 0;
+              
+              // Add delay between batches
+              await new Promise(resolve => setTimeout(resolve, ZOHO_CONFIG.rateLimit.delayBetweenBatches));
+            }
+          }
+          
+          if (batchCount > 0) {
+            await batch.commit();
           }
         }
-        
-        if (batchCount > 0) {
-          await batch.commit();
-        }
       }
+      */
       
       // Update sync metadata
       await this.db.collection('sync_metadata').doc('products_sync').set({
@@ -718,7 +824,7 @@ class ZohoInventoryService {
       console.log(`   Total processed: ${stats.total}`);
       console.log(`   New items: ${stats.new}`);
       console.log(`   Updated items: ${stats.updated}`);
-      console.log(`   Deactivated items: ${stats.deactivated}`);
+      // console.log(`   Deactivated items: ${stats.deactivated}`);
       console.log(`   Duration: ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
       
       return { success: true, stats };

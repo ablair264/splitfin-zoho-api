@@ -62,7 +62,9 @@ function initializeFirebase() {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
       // Add project ID explicitly
-      projectId: serviceAccount.project_id
+      projectId: serviceAccount.project_id,
+      // Add storage bucket
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${serviceAccount.project_id}.appspot.com`
     });
     
     console.log('✅ Firebase Admin SDK initialized successfully.');

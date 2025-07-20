@@ -9,7 +9,11 @@
     "dev": "nodemon src/index.js",
     "test": "jest",
     "test:firebase": "node test-firebase.js",
-    "build": "bash build.sh"
+    "build": "bash build.sh",
+    "repopulate-items": "node repopulate-items.js",
+    "sync-products": "node src/scripts/repopulateItemsData.js",
+    "test-repopulate": "node test-repopulate-setup.js",
+    "reactivate-products": "node src/scripts/reactivate-all-products.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
