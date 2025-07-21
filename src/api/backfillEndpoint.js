@@ -4,6 +4,7 @@
 import express from 'express';
 import admin from 'firebase-admin';
 import { backfillSalesOrders } from '../scripts/backfillSalesOrdersWithLineItems.js';
+import { cleanupDuplicateLineItems } from '../scripts/cleanupDuplicateLineItems.js';
 
 const router = express.Router();
 
@@ -81,6 +82,36 @@ router.delete('/backfill-orders', async (req, res) => {
       message: 'Kill switch activated',
       note: 'The backfill process will stop at the next order'
     });
+
+  } catch (error) {
+    console.error('API endpoint error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST endpoint to cleanup duplicate line items
+router.post('/cleanup-duplicate-line-items', async (req, res) => {
+  try {
+    // Check for auth token
+    const authToken = req.headers.authorization;
+    if (!authToken || authToken !== `Bearer ${process.env.ADMIN_SECRET_TOKEN}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    console.log('🧹 Starting duplicate line items cleanup via API endpoint...');
+    res.json({ 
+      message: 'Cleanup process started',
+      note: 'Check server logs for progress'
+    });
+
+    // Run cleanup asynchronously
+    cleanupDuplicateLineItems()
+      .then(result => {
+        console.log('✅ Cleanup completed:', result);
+      })
+      .catch(error => {
+        console.error('❌ Cleanup failed:', error);
+      });
 
   } catch (error) {
     console.error('API endpoint error:', error);

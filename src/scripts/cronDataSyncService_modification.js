@@ -13,8 +13,14 @@ async createOrderLineItemsSubcollection(orderId, lineItems, orderData, db) {
   }
   
   const lineItemsRef = db.collection('sales_orders').doc(orderId).collection('order_line_items');
+  
+  // First, check what line items already exist
+  const existingLineItems = await lineItemsRef.get();
+  const existingIds = new Set(existingLineItems.docs.map(doc => doc.id));
+  
   const batch = db.batch();
   let processedItems = 0;
+  let skippedItems = 0;
   
   // Get item details for brand information
   const itemIds = [...new Set(lineItems.map(item => item.item_id).filter(id => id))];
@@ -35,7 +41,21 @@ async createOrderLineItemsSubcollection(orderId, lineItems, orderData, db) {
   }
   
   for (const [index, item] of lineItems.entries()) {
-    const lineItemId = item.line_item_id || `${orderId}_${item.item_id}_${index}`;
+    // Only use the actual line_item_id from Zoho
+    if (!item.line_item_id) {
+      console.warn(`Skipping line item without line_item_id for order ${orderId}`);
+      skippedItems++;
+      continue;
+    }
+    
+    const lineItemId = item.line_item_id;
+    
+    // Skip if this line item already exists
+    if (existingIds.has(lineItemId)) {
+      skippedItems++;
+      continue;
+    }
+    
     const itemDetails = itemDetailsMap.get(item.item_id) || {};
     
     const lineItemData = {

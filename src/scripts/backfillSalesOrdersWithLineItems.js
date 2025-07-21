@@ -74,11 +74,31 @@ async function fetchDetailedSalesOrder(orderId) {
 async function processLineItems(orderId, lineItems, orderData) {
   const lineItemsRef = db.collection('sales_orders').doc(orderId).collection('order_line_items');
   
+  // First, check what line items already exist
+  const existingLineItems = await lineItemsRef.get();
+  const existingIds = new Set(existingLineItems.docs.map(doc => doc.id));
+  
+  console.log(`  📋 Order has ${existingLineItems.size} existing line items`);
+  
   const batch = db.batch();
   let processedItems = 0;
+  let skippedItems = 0;
   
   for (const [index, item] of lineItems.entries()) {
-    const lineItemId = item.line_item_id || `${orderId}_${item.item_id}_${index}`;
+    // Only use the actual line_item_id from Zoho, don't create fallback IDs
+    if (!item.line_item_id) {
+      console.warn(`  ⚠️  Skipping line item without line_item_id at index ${index}`);
+      skippedItems++;
+      continue;
+    }
+    
+    const lineItemId = item.line_item_id;
+    
+    // Skip if this line item already exists
+    if (existingIds.has(lineItemId)) {
+      skippedItems++;
+      continue;
+    }
     
     // Get item details from items_data collection to ensure we have manufacturer/brand info
     let itemDetails = {};
@@ -224,7 +244,11 @@ async function processLineItems(orderId, lineItems, orderData) {
   // Commit the batch
   if (processedItems > 0) {
     await batch.commit();
-    console.log(`  ✅ Created ${processedItems} line items for order ${orderData.salesorder_number}`);
+    console.log(`  ✅ Created ${processedItems} new line items for order ${orderData.salesorder_number}`);
+  }
+  
+  if (skippedItems > 0) {
+    console.log(`  ⏭️  Skipped ${skippedItems} existing line items`);
   }
   
   return processedItems;
@@ -241,12 +265,10 @@ async function updateSalesOrder(orderId, zohoOrder) {
     const existingDoc = await orderRef.get();
     const existingData = existingDoc.exists ? existingDoc.data() : {};
     
-    // Merge with new detailed data from Zoho, but exclude line_items
-    const { line_items, ...zohoOrderWithoutLineItems } = zohoOrder;
-    
+    // Merge with new detailed data from Zoho (including line_items)
     const updatedData = {
       ...existingData,
-      ...zohoOrderWithoutLineItems,
+      ...zohoOrder,
       
       // Ensure critical fields are preserved
       salesorder_id: orderId,
@@ -254,11 +276,6 @@ async function updateSalesOrder(orderId, zohoOrder) {
       _hasLineItemsSubcollection: true,
       _backfilled: true
     };
-    
-    // Remove line_items array if it exists in the document
-    if (updatedData.line_items) {
-      delete updatedData.line_items;
-    }
     
     // Update the main order document
     await orderRef.set(updatedData, { merge: true });
