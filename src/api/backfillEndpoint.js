@@ -2,6 +2,7 @@
 // Temporary endpoint to trigger the backfill process
 
 import express from 'express';
+import admin from 'firebase-admin';
 import { backfillSalesOrders } from '../scripts/backfillSalesOrdersWithLineItems.js';
 
 const router = express.Router();
@@ -52,6 +53,34 @@ router.post('/backfill-orders', async (req, res) => {
       .catch(error => {
         console.error('❌ Backfill failed:', error);
       });
+
+  } catch (error) {
+    console.error('API endpoint error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE endpoint to stop backfill
+router.delete('/backfill-orders', async (req, res) => {
+  try {
+    // Check for auth token
+    const authToken = req.headers.authorization;
+    if (!authToken || authToken !== `Bearer ${process.env.ADMIN_SECRET_TOKEN}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Set kill switch in Firebase
+    const db = admin.firestore();
+    await db.collection('sync_metadata').doc('sales_orders_backfill').set({
+      killSwitch: true,
+      stoppedAt: admin.firestore.FieldValue.serverTimestamp(),
+      stoppedBy: 'API'
+    }, { merge: true });
+
+    res.json({ 
+      message: 'Kill switch activated',
+      note: 'The backfill process will stop at the next order'
+    });
 
   } catch (error) {
     console.error('API endpoint error:', error);

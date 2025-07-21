@@ -241,10 +241,12 @@ async function updateSalesOrder(orderId, zohoOrder) {
     const existingDoc = await orderRef.get();
     const existingData = existingDoc.exists ? existingDoc.data() : {};
     
-    // Merge with new detailed data from Zoho
+    // Merge with new detailed data from Zoho, but exclude line_items
+    const { line_items, ...zohoOrderWithoutLineItems } = zohoOrder;
+    
     const updatedData = {
       ...existingData,
-      ...zohoOrder,
+      ...zohoOrderWithoutLineItems,
       
       // Ensure critical fields are preserved
       salesorder_id: orderId,
@@ -252,6 +254,11 @@ async function updateSalesOrder(orderId, zohoOrder) {
       _hasLineItemsSubcollection: true,
       _backfilled: true
     };
+    
+    // Remove line_items array if it exists in the document
+    if (updatedData.line_items) {
+      delete updatedData.line_items;
+    }
     
     // Update the main order document
     await orderRef.set(updatedData, { merge: true });
@@ -276,6 +283,11 @@ async function backfillSalesOrders(options = {}) {
   console.log('📋 Options:', options);
   
   try {
+    // Clear any existing kill switch
+    await db.collection('sync_metadata').doc('sales_orders_backfill').set({
+      killSwitch: false,
+      startedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
     // Get all sales orders from Firebase
     let query = db.collection('sales_orders');
     
@@ -327,6 +339,22 @@ async function backfillSalesOrders(options = {}) {
       
       for (const order of batch) {
         try {
+          // Check for kill switch
+          const killSwitchDoc = await db.collection('sync_metadata').doc('sales_orders_backfill').get();
+          if (killSwitchDoc.exists && killSwitchDoc.data().killSwitch) {
+            console.log('\n🛑 Kill switch detected! Stopping backfill process...');
+            
+            // Update metadata with stopped status
+            await db.collection('sync_metadata').doc('sales_orders_backfill').set({
+              lastRun: admin.firestore.FieldValue.serverTimestamp(),
+              progress: progress,
+              status: 'stopped',
+              stoppedReason: 'Kill switch activated'
+            }, { merge: true });
+            
+            throw new Error('Process stopped by kill switch');
+          }
+          
           progress.processed++;
           const percent = ((progress.processed + progress.skipped) / progress.total * 100).toFixed(1);
           
