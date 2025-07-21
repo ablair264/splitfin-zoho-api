@@ -3,24 +3,11 @@
 // Script to reactivate all products in Firebase items_data collection
 // This will mark all products as active and remove deactivation metadata
 
+import { db, initializeFirebase } from '../config/firebase.js';
 import admin from 'firebase-admin';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Initialize Firebase Admin
-const serviceAccountPath = join(__dirname, '../../../../serviceAccountKey.json');
-const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: `https://${serviceAccount.project_id}.firebaseio.com`
-});
-
-const db = admin.firestore();
+// Ensure Firebase is initialized
+initializeFirebase();
 
 async function reactivateAllProducts() {
   console.log('🚀 Starting product reactivation process...\n');

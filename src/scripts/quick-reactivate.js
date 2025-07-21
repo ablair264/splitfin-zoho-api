@@ -3,24 +3,11 @@
 // Quick script to reactivate all products in Firebase
 // Usage: npm run reactivate-products:quick
 
+import { db, initializeFirebase } from '../config/firebase.js';
 import admin from 'firebase-admin';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Initialize Firebase Admin
-const serviceAccountPath = join(__dirname, '../../../../serviceAccountKey.json');
-const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: `https://${serviceAccount.project_id}.firebaseio.com`
-});
-
-const db = admin.firestore();
+// Ensure Firebase is initialized
+initializeFirebase();
 
 async function quickReactivate() {
   console.log('⚡ Quick Product Reactivation\n');

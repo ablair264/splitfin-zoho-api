@@ -13,7 +13,10 @@
     "repopulate-items": "node repopulate-items.js",
     "sync-products": "node src/scripts/repopulateItemsData.js",
     "test-repopulate": "node test-repopulate-setup.js",
-    "reactivate-products": "node src/scripts/reactivate-all-products.js"
+    "reactivate-products": "node src/scripts/reactivate-all-products.js",
+    "reactivate-products:quick": "node src/scripts/quick-reactivate.js",
+    "diagnose-firebase": "node src/scripts/diagnose-firebase.js",
+    "emergency-reactivate": "node src/scripts/emergency-reactivate.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
