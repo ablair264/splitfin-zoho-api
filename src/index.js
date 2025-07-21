@@ -2,6 +2,7 @@
 import './config/firebase.js';
 import express from 'express';
 import cors from 'cors';
+import admin from 'firebase-admin';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -22,6 +23,7 @@ import authRoutes from './routes/auth.js';
 import searchTrendsRoutes from './routes/searchTrends.js';
 import emailRoutes from './routes/email.js';
 import dmBrandsRoutes from './routes/dmBrandsRoutes.js';
+import backfillRoutes from './api/backfillEndpoint.js';
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
@@ -92,6 +94,8 @@ app.use('/oauth', authRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/email', emailRoutes);  // ← ADD THIS LINE HERE
 app.use('/api/dm-brands', dmBrandsRoutes);
+app.use('/api/search-trends', searchTrendsRoutes);
+app.use('/api/admin', backfillRoutes);
 
 app.put('/api/zoho/update-contact', updateZohoContact);
 app.post('/api/zoho/create-contact', createZohoContact);
