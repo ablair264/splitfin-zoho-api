@@ -305,7 +305,7 @@ async function analyzeNewCustomers(cardData, dashboardData) {
       "impact": "The potential business impact of the current acquisition trend (e.g., long-term growth)."
     }
   `;
-  // ... (rest of the function is the same)
+
   try {
     const result = await model.generateContent(prompt);
     const response = await result.response;
@@ -314,34 +314,6 @@ async function analyzeNewCustomers(cardData, dashboardData) {
   } catch (error) {
     console.error('Error analyzing new customers:', error);
     return generateFallbackInsight('newCustomers', cardData);
-  }
-}
-
-/**
- * Analyze Average Order Value
- */
-async function analyzeAOV(cardData, dashboardData) {
-  const prompt = `
-    Analyze Average Order Value for DM Brands.
-    Current AOV: £${cardData.averageValue || cardData.aov || 0}
-    
-    Return ONLY JSON:
-    {
-      "insight": "AOV analysis",
-      "trend": "stable",
-      "action": "Recommendation",
-      "priority": "medium",
-      "impact": "Impact description"
-    }
-  `;
-  
-  try {
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-    return parseAIResponse(text);
-  } catch (error) {
-    return generateFallbackInsight('aov', cardData);
   }
 }
 
