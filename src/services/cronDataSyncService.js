@@ -188,6 +188,77 @@ class CronDataSyncService {
   }
   
   /**
+   * Add sales orders to customer sub-collections
+   */
+  async addOrdersToCustomerSubcollections(orders) {
+    const db = admin.firestore();
+    let processedCount = 0;
+    let errorCount = 0;
+    const BATCH_SIZE = 400;
+    
+    console.log(`📝 Adding ${orders.length} orders to customer sub-collections...`);
+    
+    try {
+      // Process in batches
+      for (let i = 0; i < orders.length; i += BATCH_SIZE) {
+        const batch = db.batch();
+        const batchOrders = orders.slice(i, i + BATCH_SIZE);
+        
+        for (const order of batchOrders) {
+          if (!order.customer_id) {
+            console.warn(`⚠️ Order ${order.salesorder_id} has no customer_id, skipping...`);
+            continue;
+          }
+          
+          try {
+            // Reference to the customer document and sub-collection
+            const customerRef = db.collection('customers').doc(order.customer_id.trim());
+            const customerOrderRef = customerRef.collection('customers_orders').doc(order.salesorder_id);
+            
+            // Create order data for sub-collection
+            const orderData = {
+              ...order,
+              _addedToCustomer: admin.firestore.FieldValue.serverTimestamp(),
+              _syncSource: 'cron_sync'
+            };
+            
+            batch.set(customerOrderRef, orderData, { merge: true });
+          } catch (error) {
+            console.error(`❌ Error preparing order ${order.salesorder_id} for customer ${order.customer_id}:`, error.message);
+            errorCount++;
+          }
+        }
+        
+        // Commit batch
+        try {
+          await batch.commit();
+          processedCount += batchOrders.length - errorCount;
+          
+          // Progress logging
+          if ((i + BATCH_SIZE) % 2000 === 0 || i + BATCH_SIZE >= orders.length) {
+            console.log(`  📦 Progress: ${Math.min(i + BATCH_SIZE, orders.length)}/${orders.length} orders processed`);
+          }
+        } catch (batchError) {
+          console.error(`❌ Error committing batch:`, batchError.message);
+          errorCount += batchOrders.length;
+        }
+        
+        // Rate limiting between batches
+        if (i + BATCH_SIZE < orders.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      
+      console.log(`✅ Added ${processedCount} orders to customer sub-collections (${errorCount} errors)`);
+      return { success: true, processed: processedCount, errors: errorCount };
+      
+    } catch (error) {
+      console.error('❌ Failed to add orders to customer sub-collections:', error);
+      return { success: false, processed: processedCount, errors: errorCount, error: error.message };
+    }
+  }
+  
+  /**
    * Process and enrich sales transactions with proper brand info
    */
  async processSalesTransactions(orders, db) {
@@ -889,6 +960,9 @@ async highFrequencySync() {
       await this._batchWrite(db, 'sales_orders', enrichedOrders, 'salesorder_id');
       orderCount = enrichedOrders.length;
       
+      // Add orders to customer sub-collections
+      await this.addOrdersToCustomerSubcollections(enrichedOrders);
+      
       // Process transactions
       const transactions = await this.processSalesTransactions(enrichedOrders, db);
       if (transactions.length > 0) {
@@ -1007,6 +1081,9 @@ async mediumFrequencySync() {
     if (uniqueOrders.length > 0) {
       const enrichedOrders = await this.enrichOrdersWithUIDs(uniqueOrders);
       await this._batchWrite(db, 'sales_orders', enrichedOrders, 'salesorder_id');
+      
+      // Add orders to customer sub-collections
+      await this.addOrdersToCustomerSubcollections(enrichedOrders);
       
       // Process transactions
       const transactions = await this.processSalesTransactions(enrichedOrders, db);
@@ -1139,6 +1216,9 @@ async mediumFrequencySync() {
     if (orders7Days.length > 0) {
       const enrichedOrders = await this.enrichOrdersWithUIDs(orders7Days);
       await this._batchWrite(db, 'sales_orders', enrichedOrders, 'salesorder_id');
+      
+      // Add orders to customer sub-collections
+      await this.addOrdersToCustomerSubcollections(enrichedOrders);
       
       // Process transactions
       const transactions = await this.processSalesTransactions(enrichedOrders, db);
