@@ -214,37 +214,25 @@ export async function generateEnhancedCardInsights(cardType, cardData, fullDashb
  */
 async function analyzeTotalOrders(cardData, dashboardData) {
   const prompt = `
-    Analyze order data for DM Brands, a UK luxury import company.
-    
-    Total Orders: ${cardData.count || cardData.totalOrders || 0}
-    Order Value: £${cardData.totalValue || cardData.revenue || 0}
-    Average Order Value: £${cardData.averageValue || cardData.aov || 0}
-    
-    IMPORTANT: Return ONLY valid JSON in this exact format:
+    Analyze order volume performance for DM Brands.
+
+    Current Period Data:
+    Total Orders: ${cardData.orders || cardData.orderCount || 0}
+
+    Historical Context & Broader Dashboard Data:
+    ${summarizeData(dashboardData, 2000)}
+
+    IMPORTANT: Return ONLY valid JSON. Based on the historical context, analyze trends in ORDER VOLUME, performance, and provide a forecast.
     {
-      "insight": "Comprehensive analysis with specific findings",
-      "itemTrends": {
-        "topItem": "name and performance",
-        "emergingTrends": ["trend1", "trend2"],
-        "decliningItems": ["item1", "item2"]
-      },
-      "valueAnalysis": {
-        "currentAOV": 0,
-        "historicalComparison": "percentage change",
-        "recommendations": ["rec1", "rec2"]
-      },
-      "volumeTrends": {
-        "comparison": "vs historical",
-        "seasonalPattern": "description",
-        "monthlyTrend": "description"
-      },
-      "trend": "increasing",
-      "action": "Primary recommendation",
-      "priority": "high",
-      "impact": "Potential business impact"
+      "insight": "Main findings based on the number of orders, comparing current period to historical trends.",
+      "growthDrivers": "Key factors driving order volume.",
+      "recommendations": ["actionable_recommendation_1", "actionable_recommendation_2"],
+      "forecast": "A brief, data-driven prediction for order volume for the next period.",
+      "trend": "'increasing', 'decreasing', or 'stable' based on historical order counts.",
+      "action": "The single most important recommendation to influence order volume.",
+      "priority": "'high', 'medium', or 'low'.",
+      "impact": "The potential business impact of the current order trend."
     }
-    
-    DO NOT include any markdown or explanatory text.
   `;
   
   try {
@@ -261,25 +249,26 @@ async function analyzeTotalOrders(cardData, dashboardData) {
 /**
  * Analyze Revenue with comprehensive insights
  */
-async function analyzeRevenue(cardData, dashboardData) {
+async function analyzeAOV(cardData, dashboardData) {
   const prompt = `
-    Analyze revenue performance for DM Brands luxury imports.
-    
-    Total Revenue: £${cardData.current || cardData.revenue || 0}
-    Order Count: ${cardData.orders || cardData.orderCount || 0}
-    
-    IMPORTANT: Return ONLY valid JSON:
+    Analyze Average Order Value (AOV) performance for DM Brands.
+
+    Current Period Data:
+    Average Order Value: £${cardData.current || cardData.aov || 0}
+
+    Historical Context & Broader Dashboard Data:
+    ${summarizeData(dashboardData, 2000)}
+
+    IMPORTANT: Return ONLY valid JSON. Based on the historical context (revenue and order trends), analyze trends in AOV, performance, and provide a forecast.
     {
-      "insight": "Main findings",
-      "revenueBreakdown": "By brand/product analysis",
-      "customerAnalysis": "Segment performance",
-      "growthDrivers": "Key factors",
-      "recommendations": ["action1", "action2"],
-      "forecast": "Next period prediction",
-      "trend": "increasing",
-      "action": "Primary recommendation",
-      "priority": "high",
-      "impact": "Business impact"
+      "insight": "Main findings on AOV, noting if changes in revenue are outpacing changes in order volume.",
+      "growthDrivers": "Are customers buying more items, or more expensive items? What's driving AOV?",
+      "recommendations": ["actionable_recommendation_1 for increasing AOV", "actionable_recommendation_2"],
+      "forecast": "A brief, data-driven prediction for AOV for the next period.",
+      "trend": "'increasing', 'decreasing', or 'stable' based on the relationship between historical revenue and orders.",
+      "action": "The single most important recommendation to improve AOV.",
+      "priority": "'high', 'medium', or 'low'.",
+      "impact": "The potential business impact of the current AOV trend (e.g., profitability)."
     }
   `;
   
@@ -291,6 +280,40 @@ async function analyzeRevenue(cardData, dashboardData) {
   } catch (error) {
     console.error('Error analyzing revenue:', error);
     return generateFallbackInsight('revenue', cardData);
+  }
+}
+
+async function analyzeNewCustomers(cardData, dashboardData) {
+  const prompt = `
+    Analyze new customer acquisition performance for DM Brands.
+
+    Current Period Data:
+    New Customers: ${cardData.current || cardData.newCustomers || 0}
+
+    Historical Context & Broader Dashboard Data:
+    ${summarizeData(dashboardData, 2000)}
+
+    IMPORTANT: Return ONLY valid JSON. Based on the historical context, especially the 'historicalNewCustomerTrend', analyze trends in new customer acquisition.
+    {
+      "insight": "Main findings on new customer acquisition, comparing the current period to historical trends.",
+      "growthDrivers": "What factors might be driving new customer growth? Correlate with marketing campaigns if data is available.",
+      "recommendations": ["actionable_recommendation_1 for acquiring more customers", "actionable_recommendation_2"],
+      "forecast": "A brief, data-driven prediction for new customer acquisition for the next period.",
+      "trend": "'increasing', 'decreasing', or 'stable' based on historical new customer counts.",
+      "action": "The single most important recommendation to boost customer acquisition.",
+      "priority": "'high', 'medium', or 'low'.",
+      "impact": "The potential business impact of the current acquisition trend (e.g., long-term growth)."
+    }
+  `;
+  // ... (rest of the function is the same)
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error analyzing new customers:', error);
+    return generateFallbackInsight('newCustomers', cardData);
   }
 }
 
