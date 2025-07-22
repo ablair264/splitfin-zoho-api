@@ -181,41 +181,25 @@ export async function generateCardInsights(cardType, cardData, dashboardData) {
   }
 }
 
-/**
- * Enhanced card insights with deep analysis
- */
+// In your aiAnalyticsService.js, update the generateEnhancedCardInsights function
 export async function generateEnhancedCardInsights(cardType, cardData, fullDashboardData) {
   try {
     console.log('🧠 Generating enhanced insights for:', cardType);
     
-    // Get detailed analysis based on card type
+    // Use the specific analysis function based on card type
     switch (cardType) {
-      case 'orders':
-      case 'total_orders':
-        return await analyzeTotalOrders(cardData, fullDashboardData);
-        
-      case 'revenue':
-      case 'total_revenue':
-      case 'order_value':
+      case 'totalRevenue':
         return await analyzeRevenue(cardData, fullDashboardData);
-        
-      case 'aov':
-      case 'average_order_value':
+      case 'totalOrders':
+        return await analyzeTotalOrders(cardData, fullDashboardData);
+      case 'averageOrderValue':
         return await analyzeAOV(cardData, fullDashboardData);
-        
-      case 'invoices':
-      case 'outstanding_invoices':
+      case 'outstandingInvoices':
         return await analyzeInvoices(cardData, fullDashboardData);
-        
-      case 'customers':
+      case 'totalCustomers':
         return await analyzeCustomers(cardData, fullDashboardData);
-        
-      case 'agents':
-        return await analyzeAgents(cardData, fullDashboardData);
-        
-      case 'brands':
-        return await analyzeBrands(cardData, fullDashboardData);
-        
+      case 'marketplaceOrders':
+        return await analyzeMarketplace(cardData, fullDashboardData);
       default:
         return await generateCardInsights(cardType, cardData, fullDashboardData);
     }
