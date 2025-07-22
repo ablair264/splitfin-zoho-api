@@ -6,6 +6,7 @@ import zohoReportsService from './zohoReportsService.js';
 import { syncInventory, syncInventoryCustomerIds } from '../syncInventory.js';
 import productSyncService from './productSyncService.js';
 import zohoInventoryService from './zohoInventoryService.js';
+import salesAgentSyncService from './salesAgentSyncService.js';
 
 class CronDataSyncService {
   constructor() {
@@ -840,6 +841,7 @@ async enrichOrdersWithUIDs(orders) {
   /**
    * HIGH FREQUENCY SYNC - Every 15 minutes
    * Only syncs orders and invoices modified in the last hour
+   * Also updates sales agent counters
    */
 async highFrequencySync() {
   const jobType = 'high';
@@ -918,12 +920,24 @@ async highFrequencySync() {
       invoiceCount = newInvoices.length;
     }
     
+    // Update sales agent counters
+    console.log('👤 Updating sales agent counters...');
+    let salesAgentResult = { processed: 0, errors: 0 };
+    
+    try {
+      salesAgentResult = await salesAgentSyncService.updateAllAgentCounters();
+      console.log(`✅ Updated counters for ${salesAgentResult.processed} sales agents`);
+    } catch (salesAgentError) {
+      console.error('⚠️ Sales agent sync failed:', salesAgentError.message);
+    }
+    
     // Update metadata
     await this.updateSyncMetadata('high_frequency', {
       recordsProcessed: {
         orders: orderCount,
         transactions: transactionCount,
-        invoices: invoiceCount
+        invoices: invoiceCount,
+        salesAgents: salesAgentResult.processed
       },
       duration: Date.now() - startTime
     });
@@ -936,7 +950,8 @@ async highFrequencySync() {
       recordsProcessed: {
         orders: orderCount,
         transactions: transactionCount,
-        invoices: invoiceCount
+        invoices: invoiceCount,
+        salesAgents: salesAgentResult.processed
       }
     };
     
@@ -1173,6 +1188,17 @@ async mediumFrequencySync() {
       console.error('⚠️ Customer enrichment failed:', enrichError.message);
     }
     
+    // Update sales agent counters
+    console.log('👤 Updating sales agent counters...');
+    let salesAgentResult = { processed: 0, errors: 0 };
+    
+    try {
+      salesAgentResult = await salesAgentSyncService.updateAllAgentCounters();
+      console.log(`✅ Updated counters for ${salesAgentResult.processed} sales agents`);
+    } catch (salesAgentError) {
+      console.error('⚠️ Sales agent sync failed:', salesAgentError.message);
+    }
+    
     // Sync customers with throttling
     console.log('👥 Syncing customers from Zoho Inventory...');
     let customerSyncResult = { synced: 0 };
@@ -1195,7 +1221,8 @@ async mediumFrequencySync() {
         invoices: uniqueInvoices.length,
         purchaseOrders: purchaseOrders7Days.length,
         customers: customerSyncResult.synced || 0,
-        backorderResult: backorderResult
+        backorderResult: backorderResult,
+        salesAgents: salesAgentResult
       },
       duration: Date.now() - startTime
     });
