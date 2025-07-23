@@ -45,6 +45,9 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
   'http://localhost:3000',
   'https://splitfin.co.uk',
+  'http://splitfin.co.uk',
+  'https://www.splitfin.co.uk',
+  'http://www.splitfin.co.uk',
   'https://splitfin-zoho-api.onrender.com',
 ];
 
