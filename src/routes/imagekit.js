@@ -215,10 +215,9 @@ router.get('/images', async (req, res) => {
     const allItems = await imagekit.listFiles(listOptions);
     
     // Filter out folders - we only want actual image files
-    const folders = allItems.filter(item => item.type === 'folder');
     let imageList = allItems.filter(item => item.type !== 'folder');
     
-    console.log(`ImageKit returned ${allItems.length} items: ${folders.length} folders and ${imageList.length} image files`);
+    console.log(`ImageKit returned ${allItems.length} items, ${imageList.length} are image files`);
     
     // If we're looking for brand-images and got files, filter them by path
     if (folder === 'brand-images' && imageList.length > 0) {
@@ -259,15 +258,17 @@ router.get('/images', async (req, res) => {
 
     const response = {
       images: imagesWithOptimizedUrls,
-      hasMore: imageList.length === parseInt(limit),
-      total: imageList.length,
+      hasMore: imageList.length === parseInt(limit), // If we got a full page, there might be more
+      total: imageList.length, // Images in this response
       requestParams: { skip, limit, folder, searchQuery, tags }
     };
 
     console.log('API Response summary:', {
       totalImages: response.images.length,
       hasMore: response.hasMore,
-      sampleImageFields: imageList.length > 0 ? Object.keys(imageList[0]) : []
+      totalAvailable: response.total,
+      skip: skip,
+      limit: limit
     });
 
     res.json(response);
