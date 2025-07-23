@@ -170,7 +170,7 @@ router.get('/images', async (req, res) => {
   try {
     const { 
       skip = 0, 
-      limit = 20, 
+      limit = 100,  // Increased from 20 to 100
       searchQuery = '', 
       tags = '',
       folder = 'brand-images'
@@ -192,30 +192,17 @@ router.get('/images', async (req, res) => {
     // Add path if folder is specified
     if (folder && folder.trim() !== '') {
       if (folder === 'brand-images') {
-        // For brand-images, we need to search recursively
-        // Try different approaches based on ImageKit's API
-        
-        // Approach 1: Use path without leading slash
-        listOptions.path = folder;
-        
-        // Approach 2: Also add includeFolder flag
-        listOptions.includeFolder = true;
-        
-        // If there's a search query, add it
-        if (searchQuery) {
-          listOptions.searchQuery = `name : "${searchQuery}"`;
-        }
-        
-        console.log('Searching in brand-images with options:', listOptions);
+        // For brand-images, let's try without any path restrictions first
+        // Just get ALL files and we'll filter by path on the client side
+        console.log('Fetching all images without path restrictions');
+        // Don't set any path or searchQuery initially
       } else {
         listOptions.path = folder;
         console.log('Using folder path:', folder);
-        
-        if (searchQuery) {
-          listOptions.searchQuery = `name : "${searchQuery}"`;
-        }
       }
-    } else if (searchQuery) {
+    }
+    
+    if (searchQuery) {
       listOptions.searchQuery = `name : "${searchQuery}"`;
     }
 
@@ -225,13 +212,28 @@ router.get('/images', async (req, res) => {
 
     console.log('Final ImageKit listOptions:', listOptions);
 
-    const imageList = await imagekit.listFiles(listOptions);
+    const allItems = await imagekit.listFiles(listOptions);
     
-    console.log(`ImageKit returned ${imageList.length} images`);
+    // Filter out folders - we only want actual image files
+    const folders = allItems.filter(item => item.type === 'folder');
+    let imageList = allItems.filter(item => item.type !== 'folder');
+    
+    console.log(`ImageKit returned ${allItems.length} items: ${folders.length} folders and ${imageList.length} image files`);
+    
+    // If we're looking for brand-images and got files, filter them by path
+    if (folder === 'brand-images' && imageList.length > 0) {
+      const beforeFilter = imageList.length;
+      imageList = imageList.filter(img => 
+        img.filePath && 
+        (img.filePath.includes('/brand-images/') || img.filePath.startsWith('brand-images/'))
+      );
+      console.log(`Filtered from ${beforeFilter} to ${imageList.length} images in brand-images folder`);
+    }
     
     // Log the structure of the first image for debugging
     if (imageList.length > 0) {
       console.log('First image structure:', JSON.stringify(imageList[0], null, 2));
+      console.log('Available fields:', Object.keys(imageList[0]));
       console.log('Sample images:', imageList.slice(0, 3).map(img => ({
         name: img.name,
         fileId: img.fileId,
@@ -396,37 +398,45 @@ router.get('/debug/list-all', async (req, res) => {
     
     console.log(`Found ${allFiles.length} total files`);
     
-    // Then try to list files specifically in brand-images
-    const brandImagesFiles = await imagekit.listFiles({
-      path: 'brand-images',
-      limit: 100
-    });
+    // List specific brand folders to see what's inside
+    const brandFolders = ['blomus', 'elvang', 'my-flame', 'remember', 'rader', 'relaxound', 'biomus']; // Added biomus in case
+    const filesByBrand = {};
     
-    console.log(`Found ${brandImagesFiles.length} files in brand-images`);
+    for (const brand of brandFolders) {
+      try {
+        const brandFiles = await imagekit.listFiles({
+          path: `brand-images/${brand}`,
+          limit: 50
+        });
+        filesByBrand[brand] = brandFiles.filter(item => item.type !== 'folder');
+        console.log(`Found ${filesByBrand[brand].length} files in brand-images/${brand}`);
+      } catch (error) {
+        console.log(`Error listing ${brand}: ${error.message}`);
+        filesByBrand[brand] = [];
+      }
+    }
     
-    // Try with search query
+    // Try with search query for all files under brand-images
     const searchQueryFiles = await imagekit.listFiles({
-      searchQuery: 'filePath:"/brand-images/*"',
+      searchQuery: 'filePath : "/brand-images/*" OR filePath : "/brand-images/*/*"',
       limit: 100
     });
     
     console.log(`Found ${searchQueryFiles.length} files with search query`);
     
-    // List folders to see structure
-    const folders = await imagekit.listFiles({
-      type: 'folder',
-      limit: 100
-    });
-    
-    console.log(`Found ${folders.length} folders`);
+    const imageFiles = searchQueryFiles.filter(item => item.type !== 'folder');
+    console.log(`Found ${imageFiles.length} actual image files`);
     
     res.json({
       success: true,
       summary: {
         totalFiles: allFiles.length,
-        brandImagesFiles: brandImagesFiles.length,
         searchQueryFiles: searchQueryFiles.length,
-        totalFolders: folders.length
+        actualImageFiles: imageFiles.length,
+        filesByBrand: Object.keys(filesByBrand).reduce((acc, brand) => {
+          acc[brand] = filesByBrand[brand].length;
+          return acc;
+        }, {})
       },
       samples: {
         allFiles: allFiles.slice(0, 5).map(f => ({
@@ -437,20 +447,27 @@ router.get('/debug/list-all', async (req, res) => {
           url: f.url,
           tags: f.tags
         })),
-        brandImagesFiles: brandImagesFiles.slice(0, 5).map(f => ({
+        imageFiles: imageFiles.slice(0, 10).map(f => ({
           name: f.name,
           filePath: f.filePath,
-          type: f.type
+          type: f.type,
+          url: f.url,
+          brand: f.filePath?.split('/')[2] || 'unknown'
         })),
-        folders: folders.map(f => ({
-          name: f.name,
-          filePath: f.filePath,
-          type: f.type
-        }))
+        sampleBrandFiles: Object.keys(filesByBrand).reduce((acc, brand) => {
+          if (filesByBrand[brand].length > 0) {
+            acc[brand] = filesByBrand[brand].slice(0, 2).map(f => ({
+              name: f.name,
+              filePath: f.filePath,
+              url: f.url
+            }));
+          }
+          return acc;
+        }, {})
       },
       rawResponses: {
         firstAllFile: allFiles[0],
-        firstBrandImageFile: brandImagesFiles[0]
+        firstImageFile: imageFiles[0]
       }
     });
     
@@ -461,6 +478,141 @@ router.get('/debug/list-all', async (req, res) => {
       error: error.message,
       stack: error.stack
     });
+  }
+});
+
+// Debug endpoint to understand file structure
+router.get('/debug/structure', async (req, res) => {
+  try {
+    console.log('Debug: Analyzing ImageKit file structure');
+    
+    // Get a larger sample of files
+    const allItems = await imagekit.listFiles({ limit: 500 });
+    
+    // Separate files and folders
+    const files = allItems.filter(item => item.type !== 'folder');
+    const folders = allItems.filter(item => item.type === 'folder');
+    
+    // Analyze file paths
+    const pathAnalysis = {};
+    files.forEach(file => {
+      const pathParts = file.filePath?.split('/').filter(p => p);
+      if (pathParts && pathParts.length > 0) {
+        const rootFolder = pathParts[0];
+        if (!pathAnalysis[rootFolder]) {
+          pathAnalysis[rootFolder] = {
+            count: 0,
+            samples: [],
+            subPaths: new Set()
+          };
+        }
+        pathAnalysis[rootFolder].count++;
+        if (pathAnalysis[rootFolder].samples.length < 3) {
+          pathAnalysis[rootFolder].samples.push({
+            name: file.name,
+            filePath: file.filePath,
+            url: file.url?.substring(0, 100) + '...'
+          });
+        }
+        if (pathParts.length > 1) {
+          pathAnalysis[rootFolder].subPaths.add(pathParts[1]);
+        }
+      }
+    });
+    
+    // Convert Sets to Arrays for JSON
+    Object.keys(pathAnalysis).forEach(key => {
+      pathAnalysis[key].subPaths = Array.from(pathAnalysis[key].subPaths);
+    });
+    
+    // Look specifically for brand-images
+    const brandImagesFiles = files.filter(f => 
+      f.filePath && f.filePath.includes('brand-images')
+    );
+    
+    res.json({
+      summary: {
+        totalItems: allItems.length,
+        totalFiles: files.length,
+        totalFolders: folders.length,
+        brandImagesFiles: brandImagesFiles.length
+      },
+      pathAnalysis,
+      brandImagesSamples: brandImagesFiles.slice(0, 10).map(f => ({
+        name: f.name,
+        filePath: f.filePath,
+        fileId: f.fileId,
+        url: f.url?.substring(0, 100) + '...'
+      })),
+      firstFewFiles: files.slice(0, 10).map(f => ({
+        name: f.name,
+        filePath: f.filePath,
+        type: f.type,
+        fileId: f.fileId
+      })),
+      message: `Found ${files.length} files. ${brandImagesFiles.length} are in brand-images folder.`
+    });
+    
+  } catch (error) {
+    console.error('Debug structure error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack 
+    });
+  }
+});
+
+// Simple test to check if we have any images
+router.get('/test/simple', async (req, res) => {
+  try {
+    // Try to get ANY file (not folder)
+    const allItems = await imagekit.listFiles({ limit: 1000 });
+    const files = allItems.filter(item => item.type !== 'folder');
+    const folders = allItems.filter(item => item.type === 'folder');
+    
+    // Try specific brand paths
+    let brandResults = {};
+    const brands = ['blomus', 'elvang', 'my-flame'];
+    
+    for (const brand of brands) {
+      try {
+        const items = await imagekit.listFiles({ 
+          path: `brand-images/${brand}`,
+          limit: 50 
+        });
+        brandResults[brand] = {
+          total: items.length,
+          files: items.filter(i => i.type !== 'folder').length,
+          folders: items.filter(i => i.type === 'folder').length,
+          samples: items.slice(0, 3).map(i => ({ 
+            name: i.name, 
+            type: i.type,
+            filePath: i.filePath 
+          }))
+        };
+      } catch (e) {
+        brandResults[brand] = { error: e.message };
+      }
+    }
+    
+    res.json({
+      summary: {
+        totalItems: allItems.length,
+        totalFiles: files.length,
+        totalFolders: folders.length
+      },
+      brandResults,
+      sampleFiles: files.slice(0, 5).map(f => ({
+        name: f.name,
+        filePath: f.filePath,
+        url: f.url
+      })),
+      message: files.length === 0 ? 
+        'No image files found. Please upload images to the brand folders in ImageKit.' : 
+        `Found ${files.length} image files`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
