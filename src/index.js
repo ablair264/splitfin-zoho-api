@@ -61,6 +61,9 @@ const auth = admin.auth();
 // ── Express Setup ───────────────────────────────────────────────────
 const app = express();
 
+app.set('trust proxy', 1);
+
+
 // Security middleware
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" } // Allow images from ImageKit
@@ -85,6 +88,7 @@ const imagekitUploadLimiter = rateLimit({
   message: { error: 'Too many upload requests, try again later' },
   standardHeaders: true,
   legacyHeaders: false,
+  trustProxy: true, // Add this for Render
 });
 
 // General rate limiting
@@ -94,6 +98,7 @@ const generalLimiter = rateLimit({
   message: { error: 'Too many requests, try again later' },
   standardHeaders: true,
   legacyHeaders: false,
+  trustProxy: true, // Add this for Render
 });
 
 // Apply general rate limiting to all routes
