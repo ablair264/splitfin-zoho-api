@@ -23,7 +23,9 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024, // 10MB limit
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    // Accept common image formats including webp
+    const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    if (file.mimetype.startsWith('image/') || allowedMimeTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
       cb(new Error('Only image files are allowed'), false);
@@ -189,12 +191,32 @@ router.get('/images', async (req, res) => {
 
     // Add path if folder is specified
     if (folder && folder.trim() !== '') {
-      listOptions.path = folder;
-      console.log('Using folder path:', folder);
-    }
-
-    if (searchQuery) {
-      listOptions.searchQuery = `name:${searchQuery}`;
+      if (folder === 'brand-images') {
+        // For brand-images, we need to search recursively
+        // Try different approaches based on ImageKit's API
+        
+        // Approach 1: Use path without leading slash
+        listOptions.path = folder;
+        
+        // Approach 2: Also add includeFolder flag
+        listOptions.includeFolder = true;
+        
+        // If there's a search query, add it
+        if (searchQuery) {
+          listOptions.searchQuery = `name : "${searchQuery}"`;
+        }
+        
+        console.log('Searching in brand-images with options:', listOptions);
+      } else {
+        listOptions.path = folder;
+        console.log('Using folder path:', folder);
+        
+        if (searchQuery) {
+          listOptions.searchQuery = `name : "${searchQuery}"`;
+        }
+      }
+    } else if (searchQuery) {
+      listOptions.searchQuery = `name : "${searchQuery}"`;
     }
 
     if (tags) {
@@ -360,6 +382,86 @@ router.get('/test', (req, res) => {
       hasUrlEndpoint: !!process.env.IMAGEKIT_URL_ENDPOINT
     }
   });
+});
+
+// Debug endpoint to test ImageKit connection and list all files
+router.get('/debug/list-all', async (req, res) => {
+  try {
+    console.log('Debug: Listing all files from ImageKit');
+    
+    // First try to list files without any path restriction
+    const allFiles = await imagekit.listFiles({
+      limit: 100
+    });
+    
+    console.log(`Found ${allFiles.length} total files`);
+    
+    // Then try to list files specifically in brand-images
+    const brandImagesFiles = await imagekit.listFiles({
+      path: 'brand-images',
+      limit: 100
+    });
+    
+    console.log(`Found ${brandImagesFiles.length} files in brand-images`);
+    
+    // Try with search query
+    const searchQueryFiles = await imagekit.listFiles({
+      searchQuery: 'filePath:"/brand-images/*"',
+      limit: 100
+    });
+    
+    console.log(`Found ${searchQueryFiles.length} files with search query`);
+    
+    // List folders to see structure
+    const folders = await imagekit.listFiles({
+      type: 'folder',
+      limit: 100
+    });
+    
+    console.log(`Found ${folders.length} folders`);
+    
+    res.json({
+      success: true,
+      summary: {
+        totalFiles: allFiles.length,
+        brandImagesFiles: brandImagesFiles.length,
+        searchQueryFiles: searchQueryFiles.length,
+        totalFolders: folders.length
+      },
+      samples: {
+        allFiles: allFiles.slice(0, 5).map(f => ({
+          name: f.name,
+          filePath: f.filePath,
+          type: f.type,
+          size: f.size,
+          url: f.url,
+          tags: f.tags
+        })),
+        brandImagesFiles: brandImagesFiles.slice(0, 5).map(f => ({
+          name: f.name,
+          filePath: f.filePath,
+          type: f.type
+        })),
+        folders: folders.map(f => ({
+          name: f.name,
+          filePath: f.filePath,
+          type: f.type
+        }))
+      },
+      rawResponses: {
+        firstAllFile: allFiles[0],
+        firstBrandImageFile: brandImagesFiles[0]
+      }
+    });
+    
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
 });
 
 export default router;
