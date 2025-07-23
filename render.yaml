@@ -36,6 +36,13 @@ services:
         sync: false
       - key: CRON_SECRET
         generateValue: true
+      # ImageKit Configuration
+      - key: IMAGEKIT_PUBLIC_KEY
+        sync: false
+      - key: IMAGEKIT_PRIVATE_KEY
+        sync: false
+      - key: IMAGEKIT_URL_ENDPOINT
+        sync: false
       
   # High frequency CRON jobs
   - type: cron
