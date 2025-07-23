@@ -1,7 +1,11 @@
 // server/src/routes/imagekit.js
 import express from 'express';
-import ImageKit from 'imagekit';
+import { createRequire } from 'module';
 import multer from 'multer';
+
+// Import ImageKit using CommonJS syntax for ES6 modules
+const require = createRequire(import.meta.url);
+const ImageKit = require('imagekit');
 
 const router = express.Router();
 
@@ -167,14 +171,27 @@ router.get('/images', async (req, res) => {
       limit = 20, 
       searchQuery = '', 
       tags = '',
-      folder = 'brand-images' 
+      folder = 'brand-images'
     } = req.query;
+
+    console.log('ImageKit API call parameters:', {
+      skip,
+      limit,
+      searchQuery,
+      tags,
+      folder
+    });
 
     const listOptions = {
       skip: parseInt(skip),
-      limit: parseInt(limit),
-      path: folder
+      limit: parseInt(limit)
     };
+
+    // Add path if folder is specified
+    if (folder && folder.trim() !== '') {
+      listOptions.path = folder;
+      console.log('Using folder path:', folder);
+    }
 
     if (searchQuery) {
       listOptions.searchQuery = `name:${searchQuery}`;
@@ -184,7 +201,26 @@ router.get('/images', async (req, res) => {
       listOptions.tags = tags.split(',');
     }
 
+    console.log('Final ImageKit listOptions:', listOptions);
+
     const imageList = await imagekit.listFiles(listOptions);
+    
+    console.log(`ImageKit returned ${imageList.length} images`);
+    
+    // Log the structure of the first image for debugging
+    if (imageList.length > 0) {
+      console.log('First image structure:', JSON.stringify(imageList[0], null, 2));
+      console.log('Sample images:', imageList.slice(0, 3).map(img => ({
+        name: img.name,
+        fileId: img.fileId,
+        filePath: img.filePath,
+        url: img.url,
+        size: img.size,
+        createdAt: img.createdAt,
+        tags: img.tags,
+        type: img.type || img.fileType
+      })));
+    }
 
     // Add optimized URLs to each image
     const imagesWithOptimizedUrls = imageList.map(image => ({
@@ -197,16 +233,33 @@ router.get('/images', async (req, res) => {
       }
     }));
 
-    res.json({
+    const response = {
       images: imagesWithOptimizedUrls,
-      hasMore: imageList.length === parseInt(limit)
+      hasMore: imageList.length === parseInt(limit),
+      total: imageList.length,
+      requestParams: { skip, limit, folder, searchQuery, tags }
+    };
+
+    console.log('API Response summary:', {
+      totalImages: response.images.length,
+      hasMore: response.hasMore,
+      sampleImageFields: imageList.length > 0 ? Object.keys(imageList[0]) : []
     });
+
+    res.json(response);
 
   } catch (error) {
     console.error('ImageKit list error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      response: error.response?.data
+    });
+    
     res.status(500).json({ 
       error: 'Failed to fetch images', 
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
