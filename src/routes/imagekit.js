@@ -1,7 +1,8 @@
-// backend/routes/imagekit.js - Express.js routes for Render
-const express = require('express');
-const ImageKit = require('imagekit');
-const multer = require('multer');
+// server/src/routes/imagekit.js
+import express from 'express';
+import ImageKit from 'imagekit';
+import multer from 'multer';
+
 const router = express.Router();
 
 // Initialize ImageKit with environment variables from Render
@@ -295,67 +296,17 @@ router.get('/config', (req, res) => {
   });
 });
 
-// POST /api/imagekit/migrate-from-firebase - Migration endpoint
-router.post('/migrate-from-firebase', async (req, res) => {
-  try {
-    const { firebaseUrls } = req.body;
-
-    if (!firebaseUrls || !Array.isArray(firebaseUrls)) {
-      return res.status(400).json({ error: 'Firebase URLs array is required' });
+// Test endpoint
+router.get('/test', (req, res) => {
+  res.json({
+    message: 'ImageKit routes are working!',
+    timestamp: new Date().toISOString(),
+    config: {
+      hasPublicKey: !!process.env.IMAGEKIT_PUBLIC_KEY,
+      hasPrivateKey: !!process.env.IMAGEKIT_PRIVATE_KEY,
+      hasUrlEndpoint: !!process.env.IMAGEKIT_URL_ENDPOINT
     }
-
-    const migrationResults = [];
-
-    for (const firebaseData of firebaseUrls) {
-      try {
-        const { url: firebaseUrl, fileName, brand } = firebaseData;
-        
-        // Download from Firebase
-        const response = await fetch(firebaseUrl);
-        const buffer = await response.buffer();
-        
-        // Upload to ImageKit
-        const result = await imagekit.upload({
-          file: buffer,
-          fileName: fileName,
-          folder: `brand-images/${brand}`,
-          useUniqueFileName: false,
-          tags: [brand, 'migrated', 'product-image']
-        });
-        
-        migrationResults.push({
-          originalUrl: firebaseUrl,
-          newUrl: result.url,
-          fileId: result.fileId,
-          success: true
-        });
-        
-      } catch (error) {
-        migrationResults.push({
-          originalUrl: firebaseData.url,
-          success: false,
-          error: error.message
-        });
-      }
-    }
-
-    const successful = migrationResults.filter(r => r.success);
-    const failed = migrationResults.filter(r => !r.success);
-
-    res.json({
-      totalMigrated: successful.length,
-      totalFailed: failed.length,
-      successful,
-      failed
-    });
-
-  } catch (error) {
-    console.error('Migration error:', error);
-    res.status(500).json({ 
-      error: 'Migration failed', 
-      details: error.message 
-    });
-  }
+  });
 });
 
-module.exports = router;
+export default router;
