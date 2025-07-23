@@ -1,7 +1,9 @@
-// server/src/index.js - Cleaned and organized version
+// server/src/index.js - Updated with ImageKit integration
 import './config/firebase.js';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import admin from 'firebase-admin';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -24,6 +26,7 @@ import searchTrendsRoutes from './routes/searchTrends.js';
 import emailRoutes from './routes/email.js';
 import dmBrandsRoutes from './routes/dmBrandsRoutes.js';
 import backfillRoutes from './api/backfillEndpoint.js';
+import imagekitRoutes from './routes/imagekit.js'; // NEW: ImageKit routes
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
@@ -39,7 +42,7 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 // ── Configuration ───────────────────────────────────────────────────
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PORT = process.env.PORT || 3001;
-const API_VERSION = '3.0.0'; // Bumped for major cleanup
+const API_VERSION = '3.1.0'; // Bumped for ImageKit integration
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
@@ -52,14 +55,16 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
 ];
 
 // Initialize Firebase Admin SDK (assuming './config/firebase.js' handles admin.initializeApp)
-// If './config/firebase.js' does not export `db` and `auth` from admin, you'll need to adjust.
-// Assuming `admin` is globally available after `admin.initializeApp` is called in './config/firebase.js'
 const db = admin.firestore();
 const auth = admin.auth();
 
-
 // ── Express Setup ───────────────────────────────────────────────────
 const app = express();
+
+// Security middleware
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" } // Allow images from ImageKit
+}));
 
 // CORS configuration
 app.use(cors({
@@ -73,9 +78,30 @@ app.use(cors({
   credentials: true
 }));
 
+// Rate limiting for ImageKit uploads
+const imagekitUploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 50, // 50 uploads per 15 minutes per IP
+  message: { error: 'Too many upload requests, try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// General rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // 1000 requests per 15 minutes per IP
+  message: { error: 'Too many requests, try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply general rate limiting to all routes
+app.use(generalLimiter);
+
 // Body parsing middleware
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ limit: '25mb', extended: true }));
+app.use(express.json({ limit: '50mb' })); // Increased for image uploads
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Request logging middleware (consider using Morgan in production)
 app.use((req, res, next) => {
@@ -83,10 +109,14 @@ app.use((req, res, next) => {
   next();
 });
 
+// Special logging for AI insights and ImageKit uploads
 app.use((req, res, next) => {
   if (req.method === 'POST' && req.url.includes('/ai-insights')) {
     const size = JSON.stringify(req.body).length / (1024 * 1024);
     console.log(`AI Insights request size: ${size.toFixed(2)}MB`);
+  }
+  if (req.method === 'POST' && req.url.includes('/imagekit/upload')) {
+    console.log(`ImageKit upload request for: ${req.body?.brand || 'unknown brand'}`);
   }
   next();
 });
@@ -105,6 +135,10 @@ app.use('/api/dm-brands', dmBrandsRoutes);
 app.use('/api/search-trends', searchTrendsRoutes);
 app.use('/api/admin', backfillRoutes);
 
+// NEW: ImageKit routes with upload rate limiting
+app.use('/api/imagekit', imagekitUploadLimiter, imagekitRoutes);
+
+// Legacy Zoho endpoints (keep for backward compatibility)
 app.put('/api/zoho/update-contact', updateZohoContact);
 app.post('/api/zoho/create-contact', createZohoContact);
 app.post('/api/zoho/salesorder', createZohoSalesOrder);
@@ -160,29 +194,9 @@ app.post('/migrate-single-user', async (req, res) => {
     const firebaseUserUid = userRecord.uid;
     console.log(`Firebase Auth user created: ${firebaseUserUid} for customer ${customerId}`);
 
-    // 2. Create customer_data document for backwards compatibility
-    const customerDataDoc = {
-      firebaseUID: firebaseUserUid,
-      firebase_uid: firebaseUserUid,
-      customer_id: customerId,
-      email: email,
-      contact_name: contactName || customerName || 'Customer',
-      contactName: contactName || customerName || 'Customer',
-      customer_name: customerName || '',
-      company_name: companyName || null,
-      companyName: companyName || null,
-      lastLogin: null,
-      isOnline: false,
-      created_at: admin.firestore.FieldValue.serverTimestamp()
-    };
-
-    await db.collection('customer_data')
-      .doc(firebaseUserUid)
-      .set(customerDataDoc);
+    // Skip creating customer_data - we don't need this legacy collection
     
-    console.log(`customer_data document created for UID: ${firebaseUserUid}`);
-
-    // 3. Update the users/{customerId} document if needed
+    // Update the users/{customerId} document if needed
     const userDocRef = db.collection('users').doc(customerId);
     const userDoc = await userDocRef.get();
     
@@ -374,6 +388,7 @@ app.get('/', (req, res) => {
           cron: '/api/cron/*',
           'ai-insights': '/api/ai-insights/*',
           products: '/api/products/*',
+          imagekit: '/api/imagekit/*', // NEW: ImageKit endpoints
         },
         auth: {
           oauth: '/oauth/url',
@@ -388,7 +403,8 @@ app.get('/', (req, res) => {
       'Normalized Data Collections',
       'AI-Powered Analytics',
       'Real-time Dashboard',
-      'Product Management'
+      'Product Management',
+      'ImageKit Image Management' // NEW: ImageKit feature
     ],
     timestamp: new Date().toISOString()
   });
@@ -549,6 +565,13 @@ app.get('/health', async (req, res) => {
     // Get sync status
     const syncStatus = await getSyncStatus();
 
+    // Check if ImageKit environment variables are configured
+    const imagekitConfigured = !!(
+      process.env.IMAGEKIT_PUBLIC_KEY && 
+      process.env.IMAGEKIT_PRIVATE_KEY && 
+      process.env.IMAGEKIT_URL_ENDPOINT
+    );
+
     res.json({
       status: 'healthy',
       version: API_VERSION,
@@ -558,6 +581,11 @@ app.get('/health', async (req, res) => {
       sync: {
         lastSync: syncStatus?.lastSync || 'never',
         status: syncStatus?.status || 'unknown'
+      },
+      services: {
+        imagekit: imagekitConfigured ? 'configured' : 'not configured',
+        firebase: 'connected',
+        zoho: 'configured'
       }
     });
   } catch (error) {
@@ -583,6 +611,15 @@ app.use((req, res) => {
 // Global error handler
 app.use((err, req, res, next) => {
   console.error('🚨 Unhandled error:', err);
+
+  // Handle specific error types
+  if (err.message && err.message.includes('CORS blocked')) {
+    return res.status(403).json({
+      success: false,
+      message: 'CORS policy violation',
+      timestamp: new Date().toISOString()
+    });
+  }
 
   res.status(err.status || 500).json({
     success: false,
@@ -611,13 +648,28 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('║ • Normalized Data Collections                              ║');
   console.log('║ • AI-Powered Analytics                                     ║');
   console.log('║ • Real-time Dashboard                                      ║');
+  console.log('║ • ImageKit Image Management                                ║');
   console.log('╠════════════════════════════════════════════════════════════╣');
   console.log('║ Main Endpoints:                                            ║');
   console.log(`║ • Health     : http://localhost:${PORT}/health              ║`);
   console.log(`║ • API Docs   : http://localhost:${PORT}/                    ║`);
   console.log(`║ • Dashboard  : /api/reports/dashboard                      ║`);
-  console.log(`║ • CRON Jobs  : /api/cron/* ║`);
+  console.log(`║ • CRON Jobs  : /api/cron/*                                 ║`);
+  console.log(`║ • ImageKit   : /api/imagekit/*                             ║`);
   console.log('╚════════════════════════════════════════════════════════════╝');
+
+  // Check ImageKit configuration
+  const imagekitConfigured = !!(
+    process.env.IMAGEKIT_PUBLIC_KEY && 
+    process.env.IMAGEKIT_PRIVATE_KEY && 
+    process.env.IMAGEKIT_URL_ENDPOINT
+  );
+
+  if (imagekitConfigured) {
+    console.log('\n✅ ImageKit: Configuration detected and ready');
+  } else {
+    console.log('\n⚠️  ImageKit: Not configured (add IMAGEKIT_* environment variables)');
+  }
 
   if (IS_PRODUCTION) {
     console.log('\n✅ Production mode: CRON jobs handle all data synchronization');
