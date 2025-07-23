@@ -170,7 +170,7 @@ router.get('/images', async (req, res) => {
   try {
     const { 
       skip = 0, 
-      limit = 100,  // Increased from 20 to 100
+      limit = 50,  // Changed default to 50 to match frontend
       searchQuery = '', 
       tags = '',
       folder = 'brand-images'
