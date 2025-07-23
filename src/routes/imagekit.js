@@ -194,8 +194,12 @@ router.get('/images', async (req, res) => {
       if (folder === 'brand-images') {
         // For brand-images, let's try without any path restrictions first
         // Just get ALL files and we'll filter by path on the client side
-        console.log('Fetching all images without path restrictions');
+        console.log('Fetching all images from brand-images folder');
         // Don't set any path or searchQuery initially
+      } else if (folder.startsWith('brand-images/')) {
+        // Specific brand folder like 'brand-images/blomus'
+        listOptions.path = folder;
+        console.log('Using specific brand folder path:', folder);
       } else {
         listOptions.path = folder;
         console.log('Using folder path:', folder);
@@ -219,7 +223,7 @@ router.get('/images', async (req, res) => {
     
     console.log(`ImageKit returned ${allItems.length} items, ${imageList.length} are image files`);
     
-    // If we're looking for brand-images and got files, filter them by path
+    // If we're looking for brand-images (but not a specific brand) and got files, filter them by path
     if (folder === 'brand-images' && imageList.length > 0) {
       const beforeFilter = imageList.length;
       imageList = imageList.filter(img => 
