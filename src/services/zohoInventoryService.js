@@ -956,11 +956,16 @@ class ZohoInventoryService {
   normalizeBrandName(brandName) {
     if (!brandName) return 'unknown';
     
-    return brandName
+    // Normalize special characters (ä→a, ö→o, etc.)
+    const normalized = brandName
+      .normalize('NFD') // Decompose combined characters
+      .replace(/[\u0300-\u036f]/g, '') // Remove diacritical marks
       .toLowerCase()
       .trim()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
+    
+    return normalized;
   }
 
   /**
