@@ -28,6 +28,7 @@ import dmBrandsRoutes from './routes/dmBrandsRoutes.js';
 import backfillRoutes from './api/backfillEndpoint.js';
 import imagekitRoutes from './routes/imagekit.js';
 import shipstationRoutes from './routes/shipstation.js'; // NEW: ShipStation routes
+import zohoRoutes from './routes/zoho.js'; // Zoho routes
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
@@ -158,6 +159,9 @@ app.use('/api/shipstation', shipstationLimiter, shipstationRoutes);
 
 // ImageKit routes with upload rate limiting
 app.use('/api/imagekit', imagekitUploadLimiter, imagekitRoutes);
+
+// Zoho routes
+app.use('/api/zoho', zohoRoutes);
 
 // Legacy Zoho endpoints (keep for backward compatibility)
 app.put('/api/zoho/update-contact', updateZohoContact);
