@@ -1,4 +1,4 @@
-// server/src/index.js - Updated with ImageKit integration
+// server/src/index.js - Updated with ShipStation integration
 import './config/firebase.js';
 import express from 'express';
 import cors from 'cors';
@@ -26,7 +26,8 @@ import searchTrendsRoutes from './routes/searchTrends.js';
 import emailRoutes from './routes/email.js';
 import dmBrandsRoutes from './routes/dmBrandsRoutes.js';
 import backfillRoutes from './api/backfillEndpoint.js';
-import imagekitRoutes from './routes/imagekit.js'; // NEW: ImageKit routes
+import imagekitRoutes from './routes/imagekit.js';
+import shipstationRoutes from './routes/shipstation.js'; // NEW: ShipStation routes
 
 // Import services (only what's actually used in production)
 import { getSyncStatus } from './syncInventory.js';
@@ -42,7 +43,7 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 // ── Configuration ───────────────────────────────────────────────────
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PORT = process.env.PORT || 3001;
-const API_VERSION = '3.1.0'; // Bumped for ImageKit integration
+const API_VERSION = '3.2.0'; // Bumped for ShipStation integration
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
@@ -63,10 +64,9 @@ const app = express();
 
 app.set('trust proxy', 1);
 
-
 // Security middleware
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" } // Allow images from ImageKit
+  crossOriginResourcePolicy: { policy: "cross-origin" } // Allow images from ImageKit and ShipStation
 }));
 
 // CORS configuration
@@ -81,6 +81,16 @@ app.use(cors({
   credentials: true
 }));
 
+// Rate limiting for ShipStation API calls
+const shipstationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 300, // 300 requests per 15 minutes per IP (ShipStation allows 40 requests per minute)
+  message: { error: 'Too many ShipStation API requests, try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  trustProxy: true,
+});
+
 // Rate limiting for ImageKit uploads
 const imagekitUploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -88,7 +98,7 @@ const imagekitUploadLimiter = rateLimit({
   message: { error: 'Too many upload requests, try again later' },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: true, // Add this for Render
+  trustProxy: true,
 });
 
 // General rate limiting
@@ -98,7 +108,7 @@ const generalLimiter = rateLimit({
   message: { error: 'Too many requests, try again later' },
   standardHeaders: true,
   legacyHeaders: false,
-  trustProxy: true, // Add this for Render
+  trustProxy: true,
 });
 
 // Apply general rate limiting to all routes
@@ -114,7 +124,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Special logging for AI insights and ImageKit uploads
+// Special logging for AI insights, ImageKit uploads, and ShipStation calls
 app.use((req, res, next) => {
   if (req.method === 'POST' && req.url.includes('/ai-insights')) {
     const size = JSON.stringify(req.body).length / (1024 * 1024);
@@ -122,6 +132,9 @@ app.use((req, res, next) => {
   }
   if (req.method === 'POST' && req.url.includes('/imagekit/upload')) {
     console.log(`ImageKit upload request for: ${req.body?.brand || 'unknown brand'}`);
+  }
+  if (req.url.includes('/shipstation/')) {
+    console.log(`ShipStation API call: ${req.method} ${req.url}`);
   }
   next();
 });
@@ -140,7 +153,10 @@ app.use('/api/dm-brands', dmBrandsRoutes);
 app.use('/api/search-trends', searchTrendsRoutes);
 app.use('/api/admin', backfillRoutes);
 
-// NEW: ImageKit routes with upload rate limiting
+// NEW: ShipStation routes with rate limiting
+app.use('/api/shipstation', shipstationLimiter, shipstationRoutes);
+
+// ImageKit routes with upload rate limiting
 app.use('/api/imagekit', imagekitUploadLimiter, imagekitRoutes);
 
 // Legacy Zoho endpoints (keep for backward compatibility)
@@ -393,7 +409,8 @@ app.get('/', (req, res) => {
           cron: '/api/cron/*',
           'ai-insights': '/api/ai-insights/*',
           products: '/api/products/*',
-          imagekit: '/api/imagekit/*', // NEW: ImageKit endpoints
+          imagekit: '/api/imagekit/*',
+          shipstation: '/api/shipstation/*', // NEW: ShipStation endpoints
         },
         auth: {
           oauth: '/oauth/url',
@@ -409,7 +426,8 @@ app.get('/', (req, res) => {
       'AI-Powered Analytics',
       'Real-time Dashboard',
       'Product Management',
-      'ImageKit Image Management' // NEW: ImageKit feature
+      'ImageKit Image Management',
+      'ShipStation Shipping Integration' // NEW: ShipStation feature
     ],
     timestamp: new Date().toISOString()
   });
@@ -577,6 +595,12 @@ app.get('/health', async (req, res) => {
       process.env.IMAGEKIT_URL_ENDPOINT
     );
 
+    // Check if ShipStation environment variables are configured
+    const shipstationConfigured = !!(
+      process.env.SHIPSTATION_API_KEY && 
+      process.env.SHIPSTATION_API_SECRET
+    );
+
     res.json({
       status: 'healthy',
       version: API_VERSION,
@@ -589,6 +613,7 @@ app.get('/health', async (req, res) => {
       },
       services: {
         imagekit: imagekitConfigured ? 'configured' : 'not configured',
+        shipstation: shipstationConfigured ? 'configured' : 'not configured',
         firebase: 'connected',
         zoho: 'configured'
       }
@@ -654,6 +679,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('║ • AI-Powered Analytics                                     ║');
   console.log('║ • Real-time Dashboard                                      ║');
   console.log('║ • ImageKit Image Management                                ║');
+  console.log('║ • ShipStation Shipping Integration                         ║');
   console.log('╠════════════════════════════════════════════════════════════╣');
   console.log('║ Main Endpoints:                                            ║');
   console.log(`║ • Health     : http://localhost:${PORT}/health              ║`);
@@ -661,6 +687,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`║ • Dashboard  : /api/reports/dashboard                      ║`);
   console.log(`║ • CRON Jobs  : /api/cron/*                                 ║`);
   console.log(`║ • ImageKit   : /api/imagekit/*                             ║`);
+  console.log(`║ • ShipStation: /api/shipstation/*                          ║`);
   console.log('╚════════════════════════════════════════════════════════════╝');
 
   // Check ImageKit configuration
@@ -670,10 +697,22 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     process.env.IMAGEKIT_URL_ENDPOINT
   );
 
+  // Check ShipStation configuration
+  const shipstationConfigured = !!(
+    process.env.SHIPSTATION_API_KEY && 
+    process.env.SHIPSTATION_API_SECRET
+  );
+
   if (imagekitConfigured) {
     console.log('\n✅ ImageKit: Configuration detected and ready');
   } else {
     console.log('\n⚠️  ImageKit: Not configured (add IMAGEKIT_* environment variables)');
+  }
+
+  if (shipstationConfigured) {
+    console.log('✅ ShipStation: Configuration detected and ready');
+  } else {
+    console.log('⚠️  ShipStation: Not configured (add SHIPSTATION_* environment variables)');
   }
 
   if (IS_PRODUCTION) {
