@@ -249,6 +249,43 @@ async function analyzeTotalOrders(cardData, dashboardData) {
 /**
  * Analyze Revenue with comprehensive insights
  */
+async function analyzeRevenue(cardData, dashboardData) {
+  const prompt = `
+    Analyze revenue performance for DM Brands luxury imports.
+
+    Current Period Data:
+    Total Revenue: £${cardData.current || 0}
+
+    Historical Context & Broader Dashboard Data:
+    ${summarizeData(dashboardData, 2000)}
+
+    IMPORTANT: Return ONLY valid JSON. Based on the historical context, analyze revenue trends, performance drivers, and provide actionable insights.
+    {
+      "insight": "Main findings on revenue performance, comparing current period to historical trends.",
+      "growthDrivers": "Key factors driving revenue growth or decline.",
+      "recommendations": ["actionable_recommendation_1 for increasing revenue", "actionable_recommendation_2"],
+      "forecast": "A brief, data-driven prediction for revenue for the next period.",
+      "trend": "'increasing', 'decreasing', or 'stable' based on historical revenue data.",
+      "action": "The single most important recommendation to improve revenue.",
+      "priority": "'high', 'medium', or 'low'.",
+      "impact": "The potential business impact of the current revenue trend."
+    }
+  `;
+  
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error analyzing revenue:', error);
+    return generateFallbackInsight('revenue', cardData);
+  }
+}
+
+/**
+ * Analyze Average Order Value with comprehensive insights
+ */
 async function analyzeAOV(cardData, dashboardData) {
   const prompt = `
     Analyze Average Order Value (AOV) performance for DM Brands.
@@ -363,6 +400,43 @@ async function analyzeAgents(cardData, dashboardData) {
  */
 async function analyzeBrands(cardData, dashboardData) {
   return generateFallbackInsight('brands', cardData);
+}
+
+/**
+ * Analyze Marketplace Orders
+ */
+async function analyzeMarketplace(cardData, dashboardData) {
+  const prompt = `
+    Analyze marketplace order performance for DM Brands.
+
+    Current Period Data:
+    Marketplace Orders: ${cardData.current || cardData.marketplaceOrders || 0}
+
+    Historical Context & Broader Dashboard Data:
+    ${summarizeData(dashboardData, 2000)}
+
+    IMPORTANT: Return ONLY valid JSON. Analyze marketplace channel performance (Amazon, eBay, etc.) and provide strategic insights.
+    {
+      "insight": "Analysis of marketplace order volume and trends compared to direct sales.",
+      "growthDrivers": "What's driving marketplace performance? Channel-specific insights.",
+      "recommendations": ["actionable_recommendation_1 for marketplace growth", "actionable_recommendation_2"],
+      "forecast": "Prediction for marketplace order volume in the next period.",
+      "trend": "'increasing', 'decreasing', or 'stable' based on marketplace order history.",
+      "action": "The most important action to optimize marketplace performance.",
+      "priority": "'high', 'medium', or 'low'.",
+      "impact": "The impact of marketplace performance on overall business."
+    }
+  `;
+  
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    return parseAIResponse(text);
+  } catch (error) {
+    console.error('Error analyzing marketplace orders:', error);
+    return generateFallbackInsight('marketplace', cardData);
+  }
 }
 
 /**
