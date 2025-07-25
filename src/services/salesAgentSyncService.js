@@ -324,6 +324,12 @@ class SalesAgentSyncService {
 
       // Get top 5 brands by revenue
       const top5Brands = Array.from(brandStats.values())
+        .map(brand => ({
+          brand: brand.brand,
+          order_count: brand.order_count.size, // Convert Set to number
+          total_revenue: brand.total_revenue,
+          quantity_sold: brand.quantity_sold
+        }))
         .sort((a, b) => b.total_revenue - a.total_revenue)
         .slice(0, 5);
 
