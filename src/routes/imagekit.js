@@ -19,9 +19,7 @@ const imagekit = new ImageKit({
 // Multer for handling file uploads in memory
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
-  },
+  // Removed fileSize limit - let ImageKit handle any size restrictions
   fileFilter: (req, file, cb) => {
     // Accept common image formats including webp
     const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
@@ -181,12 +179,14 @@ router.get('/images', async (req, res) => {
       limit,
       searchQuery,
       tags,
-      folder
+      folder,
+      sort: 'createdAt-DESC'
     });
 
     const listOptions = {
       skip: parseInt(skip),
-      limit: parseInt(limit)
+      limit: parseInt(limit),
+      sort: 'createdAt-DESC' // Sort by creation date, newest first - changed from ASC
     };
 
     // Add path if folder is specified
@@ -222,6 +222,19 @@ router.get('/images', async (req, res) => {
     let imageList = allItems.filter(item => item.type !== 'folder');
     
     console.log(`ImageKit returned ${allItems.length} items, ${imageList.length} are image files`);
+    
+    // Log if we find the specific CRS10 image
+    const crs10Image = imageList.find(img => img.name && img.name.includes('CRS10'));
+    if (crs10Image) {
+      console.log('Found CRS10 image in API response:', {
+        name: crs10Image.name,
+        createdAt: crs10Image.createdAt,
+        updatedAt: crs10Image.updatedAt,
+        filePath: crs10Image.filePath
+      });
+    } else if (folder.includes('remember')) {
+      console.log('CRS10 image NOT found in Remember folder response');
+    }
     
     // If we're looking for brand-images (but not a specific brand) and got files, filter them by path
     if (folder === 'brand-images' && imageList.length > 0) {
@@ -567,6 +580,56 @@ router.get('/debug/structure', async (req, res) => {
   }
 });
 
+// Debug specific brand endpoint
+router.get('/debug/brand/:brandId', async (req, res) => {
+  try {
+    const { brandId } = req.params;
+    console.log(`Debug: Checking brand ${brandId}`);
+    
+    // Get all files for this brand with no limit to see everything
+    const brandFiles = await imagekit.listFiles({
+      path: `brand-images/${brandId}`,
+      limit: 1000
+    });
+    
+    const imageFiles = brandFiles.filter(item => item.type !== 'folder');
+    
+    // Sort by creation date to see newest first
+    imageFiles.sort((a, b) => {
+      const dateA = new Date(a.createdAt || a.updatedAt || 0);
+      const dateB = new Date(b.createdAt || b.updatedAt || 0);
+      return dateB - dateA;
+    });
+    
+    res.json({
+      brand: brandId,
+      totalFiles: imageFiles.length,
+      newestFiles: imageFiles.slice(0, 10).map(f => ({
+        name: f.name,
+        fileId: f.fileId,
+        createdAt: f.createdAt,
+        updatedAt: f.updatedAt,
+        uploadedAt: f.uploadedAt,
+        size: f.size,
+        url: f.url
+      })),
+      oldestFiles: imageFiles.slice(-5).map(f => ({
+        name: f.name,
+        createdAt: f.createdAt,
+        updatedAt: f.updatedAt
+      })),
+      dateRange: imageFiles.length > 0 ? {
+        newest: imageFiles[0].createdAt || imageFiles[0].updatedAt,
+        oldest: imageFiles[imageFiles.length - 1].createdAt || imageFiles[imageFiles.length - 1].updatedAt
+      } : null
+    });
+    
+  } catch (error) {
+    console.error('Debug brand error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Simple test to check if we have any images
 router.get('/test/simple', async (req, res) => {
   try {
@@ -615,6 +678,47 @@ router.get('/test/simple', async (req, res) => {
       message: files.length === 0 ? 
         'No image files found. Please upload images to the brand folders in ImageKit.' : 
         `Found ${files.length} image files`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Test Remember folder specifically
+router.get('/test/remember', async (req, res) => {
+  try {
+    console.log('Testing Remember folder specifically');
+    
+    // Get ALL files from remember folder with no limit
+    const allFiles = await imagekit.listFiles({
+      path: 'brand-images/remember',
+      limit: 1000,
+      sort: 'createdAt-DESC'
+    });
+    
+    const imageFiles = allFiles.filter(item => item.type !== 'folder');
+    
+    // Look for CRS10 specifically
+    const crs10Files = imageFiles.filter(img => img.name && img.name.includes('CRS10'));
+    
+    res.json({
+      totalFiles: imageFiles.length,
+      crs10Files: crs10Files.map(f => ({
+        name: f.name,
+        fileId: f.fileId,
+        createdAt: f.createdAt,
+        updatedAt: f.updatedAt,
+        url: f.url,
+        filePath: f.filePath
+      })),
+      newestFiles: imageFiles.slice(0, 10).map(f => ({
+        name: f.name,
+        createdAt: f.createdAt,
+        updatedAt: f.updatedAt
+      })),
+      message: crs10Files.length > 0 ? 
+        `Found ${crs10Files.length} CRS10 files` : 
+        'No CRS10 files found in Remember folder'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
