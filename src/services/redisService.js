@@ -14,33 +14,56 @@ class RedisService {
 
   init() {
     try {
-      // Redis configuration from environment variables
-      const redisConfig = {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-        username: process.env.REDIS_USERNAME || 'default',
-        password: process.env.REDIS_PASSWORD || undefined,
-        db: parseInt(process.env.REDIS_DB) || 0,
-        retryStrategy: (times) => {
-          const delay = Math.min(times * 50, 2000);
-          return delay;
-        },
-        maxRetriesPerRequest: 3,
-        lazyConnect: true,
-        keepAlive: true,
-        connectTimeout: 10000,
-        commandTimeout: 5000,
-      };
-
-      // Add TLS config if using Redis Cloud or secured Redis
-      if (process.env.REDIS_TLS === 'true') {
-        redisConfig.tls = {
-          rejectUnauthorized: false,
-          checkServerIdentity: () => null
+      // For Redis Cloud, use connection string format which handles TLS better
+      if (process.env.REDIS_HOST && process.env.REDIS_HOST.includes('redis-cloud.com')) {
+        const protocol = process.env.REDIS_TLS === 'true' ? 'rediss://' : 'redis://';
+        const username = process.env.REDIS_USERNAME || 'default';
+        const password = process.env.REDIS_PASSWORD || '';
+        const host = process.env.REDIS_HOST;
+        const port = process.env.REDIS_PORT || 6379;
+        const db = process.env.REDIS_DB || 0;
+        
+        const connectionString = `${protocol}${username}:${password}@${host}:${port}/${db}`;
+        
+        this.client = new Redis(connectionString, {
+          retryStrategy: (times) => {
+            const delay = Math.min(times * 50, 2000);
+            return delay;
+          },
+          maxRetriesPerRequest: 3,
+          lazyConnect: true,
+          connectTimeout: 15000,
+          commandTimeout: 8000,
+        });
+      } else {
+        // Fallback to object config for other Redis instances
+        const redisConfig = {
+          host: process.env.REDIS_HOST || 'localhost',
+          port: parseInt(process.env.REDIS_PORT) || 6379,
+          username: process.env.REDIS_USERNAME || 'default',
+          password: process.env.REDIS_PASSWORD || undefined,
+          db: parseInt(process.env.REDIS_DB) || 0,
+          retryStrategy: (times) => {
+            const delay = Math.min(times * 50, 2000);
+            return delay;
+          },
+          maxRetriesPerRequest: 3,
+          lazyConnect: true,
+          keepAlive: true,
+          connectTimeout: 10000,
+          commandTimeout: 5000,
         };
-      }
 
-      this.client = new Redis(redisConfig);
+        // Add TLS config if using secured Redis
+        if (process.env.REDIS_TLS === 'true') {
+          redisConfig.tls = {
+            servername: process.env.REDIS_HOST,
+            rejectUnauthorized: false
+          };
+        }
+
+        this.client = new Redis(redisConfig);
+      }
 
       // Event handlers
       this.client.on('connect', () => {
