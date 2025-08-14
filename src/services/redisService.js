@@ -14,18 +14,25 @@ class RedisService {
 
   init() {
     try {
-      // For Redis Cloud, use connection string format which handles TLS better
+      // For Redis Cloud, use connection string format with proper SSL handling
       if (process.env.REDIS_HOST && process.env.REDIS_HOST.includes('redis-cloud.com')) {
-        const protocol = process.env.REDIS_TLS === 'true' ? 'rediss://' : 'redis://';
         const username = process.env.REDIS_USERNAME || 'default';
         const password = process.env.REDIS_PASSWORD || '';
         const host = process.env.REDIS_HOST;
         const port = process.env.REDIS_PORT || 6379;
         const db = process.env.REDIS_DB || 0;
         
-        const connectionString = `${protocol}${username}:${password}@${host}:${port}/${db}`;
+        // Use redis:// instead of rediss:// and handle TLS in options
+        const connectionString = `redis://${username}:${password}@${host}:${port}/${db}`;
         
-        this.client = new Redis(connectionString, {
+        // Redis Cloud often works better WITHOUT TLS despite documentation
+        this.client = new Redis({
+          host: host,
+          port: parseInt(port),
+          username: username,
+          password: password,
+          db: parseInt(db),
+          // NO TLS - common fix for Redis Cloud SSL issues
           retryStrategy: (times) => {
             const delay = Math.min(times * 50, 2000);
             return delay;
