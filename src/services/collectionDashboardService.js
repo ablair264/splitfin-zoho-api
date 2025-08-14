@@ -1,9 +1,11 @@
 // server/src/services/collectionDashboardService.js
 import admin from 'firebase-admin';
+import redisService from './redisService.js';
 
 class CollectionDashboardService {
   constructor() {
     this.db = admin.firestore();
+    this.redis = redisService;
   }
 
   /**
@@ -103,11 +105,34 @@ class CollectionDashboardService {
   }
 
   /**
-   * Main dashboard data retrieval
+   * Main dashboard data retrieval with Redis caching
    */
   async getDashboardData(userId, dateRange = '30_days', customDateRange = null) {
     const startTime = Date.now();
     try {
+      // Create cache key including custom date range if applicable
+      const cacheKey = customDateRange 
+        ? `dashboard:${userId}:custom:${customDateRange.start}:${customDateRange.end}`
+        : this.redis.getDashboardCacheKey(userId, dateRange);
+
+      // Try to get from Redis cache first
+      console.log(`🔍 Checking Redis cache for key: ${cacheKey}`);
+      const cachedData = await this.redis.get(cacheKey);
+      
+      if (cachedData) {
+        const cacheTime = Date.now() - startTime;
+        console.log(`⚡ Cache HIT - Dashboard loaded from Redis in ${cacheTime}ms`);
+        return {
+          ...cachedData,
+          loadTime: cacheTime,
+          dataSource: 'redis-cache',
+          cacheHit: true,
+          lastUpdated: cachedData.lastUpdated || new Date().toISOString(),
+        };
+      }
+
+      console.log(`💾 Cache MISS - Building dashboard from Firestore`);
+
       // Get user context
       const userDoc = await this.db.collection('users').doc(userId).get();
       if (!userDoc.exists) throw new Error(`User ${userId} not found`);
@@ -121,15 +146,15 @@ class CollectionDashboardService {
       const startISO = startDate.toISOString();
       const endISO = endDate.toISOString();
     
-    console.log('📅 Date range for dashboard:', {
-      dateRange,
-      startDate: startISO,
-      endDate: endISO,
-      startDateOnly: startISO.split('T')[0],
-      endDateOnly: endISO.split('T')[0]
-    });
+      console.log('📅 Date range for dashboard:', {
+        dateRange,
+        startDate: startISO,
+        endDate: endISO,
+        startDateOnly: startISO.split('T')[0],
+        endDateOnly: endISO.split('T')[0]
+      });
 
-      // Fetch data
+      // Fetch data from Firestore
       let dashboardData;
       if (isAgent) {
         dashboardData = await this.getAgentDashboard(agentId, zohospID, startISO, endISO, dateRange);
@@ -138,14 +163,25 @@ class CollectionDashboardService {
       }
 
       const loadTime = Date.now() - startTime;
-      return {
+      const finalData = {
         ...dashboardData,
         role: userData.role,
         dateRange,
         loadTime,
         dataSource: 'firestore-collections',
+        cacheHit: false,
         lastUpdated: new Date().toISOString(),
       };
+
+      // Cache the result in Redis with smart TTL
+      const cacheSuccess = await this.redis.cacheDashboard(userId, dateRange, finalData);
+      if (cacheSuccess) {
+        console.log(`💾 Dashboard cached in Redis with key: ${cacheKey}`);
+      } else {
+        console.warn(`⚠️ Failed to cache dashboard in Redis`);
+      }
+
+      return finalData;
     } catch (error) {
       console.error('❌ Dashboard error:', error.message);
       throw error;
@@ -952,6 +988,140 @@ class CollectionDashboardService {
       agentPerformance: dashboard.agentPerformance,
       lastUpdated: dashboard.lastUpdated
     };
+  }
+
+  /**
+   * Cache Management Methods
+   */
+
+  /**
+   * Clear dashboard cache for a specific user
+   */
+  async clearUserCache(userId) {
+    try {
+      const cleared = await this.redis.clearUserDashboardCache(userId);
+      console.log(`🗑️ Cleared ${cleared} cache entries for user ${userId}`);
+      return { success: true, cleared };
+    } catch (error) {
+      console.error('❌ Error clearing user cache:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Clear all dashboard caches
+   */
+  async clearAllCache() {
+    try {
+      const cleared = await this.redis.clearAllDashboardCaches();
+      console.log(`🗑️ Cleared ${cleared} total cache entries`);
+      return { success: true, cleared };
+    } catch (error) {
+      console.error('❌ Error clearing all cache:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Force refresh dashboard data (bypass cache)
+   */
+  async refreshDashboard(userId, dateRange = '30_days', customDateRange = null) {
+    try {
+      // Clear existing cache first
+      await this.clearUserCache(userId);
+      
+      // Fetch fresh data
+      const freshData = await this.getDashboardData(userId, dateRange, customDateRange);
+      
+      return {
+        success: true,
+        data: freshData,
+        message: 'Dashboard refreshed successfully'
+      };
+    } catch (error) {
+      console.error('❌ Error refreshing dashboard:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Health check including Redis status
+   */
+  async healthCheck() {
+    try {
+      const startTime = Date.now();
+      
+      // Check Firestore connection
+      let firestoreHealth = false;
+      let firestoreLatency = 0;
+      try {
+        const firestoreStart = Date.now();
+        await this.db.collection('users').limit(1).get();
+        firestoreLatency = Date.now() - firestoreStart;
+        firestoreHealth = true;
+      } catch (error) {
+        console.error('Firestore health check failed:', error.message);
+      }
+
+      // Check Redis connection
+      const redisHealth = await this.redis.healthCheck();
+
+      // Test dashboard functionality
+      let dashboardHealth = false;
+      let dashboardLatency = 0;
+      try {
+        const dashboardStart = Date.now();
+        // Try to get a minimal piece of data
+        await this.db.collection('sales_orders').limit(1).get();
+        dashboardLatency = Date.now() - dashboardStart;
+        dashboardHealth = true;
+      } catch (error) {
+        console.error('Dashboard health check failed:', error.message);
+      }
+
+      const totalLatency = Date.now() - startTime;
+      const overallHealth = firestoreHealth && redisHealth.status === 'healthy' && dashboardHealth;
+
+      return {
+        status: overallHealth ? 'healthy' : 'degraded',
+        timestamp: new Date().toISOString(),
+        latency: {
+          total: totalLatency,
+          firestore: firestoreLatency,
+          redis: redisHealth.latency || 0,
+          dashboard: dashboardLatency
+        },
+        services: {
+          firestore: {
+            status: firestoreHealth ? 'healthy' : 'unhealthy',
+            latency: firestoreLatency
+          },
+          redis: {
+            status: redisHealth.status,
+            connected: redisHealth.connected,
+            latency: redisHealth.latency,
+            error: redisHealth.error
+          },
+          dashboard: {
+            status: dashboardHealth ? 'healthy' : 'unhealthy',
+            latency: dashboardLatency
+          }
+        },
+        recommendations: [
+          ...(firestoreHealth ? [] : ['Check Firestore connection and permissions']),
+          ...(redisHealth.status === 'healthy' ? [] : ['Check Redis connection and credentials']),
+          ...(dashboardHealth ? [] : ['Check dashboard data collections']),
+          ...(totalLatency > 1000 ? ['Performance degraded - consider cache optimization'] : [])
+        ]
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        timestamp: new Date().toISOString(),
+        error: error.message,
+        recommendations: ['System health check failed - investigate server status']
+      };
+    }
   }
 }
 

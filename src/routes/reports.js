@@ -242,6 +242,114 @@ router.post('/dashboard/refresh', getUserContext, async (req, res) => {
 });
 
 /**
+ * Clear Redis cache for current user
+ */
+router.post('/dashboard/cache/clear', getUserContext, async (req, res) => {
+  try {
+    const { userId } = req.userContext;
+    const result = await collectionDashboardService.clearUserCache(userId);
+    
+    res.json({
+      success: true,
+      message: 'User cache cleared successfully',
+      ...result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error clearing user cache:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Clear all Redis cache (admin only)
+ */
+router.post('/dashboard/cache/clear-all', getUserContext, async (req, res) => {
+  try {
+    const { userRole } = req.userContext;
+    
+    // Only allow admins or brand managers to clear all cache
+    if (userRole !== 'brandManager' && userRole !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Insufficient permissions to clear all cache'
+      });
+    }
+    
+    const result = await collectionDashboardService.clearAllCache();
+    
+    res.json({
+      success: true,
+      message: 'All cache cleared successfully',
+      ...result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error clearing all cache:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Force refresh dashboard with cache clear
+ */
+router.post('/dashboard/refresh-with-cache', getUserContext, async (req, res) => {
+  try {
+    const { userId } = req.userContext;
+    const { dateRange = '30_days', customDateRange } = req.body;
+    
+    const result = await collectionDashboardService.refreshDashboard(userId, dateRange, customDateRange);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Dashboard refreshed with fresh data',
+        data: result.data,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error refreshing dashboard:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Get cache status and Redis health
+ */
+router.get('/dashboard/cache/status', getUserContext, async (req, res) => {
+  try {
+    const healthCheck = await collectionDashboardService.healthCheck();
+    
+    res.json({
+      success: true,
+      health: healthCheck,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error getting cache status:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * Get raw collection data with filters (for debugging)
  */
 router.get('/collections/:collection', validateDateRange, getUserContext, async (req, res) => {
