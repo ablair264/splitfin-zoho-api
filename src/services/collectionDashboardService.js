@@ -423,30 +423,55 @@ class CollectionDashboardService {
       quantity: Math.round(item.quantity)
     })).sort((a, b) => b.revenue - a.revenue);
 
-    // Aggregate agent performance (using daily_aggregates)
+    // Aggregate agent performance (using counters collection)
     const agentPerformance = [];
     for (const agent of agents) {
-      // Fetch daily aggregates for this agent in the period
-      const dailyAggsSnapshot = await this.db.collection('sales_agents').doc(agent.id).collection('daily_aggregates')
-        .where('date', '>=', startISO.split('T')[0])
-        .where('date', '<=', endISO.split('T')[0])
-        .get();
-      let totalRevenue = 0, totalOrders = 0, uniqueCustomers = new Set();
-      dailyAggsSnapshot.docs.forEach(doc => {
-        const agg = doc.data();
-        totalRevenue += agg.totalRevenue || 0;
-        totalOrders += agg.totalOrders || 0;
-        if (agg.customers && typeof agg.customers === 'object') {
-          Object.keys(agg.customers).forEach(cid => uniqueCustomers.add(cid));
+      // Determine appropriate date range counter to use
+      let counterDoc = dateRange;
+      if (!['7_days', '30_days', '90_days', 'this_week', 'last_week', 'this_month', 'last_month', 'this_quarter', 'last_quarter', 'this_year', 'last_year'].includes(dateRange)) {
+        // For custom or other ranges, use closest standard range
+        const daysDiff = Math.ceil((endISO - startISO) / (1000 * 60 * 60 * 24));
+        if (daysDiff <= 7) counterDoc = '7_days';
+        else if (daysDiff <= 30) counterDoc = '30_days';
+        else if (daysDiff <= 90) counterDoc = '90_days';
+        else counterDoc = 'this_year';
+      }
+
+      try {
+        // Fetch counter data for this agent
+        const counterSnapshot = await this.db.collection('sales_agents')
+          .doc(agent.id)
+          .collection('counters')
+          .doc(counterDoc)
+          .get();
+        
+        let totalRevenue = 0, totalOrders = 0, uniqueCustomers = 0;
+        
+        if (counterSnapshot.exists) {
+          const counterData = counterSnapshot.data();
+          totalRevenue = counterData.totalRevenue || 0;
+          totalOrders = counterData.totalOrders || 0;
+          uniqueCustomers = counterData.uniqueCustomers || 0;
         }
-      });
-      agentPerformance.push({
-        agentId: agent.id,
-        agentName: agent.agentName || agent.name,
-        totalRevenue: Math.round(totalRevenue),
-        totalOrders: Math.round(totalOrders),
-        uniqueCustomers: uniqueCustomers.size,
-      });
+
+        agentPerformance.push({
+          agentId: agent.id,
+          agentName: agent.agentName || agent.name,
+          totalRevenue: Math.round(totalRevenue),
+          totalOrders: Math.round(totalOrders),
+          uniqueCustomers: uniqueCustomers,
+        });
+      } catch (error) {
+        console.warn(`Could not fetch counter data for agent ${agent.id}:`, error.message);
+        // Add agent with zero stats as fallback
+        agentPerformance.push({
+          agentId: agent.id,
+          agentName: agent.agentName || agent.name,
+          totalRevenue: 0,
+          totalOrders: 0,
+          uniqueCustomers: 0,
+        });
+      }
     }
 
     // Aggregate metrics - round to 0 decimal places
@@ -478,80 +503,95 @@ class CollectionDashboardService {
    * Agent dashboard: aggregates for agent's customers/orders
    */
   async getAgentDashboard(agentId, zohospID, startISO, endISO, dateRange) {
-    // Method 1: Try using daily aggregates first (faster approach)
+    // Method 1: Try using counters first (faster approach)
     try {
-      const dailyAggsSnapshot = await this.db.collection('sales_agents')
+      // Determine appropriate date range counter to use
+      let counterDoc = dateRange;
+      if (!['7_days', '30_days', '90_days', 'this_week', 'last_week', 'this_month', 'last_month', 'this_quarter', 'last_quarter', 'this_year', 'last_year'].includes(dateRange)) {
+        // For custom or other ranges, use closest standard range
+        const daysDiff = Math.ceil((endISO - startISO) / (1000 * 60 * 60 * 24));
+        if (daysDiff <= 7) counterDoc = '7_days';
+        else if (daysDiff <= 30) counterDoc = '30_days';
+        else if (daysDiff <= 90) counterDoc = '90_days';
+        else counterDoc = 'this_year';
+      }
+
+      const counterSnapshot = await this.db.collection('sales_agents')
         .doc(agentId)
-        .collection('daily_aggregates')
-        .where('date', '>=', startISO.split('T')[0])
-        .where('date', '<=', endISO.split('T')[0])
+        .collection('counters')
+        .doc(counterDoc)
         .get();
 
-      // Collect all orderIds from daily aggregates
-      const allOrderIds = [];
+      // Initialize variables for counter data
       let totalRevenue = 0;
       let totalOrders = 0;
       let commission = 0;
       const customerMap = new Map();
       const itemMap = new Map();
 
-      dailyAggsSnapshot.docs.forEach(doc => {
-        const agg = doc.data();
-        // Safely add orderIds only if they exist and are non-empty
-        if (agg.orderIds && Array.isArray(agg.orderIds) && agg.orderIds.length > 0) {
-          allOrderIds.push(...agg.orderIds);
-        }
-        totalRevenue += agg.totalRevenue || 0;
-        totalOrders += agg.totalOrders || 0;
-        commission += agg.commission || 0;
+      // Use counter data if available
+      if (counterSnapshot.exists) {
+        const counterData = counterSnapshot.data();
+        totalRevenue = counterData.totalRevenue || 0;
+        totalOrders = counterData.totalOrders || 0;
+        commission = counterData.commission || 0;
         
-        // Aggregate customers
-        if (agg.customers && typeof agg.customers === 'object') {
-          Object.entries(agg.customers).forEach(([customerId, customerData]) => {
-            if (!customerMap.has(customerId)) {
-              customerMap.set(customerId, { 
-                customer_id: customerId,
-                total_spent: 0,
-                order_count: 0,
-                ...customerData
-              });
-            }
-            const existing = customerMap.get(customerId);
-            existing.total_spent += (customerData.revenue || customerData.total_spent || 0);
-            existing.order_count += (customerData.orders || customerData.order_count || 1);
+        // Process customer data from counter
+        if (counterData.customers && typeof counterData.customers === 'object') {
+          Object.entries(counterData.customers).forEach(([customerId, customerData]) => {
+            customerMap.set(customerId, { 
+              customer_id: customerId,
+              total_spent: customerData.revenue || customerData.total_spent || 0,
+              order_count: customerData.orders || customerData.order_count || 0,
+              ...customerData
+            });
           });
         }
 
-        // Aggregate items
-        if (agg.topItems && Array.isArray(agg.topItems)) {
-          agg.topItems.forEach(item => {
-            if (!itemMap.has(item.id || item.item_id)) {
-              let brandName = (item.brand && item.brand !== 'unknown') ? item.brand : 'rader';
-              // Fix: Merge 'rder' into 'rader'
-              if (brandName.toLowerCase() === 'rder') {
-                brandName = 'rader';
-              }
-              
-              itemMap.set(item.id || item.item_id, {
-                id: item.id || item.item_id,
-                name: item.name || item.item_name,
-                quantity: 0,
-                revenue: 0,
-                brand: brandName
-              });
-            }
-            const existing = itemMap.get(item.id || item.item_id);
-            existing.quantity += parseInt(item.quantity || 0, 10);
-            existing.revenue += parseFloat(item.revenue || item.total || item.item_total || 0);
+        // Process item data from counter
+        if (counterData.topItems && Array.isArray(counterData.topItems)) {
+          counterData.topItems.forEach(item => {
+            let brandName = (item.brand && item.brand !== 'unknown') ? item.brand : 'rader';
+            if (brandName.toLowerCase() === 'rder') brandName = 'rader';
+            
+            itemMap.set(item.id || item.item_id, {
+              id: item.id || item.item_id,
+              name: item.name || item.item_name || 'Unknown Item',
+              quantity: parseInt(item.quantity || 0, 10),
+              revenue: parseFloat(item.revenue || item.total || item.item_total || 0),
+              brand: brandName
+            });
           });
         }
-      });
+      }
 
-      // Fetch full order details only if we have orderIds
-      let orders = [];
-      if (allOrderIds.length > 0) {
-        // Remove duplicates
-        const uniqueOrderIds = [...new Set(allOrderIds)];
+      // Convert aggregated data to arrays
+      const customers = Array.from(customerMap.values());
+      const topItems = Array.from(itemMap.values())
+        .map(item => ({
+          ...item,
+          revenue: Math.round(item.revenue),
+          quantity: Math.round(item.quantity)
+        }))
+        .sort((a, b) => b.revenue - a.revenue);
+
+      // Build agent-specific response using counter data
+      return {
+        metrics: {
+          totalRevenue: Math.round(totalRevenue),
+          totalOrders: Math.round(totalOrders),
+          averageOrderValue: Math.round(totalOrders > 0 ? totalRevenue / totalOrders : 0),
+          outstandingInvoices: 0, // Would need separate invoice counter logic
+          totalCustomers: customers.length,
+          marketplaceOrders: 0, // Would need marketplace flag in counters
+        },
+        customers,
+        orders: [], // Not fetching individual orders when using counter approach
+        invoices: [], // Not fetching invoices in counter approach
+        brands: [], // Could be added to counters if needed
+        commission,
+        topItems,
+      };
         
         // Fetch orders in chunks due to Firestore 'in' query limit
         const chunkSize = 10;
@@ -688,7 +728,7 @@ class CollectionDashboardService {
       };
 
     } catch (error) {
-      console.warn('Failed to use daily aggregates, falling back to direct queries:', error.message);
+      console.warn('Failed to use counter data, falling back to direct queries:', error.message);
       
       // Method 2: Fallback to the original approach
       // Fetch assigned customers
