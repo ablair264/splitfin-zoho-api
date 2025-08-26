@@ -592,50 +592,12 @@ class CollectionDashboardService {
         commission,
         topItems,
       };
-        
-        // Fetch orders in chunks due to Firestore 'in' query limit
-        const chunkSize = 10;
-        for (let i = 0; i < uniqueOrderIds.length; i += chunkSize) {
-          const chunk = uniqueOrderIds.slice(i, i + chunkSize);
-          const ordersSnapshot = await this.db.collection('sales_orders')
-            .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
-            .get();
-          
-          for (const orderDoc of ordersSnapshot.docs) {
-            const orderData = orderDoc.data();
-            // Fetch line items subcollection
-            const lineItemsSnapshot = await this.db.collection('sales_orders')
-              .doc(orderDoc.id)
-              .collection('order_line_items')
-              .get();
-            const lineItems = [];
-            for (const itemDoc of lineItemsSnapshot.docs) {
-              const itemData = itemDoc.data();
-              // Try to get item details from our aggregated data first
-              const aggregatedItem = itemMap.get(itemData.item_id);
-              // Fix brand name
-              let brandName = aggregatedItem?.brand || itemData.brand_normalized || itemData.brand || 'Unknown';
-              if (brandName.toLowerCase() === 'rder') {
-                brandName = 'rader';
-              }
-              
-              lineItems.push({
-                ...itemData,
-                brand: brandName,
-                item_name: aggregatedItem?.name || itemData.name || itemData.item_name,
-                total: itemData.item_total || itemData.total || 0
-              });
-            }
-            orders.push({
-              ...orderData,
-              id: orderDoc.id,
-              line_items: lineItems,
-            });
-          }
-        }
-      }
 
-      // Fetch agent's assigned customers
+    } catch (error) {
+      console.warn('Failed to use counter data, falling back to direct queries:', error.message);
+      
+      // Method 2: Fallback to the original approach
+      // Fetch assigned customers
       const assignedCustomersSnapshot = await this.db.collection('sales_agents')
         .doc(agentId)
         .collection('assigned_customers')
