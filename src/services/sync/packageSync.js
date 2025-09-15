@@ -13,10 +13,14 @@ export class PackageSyncService extends BaseSyncService {
     let page = 1;
     let hasMore = true;
 
-    // Add date filter for today
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    params.last_modified_time = today.toISOString();
+    // Fetch packages from the last month
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    oneMonthAgo.setHours(0, 0, 0, 0);
+    
+    // Use date format that Zoho expects (YYYY-MM-DD)
+    params.date_start = oneMonthAgo.toISOString().split('T')[0];
+    logger.info(`Fetching packages from: ${params.date_start}`);
 
     while (hasMore) {
       try {
@@ -84,13 +88,13 @@ export class PackageSyncService extends BaseSyncService {
     }
 
     try {
-      logger.info(`Looking for customer with fb_customer_id: ${zohoCustomerId}`);
+      logger.info(`Looking for customer with zoho_customer_id: ${zohoCustomerId}`);
       
       const { data } = await supabase
         .from('customers')
-        .select('id, fb_customer_id, display_name')
+        .select('id, zoho_customer_id, display_name')
         .eq('linked_company', COMPANY_ID)
-        .eq('fb_customer_id', zohoCustomerId)
+        .eq('zoho_customer_id', zohoCustomerId) // Changed to zoho_customer_id
         .single();
 
       if (data) {
@@ -102,7 +106,7 @@ export class PackageSyncService extends BaseSyncService {
         // Let's see what customers exist
         const { data: allCustomers } = await supabase
           .from('customers')
-          .select('id, fb_customer_id, display_name')
+          .select('id, zoho_customer_id, display_name')
           .eq('linked_company', COMPANY_ID)
           .limit(5);
         

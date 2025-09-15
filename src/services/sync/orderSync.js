@@ -1,6 +1,7 @@
 import { BaseSyncService } from './baseSyncService.js';
 import { COMPANY_ID, supabase } from '../../config/database.js';
 import { logger } from '../../utils/logger.js';
+import { zohoAuth } from '../../config/zoho.js';
 
 export class OrderSyncService extends BaseSyncService {
   constructor() {
@@ -12,10 +13,11 @@ export class OrderSyncService extends BaseSyncService {
     let page = 1;
     let hasMore = true;
 
-    // Add date filter for today
+    // Fetch orders from today only
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     params.date = today.toISOString().split('T')[0]; // Format as YYYY-MM-DD
+    logger.info(`Fetching orders from: ${params.date}`);
 
     while (hasMore) {
       try {
@@ -81,7 +83,7 @@ export class OrderSyncService extends BaseSyncService {
         .from('customers')
         .select('id')
         .eq('linked_company', COMPANY_ID)
-        .eq('fb_customer_id', zohoCustomerId) // Changed to fb_customer_id
+        .eq('zoho_customer_id', zohoCustomerId) // Changed to zoho_customer_id
         .single();
 
       return data?.id || null;

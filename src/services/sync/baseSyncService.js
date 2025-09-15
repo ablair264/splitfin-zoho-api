@@ -135,13 +135,15 @@ export class BaseSyncService {
     try {
       logger.info(`Starting ${this.entityName} sync...`);
       
-      // Always fetch records from today only
+      // Fetch records from today only for most entities
       const today = new Date();
-      today.setHours(0, 0, 0, 0); // Start of today
+      today.setHours(0, 0, 0, 0);
       
       const params = {
-        last_modified_time: today.toISOString()
+        last_modified_time: today.toISOString().split('T')[0] // Use YYYY-MM-DD format
       };
+      
+      logger.info(`Fetching ${this.entityName} from: ${params.last_modified_time}`);
 
       const zohoRecords = await this.fetchZohoData(params);
       logger.info(`Fetched ${zohoRecords.length} ${this.entityName} from Zoho (today only)`);

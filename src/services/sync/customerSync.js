@@ -13,10 +13,11 @@ export class CustomerSyncService extends BaseSyncService {
     let page = 1;
     let hasMore = true;
 
-    // Add date filter for today
+    // Fetch customers from today only
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    params.last_modified_time = today.toISOString();
+    params.last_modified_time = today.toISOString().split('T')[0]; // Use YYYY-MM-DD format
+    logger.info(`Fetching customers from: ${params.last_modified_time}`);
 
     while (hasMore) {
       try {
@@ -94,7 +95,8 @@ export class CustomerSyncService extends BaseSyncService {
       linked_company: COMPANY_ID,
       created_date: zohoContact.created_time || new Date().toISOString(),
       last_modified: zohoContact.last_modified_time || new Date().toISOString(),
-      fb_customer_id: zohoContact.custom_fields?.find(f => f.label === 'FB Customer ID')?.value || zohoContact.contact_id,
+      zoho_customer_id: zohoContact.contact_id,
+      fb_customer_id: zohoContact.custom_fields?.find(f => f.label === 'FB Customer ID')?.value || null,
       migration_source: 'zoho',
     };
   }
@@ -121,12 +123,12 @@ export class CustomerSyncService extends BaseSyncService {
           existingCustomer = data;
         }
 
-        if (!existingCustomer && record.fb_customer_id) {
+        if (!existingCustomer && record.zoho_customer_id) {
           const { data } = await supabase
             .from(this.supabaseTable)
             .select('id')
             .eq('linked_company', COMPANY_ID)
-            .eq('fb_customer_id', record.fb_customer_id)
+            .eq('zoho_customer_id', record.zoho_customer_id)
             .single();
           
           existingCustomer = data;
