@@ -25,6 +25,20 @@ export class SyncOrchestrator {
       timestamp: new Date().toISOString(),
     };
 
+    // Test Supabase connection first
+    try {
+      const { supabase } = await import('../config/database.js');
+      const { data, error } = await supabase.from('sync_logs').select('count').limit(1);
+      if (error) {
+        logger.error('Supabase connection test failed:', error);
+        throw new Error('Supabase connection failed');
+      }
+      logger.info('Supabase connection test passed');
+    } catch (error) {
+      logger.error('Failed to connect to Supabase:', error);
+      throw error;
+    }
+
     logger.info('Starting full sync process...');
 
     for (const serviceName of this.syncOrder) {

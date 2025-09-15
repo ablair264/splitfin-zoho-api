@@ -59,12 +59,13 @@ export class BaseSyncService {
     const allRecords = [];
     let page = 1;
     let hasMore = true;
+    const maxRecords = params.limit || 1000; // Safety limit
 
-    while (hasMore) {
+    while (hasMore && allRecords.length < maxRecords) {
       try {
         const response = await zohoAuth.getInventoryData(this.zohoEndpoint, {
           page,
-          per_page: 200,
+          per_page: Math.min(200, maxRecords - allRecords.length),
           ...params,
         });
 
@@ -74,13 +75,17 @@ export class BaseSyncService {
         hasMore = response.page_context?.has_more_page || false;
         page++;
 
-        if (hasMore) {
+        if (hasMore && allRecords.length < maxRecords) {
           await this.delay(this.delayMs);
         }
       } catch (error) {
         logger.error(`Failed to fetch ${this.entityName} from Zoho:`, error);
         throw error;
       }
+    }
+
+    if (allRecords.length >= maxRecords) {
+      logger.warn(`Reached record limit of ${maxRecords} for ${this.entityName}`);
     }
 
     return allRecords;
@@ -148,14 +153,19 @@ export class BaseSyncService {
       const zohoRecords = await this.fetchZohoData(params);
       logger.info(`Fetched ${zohoRecords.length} ${this.entityName} from Zoho (today only)`);
 
-      const transformedRecords = zohoRecords.map(record => {
+      const transformedRecords = [];
+      for (const record of zohoRecords) {
         try {
-          return this.transformRecord(record);
+          const transformed = await this.transformRecord(record);
+          if (transformed) {
+            transformedRecords.push(transformed);
+          }
         } catch (error) {
           logger.error(`Failed to transform ${this.entityName} record:`, error, record);
-          return null;
         }
-      }).filter(Boolean);
+      }
+
+      logger.info(`Transformed ${transformedRecords.length} ${this.entityName} records`);
 
       const results = await this.upsertRecords(transformedRecords);
       

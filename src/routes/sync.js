@@ -99,6 +99,66 @@ syncRouter.get('/status', async (req, res) => {
   }
 });
 
+syncRouter.get('/test', async (req, res) => {
+  try {
+    const { supabase } = await import('../config/database.js');
+    
+    // Test 1: Check if we can connect to Supabase
+    const { data: testData, error: testError } = await supabase
+      .from('sync_logs')
+      .select('*')
+      .limit(1);
+    
+    if (testError) {
+      return res.status(500).json({
+        status: 'error',
+        message: 'Supabase connection failed',
+        error: testError.message,
+      });
+    }
+    
+    // Test 2: Try inserting a test sync log
+    const { data: insertData, error: insertError } = await supabase
+      .from('sync_logs')
+      .insert({
+        company_id: '87dcc6db-2e24-46fb-9a12-7886f690a326',
+        entity_type: 'test',
+        status: 'success',
+        details: { test: true },
+        synced_at: new Date().toISOString(),
+      })
+      .select();
+    
+    if (insertError) {
+      return res.status(500).json({
+        status: 'error',
+        message: 'Failed to insert test record',
+        error: insertError.message,
+      });
+    }
+    
+    // Test 3: Check Zoho connection
+    const { zohoAuth } = await import('../config/zoho.js');
+    const token = await zohoAuth.getAccessToken();
+    
+    res.json({
+      status: 'success',
+      tests: {
+        supabase_read: 'passed',
+        supabase_write: 'passed',
+        zoho_auth: token ? 'passed' : 'failed',
+      },
+      inserted_record: insertData,
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: 'Test failed',
+      error: error.message,
+    });
+  }
+});
+
 syncRouter.get('/logs', async (req, res) => {
   try {
     const { limit = 50, entity, status } = req.query;

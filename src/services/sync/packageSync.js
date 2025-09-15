@@ -229,6 +229,8 @@ export class PackageSyncService extends BaseSyncService {
       errors: [],
     };
 
+    logger.info(`Processing ${records.length} package records for upsert`);
+
     for (const record of records) {
       try {
         const packageNumber = record.external_package_number || record.external_package_id || 'Unknown';
@@ -260,6 +262,7 @@ export class PackageSyncService extends BaseSyncService {
           .single();
 
         if (existingShipment) {
+          logger.info(`Updating existing shipment: ${packageNumber}`);
           const { error } = await supabase
             .from(this.supabaseTable)
             .update(record)
@@ -268,11 +271,18 @@ export class PackageSyncService extends BaseSyncService {
           if (error) throw error;
           results.updated++;
         } else {
-          const { error } = await supabase
+          logger.info(`Creating new shipment: ${packageNumber}`);
+          const { data, error } = await supabase
             .from(this.supabaseTable)
-            .insert(record);
+            .insert(record)
+            .select();
 
-          if (error) throw error;
+          if (error) {
+            logger.error(`Failed to insert shipment ${packageNumber}:`, error);
+            throw error;
+          }
+          
+          logger.info(`Successfully created shipment:`, data);
           results.created++;
         }
       } catch (error) {
@@ -281,6 +291,12 @@ export class PackageSyncService extends BaseSyncService {
           error: error.message,
         });
       }
+    }
+
+    logger.info(`Package sync results: Created: ${results.created}, Updated: ${results.updated}, Errors: ${results.errors.length}`);
+    
+    if (results.errors.length > 0) {
+      logger.error('Package sync errors:', results.errors);
     }
 
     return results;
