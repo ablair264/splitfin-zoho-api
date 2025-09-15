@@ -13,11 +13,9 @@ export class OrderSyncService extends BaseSyncService {
     let page = 1;
     let hasMore = true;
 
-    // Fetch orders from today only
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    params.date = today.toISOString().split('T')[0]; // Format as YYYY-MM-DD
-    logger.info(`Fetching orders from: ${params.date}`);
+    // Remove date filtering for orders to avoid 400 errors
+    // We'll filter by date in the orchestrator instead
+    logger.info('Fetching recent orders (no date filter to avoid 400 errors)');
 
     while (hasMore) {
       try {

@@ -109,21 +109,29 @@ export class SyncOrchestrator {
     try {
       const { zohoAuth } = await import('../config/zoho.js');
       
-      // Get today's orders
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      
+      // Get recent orders (last few days to avoid date filtering issues)
       const response = await zohoAuth.getInventoryData('salesorders', {
-        date: today.toISOString().split('T')[0],
         per_page: 200,
+        sort_column: 'date',
+        sort_order: 'D', // Descending - get most recent first
       });
 
       const orders = response.salesorders || [];
       const customerIds = new Set();
       const itemIds = new Set();
 
-      // Extract unique customer and item IDs
-      for (const order of orders) {
+      // Filter to recent orders (last 7 days) and extract unique customer and item IDs
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      
+      const recentOrders = orders.filter(order => {
+        const orderDate = new Date(order.date);
+        return orderDate >= oneWeekAgo;
+      });
+
+      logger.info(`Processing ${recentOrders.length} recent orders (last 7 days) out of ${orders.length} total`);
+
+      for (const order of recentOrders) {
         if (order.customer_id) {
           customerIds.add(order.customer_id);
         }
