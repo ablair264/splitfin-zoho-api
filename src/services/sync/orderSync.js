@@ -9,7 +9,7 @@ export class OrderSyncService extends BaseSyncService {
 
   mapZohoStatus(zohoStatus) {
     const statusMap = {
-      'draft': 'draft',
+      'draft': 'pending',
       'open': 'confirmed',
       'confirmed': 'confirmed',
       'closed': 'delivered',
@@ -44,7 +44,7 @@ export class OrderSyncService extends BaseSyncService {
       const { data } = await supabase
         .from('customers')
         .select('id')
-        .eq('company_id', COMPANY_ID)
+        .eq('linked_company', COMPANY_ID)
         .eq('zoho_customer_id', zohoCustomerId)
         .single();
 
@@ -62,33 +62,20 @@ export class OrderSyncService extends BaseSyncService {
     ]);
 
     return {
-      order_number: zohoOrder.salesorder_number,
-      customer_id: customerId,
-      status: this.mapZohoStatus(zohoOrder.status),
-      order_date: zohoOrder.date || new Date().toISOString(),
-      delivery_date: zohoOrder.delivery_date || null,
-      subtotal: parseFloat(zohoOrder.sub_total) || 0,
-      tax_amount: parseFloat(zohoOrder.tax_total) || 0,
-      shipping_charge: parseFloat(zohoOrder.shipping_charge) || 0,
-      discount_amount: parseFloat(zohoOrder.discount) || 0,
-      total_amount: parseFloat(zohoOrder.total) || 0,
-      currency_code: zohoOrder.currency_code || 'USD',
-      notes: zohoOrder.notes || null,
-      internal_notes: zohoOrder.internal_notes || null,
-      payment_terms: zohoOrder.payment_terms || null,
-      payment_method: zohoOrder.payment_method || null,
-      billing_address: zohoOrder.billing_address || null,
-      shipping_address: zohoOrder.shipping_address || null,
-      salesperson_id: salespersonId,
       company_id: COMPANY_ID,
-      created_by: salespersonId,
+      legacy_order_number: zohoOrder.salesorder_number,
+      order_date: zohoOrder.date ? new Date(zohoOrder.date).toISOString() : new Date().toISOString(),
+      order_status: this.mapZohoStatus(zohoOrder.status),
+      sub_total: parseFloat(zohoOrder.sub_total) || 0,
+      discount_applied: zohoOrder.discount > 0,
+      discount_percentage: zohoOrder.discount_percent || null,
+      total: parseFloat(zohoOrder.total) || 0,
+      customer_id: customerId,
+      sales_id: salespersonId,
+      notes: zohoOrder.notes || null,
+      legacy_order_id: zohoOrder.salesorder_id,
       created_at: zohoOrder.created_time || new Date().toISOString(),
       updated_at: zohoOrder.last_modified_time || new Date().toISOString(),
-      legacy_order_id: zohoOrder.salesorder_id,
-      legacy_order_number: zohoOrder.salesorder_number,
-      line_items: zohoOrder.line_items || [],
-      custom_fields: zohoOrder.custom_fields || [],
-      zoho_data: zohoOrder,
     };
   }
 
@@ -101,6 +88,11 @@ export class OrderSyncService extends BaseSyncService {
 
     for (const record of records) {
       try {
+        if (!record.customer_id) {
+          logger.warn(`Skipping order ${record.legacy_order_number} - no matching customer found`);
+          continue;
+        }
+
         const { data: existingOrder } = await supabase
           .from(this.supabaseTable)
           .select('id')
@@ -125,10 +117,10 @@ export class OrderSyncService extends BaseSyncService {
           results.created++;
         }
 
-        await this.syncOrderItems(record.legacy_order_id, record.line_items);
+        await this.syncOrderItems(record.legacy_order_id, zohoOrder.line_items);
       } catch (error) {
         results.errors.push({
-          order: record.order_number,
+          order: record.legacy_order_number,
           error: error.message,
         });
       }
@@ -152,31 +144,29 @@ export class OrderSyncService extends BaseSyncService {
 
       const orderItems = await Promise.all(lineItems.map(async (item) => {
         const { data: product } = await supabase
-          .from('products')
+          .from('items')
           .select('id')
-          .eq('company_id', COMPANY_ID)
           .eq('sku', item.sku || item.item_id)
           .single();
 
         return {
           order_id: order.id,
-          product_id: product?.id || null,
-          product_sku: item.sku || item.item_id,
-          product_name: item.name || item.item_name,
-          quantity: parseFloat(item.quantity) || 0,
+          item_id: product?.id || null,
+          item_name: item.name || item.item_name,
+          item_sku: item.sku || item.item_id,
+          legacy_item_id: item.item_id,
+          quantity: parseInt(item.quantity) || 0,
           unit_price: parseFloat(item.rate) || 0,
-          discount_amount: parseFloat(item.discount_amount) || 0,
-          tax_amount: parseFloat(item.item_tax) || 0,
           total_price: parseFloat(item.item_total) || 0,
-          notes: item.description || null,
-          company_id: COMPANY_ID,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         };
       }));
 
       const { error } = await supabase
-        .from('order_items')
+        .from('order_line_items')
         .upsert(orderItems, {
-          onConflict: 'order_id,product_sku,company_id',
+          onConflict: 'order_id,item_sku',
         });
 
       if (error) throw error;

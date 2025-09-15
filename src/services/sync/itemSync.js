@@ -1,9 +1,9 @@
 import { BaseSyncService } from './baseSyncService.js';
-import { COMPANY_ID } from '../../config/database.js';
+import { COMPANY_ID, supabase } from '../../config/database.js';
 
 export class ItemSyncService extends BaseSyncService {
   constructor() {
-    super('items', 'items', 'products');
+    super('items', 'items', 'items'); // Changed from 'products' to 'items'
   }
 
   extractBrandFromName(name) {
@@ -15,42 +15,56 @@ export class ItemSyncService extends BaseSyncService {
       }
     }
     
-    return 'Unknown';
+    return null;
   }
 
-  transformRecord(zohoItem) {
-    const brand = this.extractBrandFromName(zohoItem.name) || 
-                  this.extractBrandFromName(zohoItem.description) || 
-                  'Unknown';
+  async getBrandId(brandName) {
+    if (!brandName) return null;
+
+    try {
+      const { data } = await supabase
+        .from('brands')
+        .select('id')
+        .eq('company_id', COMPANY_ID)
+        .eq('brand_normalized', brandName.toUpperCase())
+        .single();
+
+      return data?.id || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async transformRecord(zohoItem) {
+    const brandName = this.extractBrandFromName(zohoItem.name) || 
+                      this.extractBrandFromName(zohoItem.description);
+    
+    const brandId = await this.getBrandId(brandName);
 
     return {
-      sku: zohoItem.sku || zohoItem.item_id,
       name: zohoItem.name,
       description: zohoItem.description || '',
-      unit: zohoItem.unit || 'EA',
+      category: zohoItem.category_name || null,
+      sku: zohoItem.sku || zohoItem.item_id,
       ean: zohoItem.ean || null,
-      upc: zohoItem.upc || null,
-      isbn: zohoItem.isbn || null,
-      part_number: zohoItem.part_number || null,
       purchase_price: parseFloat(zohoItem.purchase_rate) || 0,
       retail_price: parseFloat(zohoItem.rate) || 0,
-      sales_price: parseFloat(zohoItem.rate) || 0,
-      brand: brand,
-      image_url: zohoItem.image_url || null,
-      thumbnail_url: zohoItem.thumbnail_url || null,
-      stock_on_hand: parseFloat(zohoItem.stock_on_hand) || 0,
-      available_stock: parseFloat(zohoItem.available_stock) || 0,
-      reorder_level: parseFloat(zohoItem.reorder_level) || 0,
-      company_id: COMPANY_ID,
-      active: zohoItem.status === 'active',
-      created_at: zohoItem.created_time || new Date().toISOString(),
+      brand_id: brandId,
+      gross_stock_level: parseInt(zohoItem.stock_on_hand) || 0,
+      committed_stock: parseInt(zohoItem.committed_stock) || 0,
+      net_stock_level: (parseInt(zohoItem.stock_on_hand) || 0) - (parseInt(zohoItem.committed_stock) || 0),
+      reorder_level: parseInt(zohoItem.reorder_level) || 0,
+      status: zohoItem.status === 'active' ? 'active' : 'inactive',
+      created_date: zohoItem.created_time || new Date().toISOString(),
       updated_at: zohoItem.last_modified_time || new Date().toISOString(),
-      zoho_item_id: zohoItem.item_id,
-      zoho_data: zohoItem,
+      legacy_item_id: zohoItem.item_id,
+      image_url: zohoItem.image_url || null,
+      weight: parseFloat(zohoItem.weight) || null,
+      dimensions: zohoItem.dimension ? `${zohoItem.dimension.length}x${zohoItem.dimension.width}x${zohoItem.dimension.height} ${zohoItem.dimension.unit}` : null,
     };
   }
 
   getConflictColumns() {
-    return 'sku,company_id';
+    return 'sku';
   }
 }

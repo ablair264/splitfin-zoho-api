@@ -39,34 +39,59 @@ export class CustomerSyncService extends BaseSyncService {
     return allRecords;
   }
 
-  transformRecord(zohoContact) {
+  async getCreatedByUserId() {
+    try {
+      const { data } = await supabase
+        .from('users')
+        .select('id')
+        .eq('company_id', COMPANY_ID)
+        .eq('role', 'Admin')
+        .limit(1)
+        .single();
+
+      return data?.id || null;
+    } catch (error) {
+      logger.debug('Admin user not found for customer creation');
+      return null;
+    }
+  }
+
+  async transformRecord(zohoContact) {
+    const createdBy = await this.getCreatedByUserId();
+    
+    if (!createdBy) {
+      throw new Error('No admin user found to assign as creator');
+    }
+
+    const contactName = zohoContact.contact_name || 
+                       `${zohoContact.first_name || ''} ${zohoContact.last_name || ''}`.trim() ||
+                       'Unknown Contact';
+
     return {
-      name: zohoContact.contact_name || `${zohoContact.first_name || ''} ${zohoContact.last_name || ''}`.trim(),
+      display_name: contactName,
+      trading_name: zohoContact.company_name || contactName,
       email: zohoContact.email || null,
       phone: zohoContact.phone || zohoContact.mobile || null,
-      company_name: zohoContact.company_name || null,
-      billing_address: zohoContact.billing_address ? {
-        street: zohoContact.billing_address.address,
-        city: zohoContact.billing_address.city,
-        state: zohoContact.billing_address.state,
-        country: zohoContact.billing_address.country,
-        zip: zohoContact.billing_address.zip,
-      } : null,
-      shipping_address: zohoContact.shipping_address ? {
-        street: zohoContact.shipping_address.address,
-        city: zohoContact.shipping_address.city,
-        state: zohoContact.shipping_address.state,
-        country: zohoContact.shipping_address.country,
-        zip: zohoContact.shipping_address.zip,
-      } : null,
-      customer_type: zohoContact.contact_type || 'individual',
-      status: zohoContact.status === 'active' ? 'active' : 'inactive',
-      company_id: COMPANY_ID,
-      created_at: zohoContact.created_time || new Date().toISOString(),
-      updated_at: zohoContact.last_modified_time || new Date().toISOString(),
+      billing_address_1: zohoContact.billing_address?.address || '',
+      billing_address_2: zohoContact.billing_address?.address2 || null,
+      billing_city_town: zohoContact.billing_address?.city || '',
+      billing_county: zohoContact.billing_address?.state || null,
+      billing_postcode: zohoContact.billing_address?.zip || '',
+      shipping_address_1: zohoContact.shipping_address?.address || zohoContact.billing_address?.address || '',
+      shipping_address_2: zohoContact.shipping_address?.address2 || zohoContact.billing_address?.address2 || null,
+      shipping_city_town: zohoContact.shipping_address?.city || zohoContact.billing_address?.city || '',
+      shipping_county: zohoContact.shipping_address?.state || zohoContact.billing_address?.state || null,
+      shipping_postcode: zohoContact.shipping_address?.zip || zohoContact.billing_address?.zip || '',
+      payment_terms: parseInt(zohoContact.payment_terms) || 30,
+      currency_code: zohoContact.currency_code || 'GBP',
+      is_active: zohoContact.status === 'active',
+      created_by: createdBy,
+      linked_company: COMPANY_ID,
+      created_date: zohoContact.created_time || new Date().toISOString(),
+      last_modified: zohoContact.last_modified_time || new Date().toISOString(),
       zoho_customer_id: zohoContact.contact_id,
       fb_customer_id: zohoContact.custom_fields?.find(f => f.label === 'FB Customer ID')?.value || null,
-      zoho_data: zohoContact,
+      migration_source: 'zoho',
     };
   }
 
@@ -85,7 +110,7 @@ export class CustomerSyncService extends BaseSyncService {
           const { data } = await supabase
             .from(this.supabaseTable)
             .select('id')
-            .eq('company_id', COMPANY_ID)
+            .eq('linked_company', COMPANY_ID)
             .eq('fb_customer_id', record.fb_customer_id)
             .single();
           
@@ -96,7 +121,7 @@ export class CustomerSyncService extends BaseSyncService {
           const { data } = await supabase
             .from(this.supabaseTable)
             .select('id')
-            .eq('company_id', COMPANY_ID)
+            .eq('linked_company', COMPANY_ID)
             .eq('zoho_customer_id', record.zoho_customer_id)
             .single();
           
@@ -121,7 +146,7 @@ export class CustomerSyncService extends BaseSyncService {
         }
       } catch (error) {
         results.errors.push({
-          record: record.name,
+          record: record.display_name,
           error: error.message,
         });
       }
