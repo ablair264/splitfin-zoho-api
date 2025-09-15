@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: zoho-sync-service
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 18.17.0
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ZOHO_CLIENT_ID
+        sync: false
+      - key: ZOHO_CLIENT_SECRET
+        sync: false
+      - key: ZOHO_REFRESH_TOKEN
+        sync: false
+      - key: ZOHO_ORG_ID
+        sync: false
+      - key: COMPANY_ID
+        value: 87dcc6db-2e24-46fb-9a12-7886f690a326
+      - key: SYNC_INTERVAL_MINUTES
+        value: 30
+      - key: ENABLE_SCHEDULED_SYNC
+        value: true
+      - key: API_KEY
+        generateValue: true
+    healthCheckPath: /api/health
+    autoDeploy: false
