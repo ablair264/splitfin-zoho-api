@@ -76,7 +76,7 @@ export class ItemSyncService extends BaseSyncService {
         const { data: existingItem } = await supabase
           .from(this.supabaseTable)
           .select('id')
-          .eq('sku', record.sku)
+          .eq('legacy_item_id', record.legacy_item_id) // Changed to legacy_item_id
           .single();
 
         if (existingItem) {

@@ -94,8 +94,7 @@ export class CustomerSyncService extends BaseSyncService {
       linked_company: COMPANY_ID,
       created_date: zohoContact.created_time || new Date().toISOString(),
       last_modified: zohoContact.last_modified_time || new Date().toISOString(),
-      zoho_customer_id: zohoContact.contact_id,
-      fb_customer_id: zohoContact.custom_fields?.find(f => f.label === 'FB Customer ID')?.value || null,
+      fb_customer_id: zohoContact.custom_fields?.find(f => f.label === 'FB Customer ID')?.value || zohoContact.contact_id,
       migration_source: 'zoho',
     };
   }
@@ -122,12 +121,12 @@ export class CustomerSyncService extends BaseSyncService {
           existingCustomer = data;
         }
 
-        if (!existingCustomer && record.zoho_customer_id) {
+        if (!existingCustomer && record.fb_customer_id) {
           const { data } = await supabase
             .from(this.supabaseTable)
             .select('id')
             .eq('linked_company', COMPANY_ID)
-            .eq('zoho_customer_id', record.zoho_customer_id)
+            .eq('fb_customer_id', record.fb_customer_id)
             .single();
           
           existingCustomer = data;

@@ -67,7 +67,7 @@ export class PackageSyncService extends BaseSyncService {
         .from('orders')
         .select('id')
         .eq('company_id', COMPANY_ID)
-        .eq('legacy_order_id', zohoOrderId)
+        .eq('legacy_order_id', zohoOrderId) // This is correct
         .single();
 
       return data?.id || null;
@@ -85,7 +85,7 @@ export class PackageSyncService extends BaseSyncService {
         .from('customers')
         .select('id')
         .eq('linked_company', COMPANY_ID)
-        .eq('zoho_customer_id', zohoCustomerId)
+        .eq('fb_customer_id', zohoCustomerId) // Changed to fb_customer_id
         .single();
 
       return data?.id || null;
@@ -95,57 +95,9 @@ export class PackageSyncService extends BaseSyncService {
     }
   }
 
-  async getWarehouseId() {
-    try {
-      const { data } = await supabase
-        .from('warehouses')
-        .select('id')
-        .eq('company_id', COMPANY_ID)
-        .eq('is_active', true)
-        .limit(1)
-        .single();
-
-      return data?.id || null;
-    } catch (error) {
-      // If no warehouse found, try to get any warehouse for this company
-      try {
-        const { data } = await supabase
-          .from('warehouses')
-          .select('id')
-          .eq('company_id', COMPANY_ID)
-          .limit(1)
-          .single();
-
-        return data?.id || null;
-      } catch (fallbackError) {
-        logger.debug('No warehouse found for company, will create default warehouse');
-        return await this.createDefaultWarehouse();
-      }
-    }
-  }
-
-  async createDefaultWarehouse() {
-    try {
-      const { data, error } = await supabase
-        .from('warehouses')
-        .insert({
-          company_id: COMPANY_ID,
-          warehouse_name: 'Default Warehouse',
-          address_1: 'Default Address',
-          city_town: 'Default City',
-          postcode: 'DEFAULT',
-          is_active: true,
-        })
-        .select('id')
-        .single();
-
-      if (error) throw error;
-      logger.info('Created default warehouse for packages');
-      return data.id;
-    } catch (error) {
-      logger.error('Failed to create default warehouse:', error);
-      return null;
-    }
+  getWarehouseId() {
+    // Always return the fixed warehouse ID
+    return '81d9b5d1-9565-4e39-8d0e-4c5896bfba4b';
   }
 
   async getCourierId(courierName) {
@@ -167,9 +119,18 @@ export class PackageSyncService extends BaseSyncService {
   }
 
   async transformRecord(zohoPackage) {
+    // Log the package data to see what fields are available
+    logger.debug('Zoho package data:', {
+      package_id: zohoPackage.package_id,
+      customer_id: zohoPackage.customer_id,
+      contact_id: zohoPackage.contact_id,
+      salesorder_id: zohoPackage.salesorder_id,
+      customer_name: zohoPackage.customer_name,
+    });
+
     const [orderId, customerId, warehouseId, courierId] = await Promise.all([
       this.getOrderId(zohoPackage.salesorder_id),
-      this.getCustomerId(zohoPackage.customer_id),
+      this.getCustomerId(zohoPackage.contact_id || zohoPackage.customer_id), // Try contact_id first
       this.getWarehouseId(),
       this.getCourierId(zohoPackage.delivery_method),
     ]);

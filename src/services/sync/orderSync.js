@@ -81,7 +81,7 @@ export class OrderSyncService extends BaseSyncService {
         .from('customers')
         .select('id')
         .eq('linked_company', COMPANY_ID)
-        .eq('zoho_customer_id', zohoCustomerId)
+        .eq('fb_customer_id', zohoCustomerId) // Changed to fb_customer_id
         .single();
 
       return data?.id || null;
@@ -223,7 +223,7 @@ export class OrderSyncService extends BaseSyncService {
         const { data: product } = await supabase
           .from('items')
           .select('id')
-          .eq('sku', item.sku || item.item_id)
+          .eq('legacy_item_id', item.item_id) // Changed to legacy_item_id
           .single();
 
         return {
