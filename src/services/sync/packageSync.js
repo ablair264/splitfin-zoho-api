@@ -78,19 +78,39 @@ export class PackageSyncService extends BaseSyncService {
   }
 
   async getCustomerId(zohoCustomerId) {
-    if (!zohoCustomerId) return null;
+    if (!zohoCustomerId) {
+      logger.warn('No Zoho customer ID provided');
+      return null;
+    }
 
     try {
+      logger.info(`Looking for customer with fb_customer_id: ${zohoCustomerId}`);
+      
       const { data } = await supabase
         .from('customers')
-        .select('id')
+        .select('id, fb_customer_id, display_name')
         .eq('linked_company', COMPANY_ID)
-        .eq('fb_customer_id', zohoCustomerId) // Changed to fb_customer_id
+        .eq('fb_customer_id', zohoCustomerId)
         .single();
 
-      return data?.id || null;
+      if (data) {
+        logger.info(`Found customer: ${data.display_name} (ID: ${data.id})`);
+        return data.id;
+      } else {
+        logger.warn(`No customer found for Zoho customer ID: ${zohoCustomerId}`);
+        
+        // Let's see what customers exist
+        const { data: allCustomers } = await supabase
+          .from('customers')
+          .select('id, fb_customer_id, display_name')
+          .eq('linked_company', COMPANY_ID)
+          .limit(5);
+        
+        logger.info('Sample customers in database:', allCustomers);
+        return null;
+      }
     } catch (error) {
-      logger.debug(`Customer not found for Zoho customer ID: ${zohoCustomerId}`);
+      logger.error(`Error looking up customer ${zohoCustomerId}:`, error);
       return null;
     }
   }
@@ -120,17 +140,22 @@ export class PackageSyncService extends BaseSyncService {
 
   async transformRecord(zohoPackage) {
     // Log the package data to see what fields are available
-    logger.debug('Zoho package data:', {
+    logger.info('Zoho package data:', {
       package_id: zohoPackage.package_id,
+      package_number: zohoPackage.package_number,
       customer_id: zohoPackage.customer_id,
       contact_id: zohoPackage.contact_id,
       salesorder_id: zohoPackage.salesorder_id,
       customer_name: zohoPackage.customer_name,
+      status: zohoPackage.status,
     });
+
+    const customerIdToUse = zohoPackage.contact_id || zohoPackage.customer_id;
+    logger.info(`Using customer ID for lookup: ${customerIdToUse}`);
 
     const [orderId, customerId, warehouseId, courierId] = await Promise.all([
       this.getOrderId(zohoPackage.salesorder_id),
-      this.getCustomerId(zohoPackage.contact_id || zohoPackage.customer_id), // Try contact_id first
+      this.getCustomerId(customerIdToUse),
       this.getWarehouseId(),
       this.getCourierId(zohoPackage.delivery_method),
     ]);
