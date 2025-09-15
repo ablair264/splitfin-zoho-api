@@ -13,6 +13,11 @@ export class CustomerSyncService extends BaseSyncService {
     let page = 1;
     let hasMore = true;
 
+    // Add date filter for today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    params.last_modified_time = today.toISOString();
+
     while (hasMore) {
       try {
         const response = await zohoAuth.getInventoryData('contacts', {

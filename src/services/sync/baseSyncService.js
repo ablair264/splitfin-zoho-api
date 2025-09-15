@@ -131,18 +131,20 @@ export class BaseSyncService {
 
   async sync() {
     const startTime = Date.now();
-    const lastSync = await this.getLastSyncInfo();
     
     try {
       logger.info(`Starting ${this.entityName} sync...`);
       
-      const params = {};
-      if (lastSync?.synced_at) {
-        params.last_modified_time = new Date(lastSync.synced_at).toISOString();
-      }
+      // Always fetch records from today only
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Start of today
+      
+      const params = {
+        last_modified_time: today.toISOString()
+      };
 
       const zohoRecords = await this.fetchZohoData(params);
-      logger.info(`Fetched ${zohoRecords.length} ${this.entityName} from Zoho`);
+      logger.info(`Fetched ${zohoRecords.length} ${this.entityName} from Zoho (today only)`);
 
       const transformedRecords = zohoRecords.map(record => {
         try {

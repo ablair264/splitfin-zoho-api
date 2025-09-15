@@ -64,7 +64,45 @@ export class ItemSyncService extends BaseSyncService {
     };
   }
 
-  getConflictColumns() {
-    return 'sku';
+  async upsertRecords(records) {
+    const results = {
+      created: 0,
+      updated: 0,
+      errors: [],
+    };
+
+    for (const record of records) {
+      try {
+        const { data: existingItem } = await supabase
+          .from(this.supabaseTable)
+          .select('id')
+          .eq('sku', record.sku)
+          .single();
+
+        if (existingItem) {
+          const { error } = await supabase
+            .from(this.supabaseTable)
+            .update(record)
+            .eq('id', existingItem.id);
+
+          if (error) throw error;
+          results.updated++;
+        } else {
+          const { error } = await supabase
+            .from(this.supabaseTable)
+            .insert(record);
+
+          if (error) throw error;
+          results.created++;
+        }
+      } catch (error) {
+        results.errors.push({
+          sku: record.sku,
+          error: error.message,
+        });
+      }
+    }
+
+    return results;
   }
 }

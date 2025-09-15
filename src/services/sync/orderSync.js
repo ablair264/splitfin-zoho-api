@@ -7,6 +7,42 @@ export class OrderSyncService extends BaseSyncService {
     super('salesorders', 'salesorders', 'orders');
   }
 
+  async fetchZohoData(params = {}) {
+    const allRecords = [];
+    let page = 1;
+    let hasMore = true;
+
+    // Add date filter for today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    params.date = today.toISOString().split('T')[0]; // Format as YYYY-MM-DD
+
+    while (hasMore) {
+      try {
+        const response = await zohoAuth.getInventoryData(this.zohoEndpoint, {
+          page,
+          per_page: 200,
+          ...params,
+        });
+
+        const records = response[this.entityName] || [];
+        allRecords.push(...records);
+
+        hasMore = response.page_context?.has_more_page || false;
+        page++;
+
+        if (hasMore) {
+          await this.delay(this.delayMs);
+        }
+      } catch (error) {
+        logger.error(`Failed to fetch ${this.entityName} from Zoho:`, error);
+        throw error;
+      }
+    }
+
+    return allRecords;
+  }
+
   mapZohoStatus(zohoStatus) {
     const statusMap = {
       'draft': 'pending',
@@ -79,6 +115,32 @@ export class OrderSyncService extends BaseSyncService {
     };
   }
 
+  async fetchDetailedOrdersBatch(salesOrderIds) {
+    const detailedOrders = new Map();
+    const batchSize = 10; // Process in smaller batches to respect rate limits
+    
+    for (let i = 0; i < salesOrderIds.length; i += batchSize) {
+      const batch = salesOrderIds.slice(i, i + batchSize);
+      
+      await Promise.all(batch.map(async (salesOrderId) => {
+        try {
+          const detailedOrder = await zohoAuth.getInventoryData(`salesorders/${salesOrderId}`);
+          detailedOrders.set(salesOrderId, detailedOrder.salesorder);
+        } catch (error) {
+          logger.error(`Failed to fetch detailed order ${salesOrderId}:`, error);
+          detailedOrders.set(salesOrderId, null);
+        }
+      }));
+      
+      // Add delay between batches
+      if (i + batchSize < salesOrderIds.length) {
+        await this.delay(this.delayMs * 2); // Longer delay between batches
+      }
+    }
+    
+    return detailedOrders;
+  }
+
   async upsertRecords(records) {
     const results = {
       created: 0,
@@ -86,13 +148,22 @@ export class OrderSyncService extends BaseSyncService {
       errors: [],
     };
 
-    for (const record of records) {
-      try {
-        if (!record.customer_id) {
-          logger.warn(`Skipping order ${record.legacy_order_number} - no matching customer found`);
-          continue;
-        }
+    // Filter records that have customers and collect order IDs
+    const validRecords = records.filter(record => {
+      if (!record.customer_id) {
+        logger.warn(`Skipping order ${record.legacy_order_number} - no matching customer found`);
+        return false;
+      }
+      return true;
+    });
 
+    // Fetch all detailed orders in batches
+    const orderIds = validRecords.map(record => record.legacy_order_id);
+    const detailedOrders = await this.fetchDetailedOrdersBatch(orderIds);
+
+    // Process each order
+    for (const record of validRecords) {
+      try {
         const { data: existingOrder } = await supabase
           .from(this.supabaseTable)
           .select('id')
@@ -100,6 +171,7 @@ export class OrderSyncService extends BaseSyncService {
           .eq('legacy_order_id', record.legacy_order_id)
           .single();
 
+        let orderId;
         if (existingOrder) {
           const { error } = await supabase
             .from(this.supabaseTable)
@@ -107,17 +179,25 @@ export class OrderSyncService extends BaseSyncService {
             .eq('id', existingOrder.id);
 
           if (error) throw error;
+          orderId = existingOrder.id;
           results.updated++;
         } else {
-          const { error } = await supabase
+          const { data: insertedOrder, error } = await supabase
             .from(this.supabaseTable)
-            .insert(record);
+            .insert(record)
+            .select('id')
+            .single();
 
           if (error) throw error;
+          orderId = insertedOrder.id;
           results.created++;
         }
 
-        await this.syncOrderItems(record.legacy_order_id, zohoOrder.line_items);
+        // Sync order line items if we have detailed order data
+        const detailedOrder = detailedOrders.get(record.legacy_order_id);
+        if (detailedOrder?.line_items && orderId) {
+          await this.syncOrderItems(orderId, detailedOrder.line_items);
+        }
       } catch (error) {
         results.errors.push({
           order: record.legacy_order_number,
@@ -133,14 +213,11 @@ export class OrderSyncService extends BaseSyncService {
     if (!lineItems || lineItems.length === 0) return;
 
     try {
-      const { data: order } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('company_id', COMPANY_ID)
-        .eq('legacy_order_id', orderId)
-        .single();
-
-      if (!order) return;
+      // First, delete existing line items for this order to handle updates
+      await supabase
+        .from('order_line_items')
+        .delete()
+        .eq('order_id', orderId);
 
       const orderItems = await Promise.all(lineItems.map(async (item) => {
         const { data: product } = await supabase
@@ -150,7 +227,7 @@ export class OrderSyncService extends BaseSyncService {
           .single();
 
         return {
-          order_id: order.id,
+          order_id: orderId,
           item_id: product?.id || null,
           item_name: item.name || item.item_name,
           item_sku: item.sku || item.item_id,
@@ -163,13 +240,13 @@ export class OrderSyncService extends BaseSyncService {
         };
       }));
 
-      const { error } = await supabase
-        .from('order_line_items')
-        .upsert(orderItems, {
-          onConflict: 'order_id,item_sku',
-        });
+      if (orderItems.length > 0) {
+        const { error } = await supabase
+          .from('order_line_items')
+          .insert(orderItems);
 
-      if (error) throw error;
+        if (error) throw error;
+      }
     } catch (error) {
       logger.error(`Failed to sync order items for order ${orderId}:`, error);
     }
