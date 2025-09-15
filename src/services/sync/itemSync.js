@@ -1,9 +1,51 @@
 import { BaseSyncService } from './baseSyncService.js';
 import { COMPANY_ID, supabase } from '../../config/database.js';
+import { zohoAuth } from '../../config/zoho.js';
+import { logger } from '../../utils/logger.js';
 
 export class ItemSyncService extends BaseSyncService {
   constructor() {
     super('items', 'items', 'items'); // Changed from 'products' to 'items'
+  }
+
+  async fetchZohoData(params = {}) {
+    const allRecords = [];
+    let page = 1;
+    let hasMore = true;
+    const maxRecords = params.limit || 1000;
+
+    // Remove the last_modified_time filter that's causing 400 errors
+    const cleanParams = { ...params };
+    delete cleanParams.last_modified_time;
+
+    while (hasMore && allRecords.length < maxRecords) {
+      try {
+        const response = await zohoAuth.getInventoryData('items', {
+          page,
+          per_page: Math.min(200, maxRecords - allRecords.length),
+          ...cleanParams,
+        });
+
+        const records = response.items || [];
+        allRecords.push(...records);
+
+        hasMore = response.page_context?.has_more_page || false;
+        page++;
+
+        if (hasMore && allRecords.length < maxRecords) {
+          await this.delay(this.delayMs);
+        }
+      } catch (error) {
+        logger.error('Failed to fetch items from Zoho:', error);
+        throw error;
+      }
+    }
+
+    if (allRecords.length >= maxRecords) {
+      logger.warn(`Reached record limit of ${maxRecords} for items`);
+    }
+
+    return allRecords;
   }
 
   extractBrandFromName(name) {
@@ -98,6 +140,42 @@ export class ItemSyncService extends BaseSyncService {
       } catch (error) {
         results.errors.push({
           sku: record.sku,
+          error: error.message,
+        });
+      }
+    }
+
+    return results;
+  }
+
+  async syncSpecificIds(itemIds) {
+    const results = {
+      created: 0,
+      updated: 0,
+      errors: [],
+    };
+
+    logger.info(`Syncing ${itemIds.length} specific items`);
+
+    for (const itemId of itemIds) {
+      try {
+        const response = await zohoAuth.getInventoryData(`items/${itemId}`);
+        const zohoItem = response.item;
+        
+        if (zohoItem) {
+          const transformed = await this.transformRecord(zohoItem);
+          const result = await this.upsertRecords([transformed]);
+          
+          results.created += result.created;
+          results.updated += result.updated;
+          results.errors.push(...result.errors);
+        }
+        
+        await this.delay(this.delayMs);
+      } catch (error) {
+        logger.error(`Failed to sync item ${itemId}:`, error);
+        results.errors.push({
+          item_id: itemId,
           error: error.message,
         });
       }

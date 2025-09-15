@@ -39,26 +39,62 @@ export class SyncOrchestrator {
       throw error;
     }
 
-    logger.info('Starting full sync process...');
+    logger.info('Starting order-driven sync process...');
 
-    for (const serviceName of this.syncOrder) {
-      try {
-        logger.info(`Syncing ${serviceName}...`);
-        const result = await this.services[serviceName].sync();
-        
+    try {
+      // Step 1: Get today's orders first
+      logger.info('Syncing orders...');
+      const orderResult = await this.services.orders.sync();
+      results.success.push({
+        entity: 'orders',
+        ...orderResult,
+      });
+      logger.info('orders sync completed:', orderResult);
+
+      // Step 2: Get the unique customer and item IDs from today's orders
+      const { customerIds, itemIds } = await this.getOrderRelatedIds();
+      
+      // Step 3: Sync only the customers and items that are in today's orders
+      if (customerIds.length > 0) {
+        logger.info(`Syncing ${customerIds.length} customers from today's orders...`);
+        const customerResult = await this.services.customers.syncSpecificIds(customerIds);
         results.success.push({
-          entity: serviceName,
-          ...result,
-        });
-        
-        logger.info(`${serviceName} sync completed:`, result);
-      } catch (error) {
-        logger.error(`${serviceName} sync failed:`, error);
-        results.failed.push({
-          entity: serviceName,
-          error: error.message,
+          entity: 'customers',
+          ...customerResult,
         });
       }
+
+      if (itemIds.length > 0) {
+        logger.info(`Syncing ${itemIds.length} items from today's orders...`);
+        const itemResult = await this.services.items.syncSpecificIds(itemIds);
+        results.success.push({
+          entity: 'items',
+          ...itemResult,
+        });
+      }
+
+      // Step 4: Sync invoices (today only)
+      logger.info('Syncing invoices...');
+      const invoiceResult = await this.services.invoices.sync();
+      results.success.push({
+        entity: 'invoices',
+        ...invoiceResult,
+      });
+
+      // Step 5: Sync packages (last month)
+      logger.info('Syncing packages...');
+      const packageResult = await this.services.packages.sync();
+      results.success.push({
+        entity: 'packages',
+        ...packageResult,
+      });
+
+    } catch (error) {
+      logger.error('Order-driven sync failed:', error);
+      results.failed.push({
+        entity: 'full_sync',
+        error: error.message,
+      });
     }
 
     logger.info('Full sync completed:', {
@@ -67,6 +103,59 @@ export class SyncOrchestrator {
     });
 
     return results;
+  }
+
+  async getOrderRelatedIds() {
+    try {
+      const { zohoAuth } = await import('../config/zoho.js');
+      
+      // Get today's orders
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const response = await zohoAuth.getInventoryData('salesorders', {
+        date: today.toISOString().split('T')[0],
+        per_page: 200,
+      });
+
+      const orders = response.salesorders || [];
+      const customerIds = new Set();
+      const itemIds = new Set();
+
+      // Extract unique customer and item IDs
+      for (const order of orders) {
+        if (order.customer_id) {
+          customerIds.add(order.customer_id);
+        }
+        
+        // Get detailed order to access line items
+        try {
+          const detailResponse = await zohoAuth.getInventoryData(`salesorders/${order.salesorder_id}`);
+          const lineItems = detailResponse.salesorder?.line_items || [];
+          
+          for (const item of lineItems) {
+            if (item.item_id) {
+              itemIds.add(item.item_id);
+            }
+          }
+        } catch (error) {
+          logger.warn(`Failed to get details for order ${order.salesorder_id}:`, error.message);
+        }
+        
+        // Add delay to respect rate limits
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      logger.info(`Found ${customerIds.size} unique customers and ${itemIds.size} unique items in today's orders`);
+      
+      return {
+        customerIds: Array.from(customerIds),
+        itemIds: Array.from(itemIds),
+      };
+    } catch (error) {
+      logger.error('Failed to get order-related IDs:', error);
+      return { customerIds: [], itemIds: [] };
+    }
   }
 
   async syncEntity(entityName) {

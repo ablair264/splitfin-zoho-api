@@ -160,4 +160,40 @@ export class CustomerSyncService extends BaseSyncService {
 
     return results;
   }
+
+  async syncSpecificIds(customerIds) {
+    const results = {
+      created: 0,
+      updated: 0,
+      errors: [],
+    };
+
+    logger.info(`Syncing ${customerIds.length} specific customers`);
+
+    for (const customerId of customerIds) {
+      try {
+        const response = await zohoAuth.getInventoryData(`contacts/${customerId}`);
+        const zohoContact = response.contact;
+        
+        if (zohoContact) {
+          const transformed = await this.transformRecord(zohoContact);
+          const result = await this.upsertRecords([transformed]);
+          
+          results.created += result.created;
+          results.updated += result.updated;
+          results.errors.push(...result.errors);
+        }
+        
+        await this.delay(this.delayMs);
+      } catch (error) {
+        logger.error(`Failed to sync customer ${customerId}:`, error);
+        results.errors.push({
+          customer_id: customerId,
+          error: error.message,
+        });
+      }
+    }
+
+    return results;
+  }
 }
