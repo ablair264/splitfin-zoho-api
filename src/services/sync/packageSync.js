@@ -107,7 +107,43 @@ export class PackageSyncService extends BaseSyncService {
 
       return data?.id || null;
     } catch (error) {
-      logger.debug('No active warehouse found, will create shipment without warehouse');
+      // If no warehouse found, try to get any warehouse for this company
+      try {
+        const { data } = await supabase
+          .from('warehouses')
+          .select('id')
+          .eq('company_id', COMPANY_ID)
+          .limit(1)
+          .single();
+
+        return data?.id || null;
+      } catch (fallbackError) {
+        logger.debug('No warehouse found for company, will create default warehouse');
+        return await this.createDefaultWarehouse();
+      }
+    }
+  }
+
+  async createDefaultWarehouse() {
+    try {
+      const { data, error } = await supabase
+        .from('warehouses')
+        .insert({
+          company_id: COMPANY_ID,
+          warehouse_name: 'Default Warehouse',
+          address_1: 'Default Address',
+          city_town: 'Default City',
+          postcode: 'DEFAULT',
+          is_active: true,
+        })
+        .select('id')
+        .single();
+
+      if (error) throw error;
+      logger.info('Created default warehouse for packages');
+      return data.id;
+    } catch (error) {
+      logger.error('Failed to create default warehouse:', error);
       return null;
     }
   }
@@ -205,19 +241,25 @@ export class PackageSyncService extends BaseSyncService {
 
     for (const record of records) {
       try {
-        if (!record.warehouse_id) {
-          logger.warn(`Skipping package ${record.external_package_number} - no warehouse found`);
-          continue;
-        }
+        const packageNumber = record.external_package_number || record.external_package_id || 'Unknown';
 
         if (!record.customer_id) {
-          logger.warn(`Skipping package ${record.external_package_number} - no matching customer found`);
+          logger.warn(`Skipping package ${packageNumber} - no matching customer found`);
           continue;
         }
 
         if (!record.order_id) {
-          logger.warn(`Skipping package ${record.external_package_number} - no matching order found`);
+          logger.warn(`Skipping package ${packageNumber} - no matching order found`);
           continue;
+        }
+
+        // If no warehouse, try to get/create one
+        if (!record.warehouse_id) {
+          record.warehouse_id = await this.getWarehouseId();
+          if (!record.warehouse_id) {
+            logger.warn(`Skipping package ${packageNumber} - could not find or create warehouse`);
+            continue;
+          }
         }
 
         const { data: existingShipment } = await supabase
