@@ -42,7 +42,32 @@ export class SyncOrchestrator {
     logger.info('Starting order-driven sync process...');
 
     try {
-      // Step 1: Get today's orders first
+      // Step 1: Get the unique customer and item IDs from recent orders FIRST
+      const { customerIds, itemIds } = await this.getOrderRelatedIds();
+      
+      // Step 2: Sync customers first so they exist when we sync orders
+      if (customerIds.length > 0) {
+        logger.info(`Syncing ${customerIds.length} customers from recent orders...`);
+        const customerResult = await this.services.customers.syncSpecificIds(customerIds);
+        results.success.push({
+          entity: 'customers',
+          ...customerResult,
+        });
+        logger.info('customers sync completed:', customerResult);
+      }
+
+      // Step 3: Sync items so they exist when we sync orders
+      if (itemIds.length > 0) {
+        logger.info(`Syncing ${itemIds.length} items from recent orders...`);
+        const itemResult = await this.services.items.syncSpecificIds(itemIds);
+        results.success.push({
+          entity: 'items',
+          ...itemResult,
+        });
+        logger.info('items sync completed:', itemResult);
+      }
+
+      // Step 4: Now sync orders (customers and items should exist now)
       logger.info('Syncing orders...');
       const orderResult = await this.services.orders.sync();
       results.success.push({
@@ -50,28 +75,6 @@ export class SyncOrchestrator {
         ...orderResult,
       });
       logger.info('orders sync completed:', orderResult);
-
-      // Step 2: Get the unique customer and item IDs from today's orders
-      const { customerIds, itemIds } = await this.getOrderRelatedIds();
-      
-      // Step 3: Sync only the customers and items that are in today's orders
-      if (customerIds.length > 0) {
-        logger.info(`Syncing ${customerIds.length} customers from today's orders...`);
-        const customerResult = await this.services.customers.syncSpecificIds(customerIds);
-        results.success.push({
-          entity: 'customers',
-          ...customerResult,
-        });
-      }
-
-      if (itemIds.length > 0) {
-        logger.info(`Syncing ${itemIds.length} items from today's orders...`);
-        const itemResult = await this.services.items.syncSpecificIds(itemIds);
-        results.success.push({
-          entity: 'items',
-          ...itemResult,
-        });
-      }
 
       // Step 4: Sync invoices (today only)
       logger.info('Syncing invoices...');
