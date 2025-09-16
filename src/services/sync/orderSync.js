@@ -81,18 +81,58 @@ export class OrderSyncService extends BaseSyncService {
         .from('customers')
         .select('id')
         .eq('linked_company', COMPANY_ID)
-        .eq('zoho_customer_id', zohoCustomerId) // Changed to zoho_customer_id
+        .eq('zoho_customer_id', zohoCustomerId)
         .single();
 
       if (data?.id) {
         logger.debug(`Found customer ${data.id} for Zoho customer ID: ${zohoCustomerId}`);
         return data.id;
       } else {
-        logger.warn(`Customer not found for Zoho customer ID: ${zohoCustomerId}`);
-        return null;
+        // Customer not found, try to create it
+        logger.info(`Customer not found for Zoho ID ${zohoCustomerId}, attempting to create...`);
+        return await this.createCustomerFromZoho(zohoCustomerId);
       }
     } catch (error) {
+      if (error.code === 'PGRST116') {
+        // No rows returned, try to create customer
+        logger.info(`Customer not found for Zoho ID ${zohoCustomerId}, attempting to create...`);
+        return await this.createCustomerFromZoho(zohoCustomerId);
+      }
       logger.error(`Error looking up customer for Zoho customer ID ${zohoCustomerId}:`, error);
+      return null;
+    }
+  }
+
+  async createCustomerFromZoho(zohoCustomerId) {
+    try {
+      const { CustomerSyncService } = await import('./customerSync.js');
+      const customerSync = new CustomerSyncService();
+      
+      const response = await zohoAuth.getInventoryData(`contacts/${zohoCustomerId}`);
+      const zohoContact = response.contact;
+      
+      if (zohoContact) {
+        const transformed = await customerSync.transformRecord(zohoContact);
+        const result = await customerSync.upsertRecords([transformed]);
+        
+        if (result.created > 0 || result.updated > 0) {
+          // Get the created customer ID
+          const { data } = await supabase
+            .from('customers')
+            .select('id')
+            .eq('linked_company', COMPANY_ID)
+            .eq('zoho_customer_id', zohoCustomerId)
+            .single();
+          
+          logger.info(`Successfully created customer ${data?.id} for Zoho ID ${zohoCustomerId}`);
+          return data?.id || null;
+        }
+      }
+      
+      logger.warn(`Failed to create customer for Zoho ID ${zohoCustomerId}`);
+      return null;
+    } catch (error) {
+      logger.error(`Failed to create customer for Zoho ID ${zohoCustomerId}:`, error);
       return null;
     }
   }
