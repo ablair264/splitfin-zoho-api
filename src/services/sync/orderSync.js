@@ -84,9 +84,15 @@ export class OrderSyncService extends BaseSyncService {
         .eq('zoho_customer_id', zohoCustomerId) // Changed to zoho_customer_id
         .single();
 
-      return data?.id || null;
+      if (data?.id) {
+        logger.debug(`Found customer ${data.id} for Zoho customer ID: ${zohoCustomerId}`);
+        return data.id;
+      } else {
+        logger.warn(`Customer not found for Zoho customer ID: ${zohoCustomerId}`);
+        return null;
+      }
     } catch (error) {
-      logger.debug(`Customer not found for Zoho customer ID: ${zohoCustomerId}`);
+      logger.error(`Error looking up customer for Zoho customer ID ${zohoCustomerId}:`, error);
       return null;
     }
   }
