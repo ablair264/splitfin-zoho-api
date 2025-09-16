@@ -163,25 +163,19 @@ export class OrderSyncService extends BaseSyncService {
 
   async fetchDetailedOrdersBatch(salesOrderIds) {
     const detailedOrders = new Map();
-    const batchSize = 10; // Process in smaller batches to respect rate limits
     
-    for (let i = 0; i < salesOrderIds.length; i += batchSize) {
-      const batch = salesOrderIds.slice(i, i + batchSize);
-      
-      await Promise.all(batch.map(async (salesOrderId) => {
-        try {
-          const detailedOrder = await zohoAuth.getInventoryData(`salesorders/${salesOrderId}`);
-          detailedOrders.set(salesOrderId, detailedOrder.salesorder);
-        } catch (error) {
-          logger.error(`Failed to fetch detailed order ${salesOrderId}:`, error);
-          detailedOrders.set(salesOrderId, null);
-        }
-      }));
-      
-      // Add delay between batches
-      if (i + batchSize < salesOrderIds.length) {
-        await this.delay(this.delayMs * 2); // Longer delay between batches
+    // Process orders sequentially to avoid rate limits
+    for (const salesOrderId of salesOrderIds) {
+      try {
+        const detailedOrder = await zohoAuth.getInventoryData(`salesorders/${salesOrderId}`);
+        detailedOrders.set(salesOrderId, detailedOrder.salesorder);
+      } catch (error) {
+        logger.error(`Failed to fetch detailed order ${salesOrderId}:`, error);
+        detailedOrders.set(salesOrderId, null);
       }
+      
+      // Add delay between each request to respect rate limits
+      await this.delay(this.delayMs);
     }
     
     return detailedOrders;
