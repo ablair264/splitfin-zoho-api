@@ -47,17 +47,17 @@ export class CustomerSyncService extends BaseSyncService {
 
   async getCreatedByUserId() {
     try {
+      // Try to find any user for this company (not just Admin)
       const { data } = await supabase
         .from('users')
         .select('id')
         .eq('company_id', COMPANY_ID)
-        .eq('role', 'Admin')
         .limit(1)
         .single();
 
       return data?.id || null;
     } catch (error) {
-      logger.debug('Admin user not found for customer creation');
+      logger.debug('No user found for customer creation, will use null');
       return null;
     }
   }
@@ -65,8 +65,9 @@ export class CustomerSyncService extends BaseSyncService {
   async transformRecord(zohoContact) {
     const createdBy = await this.getCreatedByUserId();
     
+    // If no user found, we'll allow null (the database should handle this)
     if (!createdBy) {
-      throw new Error('No admin user found to assign as creator');
+      logger.warn('No user found to assign as creator, using null');
     }
 
     const contactName = zohoContact.contact_name || 
