@@ -180,12 +180,16 @@ export class CustomerSyncService extends BaseSyncService {
           const transformed = await this.transformRecord(zohoContact);
           const result = await this.upsertRecords([transformed]);
           
+          logger.info(`Customer ${customerId}: created=${result.created}, updated=${result.updated}, zoho_customer_id=${transformed.zoho_customer_id}`);
+          
           results.created += result.created;
           results.updated += result.updated;
           results.errors.push(...result.errors);
+        } else {
+          logger.warn(`No contact data returned for customer ID ${customerId}`);
         }
         
-        await this.delay(this.delayMs);
+        await this.delay(500); // Increased delay for rate limiting
       } catch (error) {
         logger.error(`Failed to sync customer ${customerId}:`, error);
         results.errors.push({

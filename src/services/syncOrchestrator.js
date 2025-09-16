@@ -154,7 +154,7 @@ export class SyncOrchestrator {
         }
         
         // Add delay to respect rate limits
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       logger.info(`Found ${customerIds.size} unique customers and ${itemIds.size} unique items in today's orders`);

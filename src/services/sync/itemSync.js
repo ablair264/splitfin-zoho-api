@@ -171,7 +171,7 @@ export class ItemSyncService extends BaseSyncService {
           results.errors.push(...result.errors);
         }
         
-        await this.delay(this.delayMs);
+        await this.delay(500); // Increased delay for rate limiting  
       } catch (error) {
         logger.error(`Failed to sync item ${itemId}:`, error);
         results.errors.push({
