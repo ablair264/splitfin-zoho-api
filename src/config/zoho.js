@@ -64,8 +64,9 @@ class ZohoAuth {
       return response.data;
     } catch (error) {
       if (error.response?.status === 429 && retries > 0) {
-        const delay = parseInt(error.response.headers['retry-after'] || '5') * 1000;
-        logger.warn(`Rate limit hit, waiting ${delay}ms before retry...`);
+        const retryAfter = parseInt(error.response.headers['retry-after'] || '5');
+        const delay = Math.min(retryAfter * 1000, 60000); // Cap at 1 minute max
+        logger.warn(`Rate limit hit, waiting ${delay}ms before retry (retry-after: ${retryAfter}s)...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         return this.makeRequest(url, method, data, retries - 1);
       }
