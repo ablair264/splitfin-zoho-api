@@ -59,14 +59,19 @@ class ZohoAuth {
         },
         data,
         params: method === 'GET' ? data : undefined,
+        timeout: 30000, // 30 second timeout
       });
 
       return response.data;
     } catch (error) {
+      // Enhanced error handling with exponential backoff
       if (error.response?.status === 429 && retries > 0) {
         const retryAfter = parseInt(error.response.headers['retry-after'] || '5');
-        const delay = Math.min(retryAfter * 1000, 60000); // Cap at 1 minute max
-        logger.warn(`Rate limit hit, waiting ${delay}ms before retry (retry-after: ${retryAfter}s)...`);
+        const baseDelay = retryAfter * 1000;
+        const jitter = Math.random() * 1000; // Add jitter to prevent thundering herd
+        const delay = Math.min(baseDelay + jitter, 60000); // Cap at 1 minute max
+        
+        logger.warn(`Rate limit hit, waiting ${Math.round(delay)}ms before retry (retry-after: ${retryAfter}s, retries left: ${retries})...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         return this.makeRequest(url, method, data, retries - 1);
       }
@@ -75,6 +80,19 @@ class ZohoAuth {
         logger.warn('Access token expired, refreshing...');
         this.accessToken = null;
         return this.makeRequest(url, method, data, retries - 1);
+      }
+
+      // Log detailed error information for debugging
+      if (error.response) {
+        logger.error(`Zoho API error - Status: ${error.response.status}, URL: ${url}`, {
+          status: error.response.status,
+          data: error.response.data,
+          headers: error.response.headers,
+        });
+      } else if (error.request) {
+        logger.error('Zoho API network error:', error.message);
+      } else {
+        logger.error('Zoho API request setup error:', error.message);
       }
 
       throw error;

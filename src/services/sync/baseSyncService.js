@@ -1,14 +1,15 @@
 import { supabase, COMPANY_ID } from '../../config/database.js';
 import { zohoAuth } from '../../config/zoho.js';
 import { logger } from '../../utils/logger.js';
+import { rateLimiter, makeThrottledRequest } from '../../config/rateLimiting.js';
 
 export class BaseSyncService {
   constructor(entityName, zohoEndpoint, supabaseTable) {
     this.entityName = entityName;
     this.zohoEndpoint = zohoEndpoint;
     this.supabaseTable = supabaseTable;
-    this.batchSize = 50;
-    this.delayMs = 200;
+    this.batchSize = rateLimiter.config.batchSize;
+    this.delayMs = rateLimiter.config.baseDelayMs;
   }
 
   async delay(ms) {
@@ -59,15 +60,20 @@ export class BaseSyncService {
     const allRecords = [];
     let page = 1;
     let hasMore = true;
-    const maxRecords = params.limit || 1000; // Safety limit
+    const maxRecords = params.limit || rateLimiter.config.maxRecordsPerSync;
+
+    logger.info(`Starting to fetch ${this.entityName} with rate limiting enabled`);
 
     while (hasMore && allRecords.length < maxRecords) {
       try {
-        const response = await zohoAuth.getInventoryData(this.zohoEndpoint, {
-          page,
-          per_page: Math.min(200, maxRecords - allRecords.length),
-          ...params,
-        });
+        const response = await makeThrottledRequest(
+          () => zohoAuth.getInventoryData(this.zohoEndpoint, {
+            page,
+            per_page: Math.min(200, maxRecords - allRecords.length),
+            ...params,
+          }),
+          `${this.entityName}-page-${page}`
+        );
 
         const records = response[this.entityName] || [];
         allRecords.push(...records);
@@ -75,11 +81,13 @@ export class BaseSyncService {
         hasMore = response.page_context?.has_more_page || false;
         page++;
 
-        if (hasMore && allRecords.length < maxRecords) {
-          await this.delay(this.delayMs);
+        // Log progress periodically
+        if (page % 10 === 0) {
+          logger.info(`Fetched ${allRecords.length} ${this.entityName} records (page ${page})`);
+          logger.debug('Rate limiter stats:', rateLimiter.getStats());
         }
       } catch (error) {
-        logger.error(`Failed to fetch ${this.entityName} from Zoho:`, error);
+        logger.error(`Failed to fetch ${this.entityName} from Zoho (page ${page}):`, error);
         throw error;
       }
     }
@@ -87,6 +95,9 @@ export class BaseSyncService {
     if (allRecords.length >= maxRecords) {
       logger.warn(`Reached record limit of ${maxRecords} for ${this.entityName}`);
     }
+
+    logger.info(`Completed fetching ${allRecords.length} ${this.entityName} records`);
+    logger.info('Final rate limiter stats:', rateLimiter.getStats());
 
     return allRecords;
   }

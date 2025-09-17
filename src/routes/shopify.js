@@ -159,13 +159,34 @@ router.post('/connect', async (req, res) => {
  */
 router.post('/products/create', async (req, res) => {
   try {
+    logger.info('Received product creation request:', {
+      shopDomain: req.body.shopDomain,
+      productName: req.body.product?.name,
+      productSku: req.body.product?.sku
+    });
+
     const { shopDomain, accessToken, product } = req.body;
+
+    // Validate required fields
+    if (!shopDomain || !accessToken || !product) {
+      logger.error('Missing required fields:', { shopDomain: !!shopDomain, accessToken: !!accessToken, product: !!product });
+      return res.status(400).json({ 
+        error: 'Missing required fields: shopDomain, accessToken, and product are required' 
+      });
+    }
+
+    if (!product.name || !product.sku) {
+      logger.error('Missing product fields:', { name: !!product.name, sku: !!product.sku });
+      return res.status(400).json({ 
+        error: 'Product name and SKU are required' 
+      });
+    }
 
     const shopifyProduct = {
       product: {
         title: product.name,
         body_html: product.description || '',
-        vendor: product.brand_name,
+        vendor: product.brand_name || '',
         product_type: product.category || '',
         status: product.status === 'active' ? 'active' : 'draft',
         variants: [{
@@ -185,6 +206,13 @@ router.post('/products/create', async (req, res) => {
       }];
     }
 
+    logger.info('Sending to Shopify:', {
+      url: `https://${shopDomain}/admin/api/2025-07/products.json`,
+      productTitle: shopifyProduct.product.title,
+      productSku: shopifyProduct.product.variants[0].sku,
+      price: shopifyProduct.product.variants[0].price
+    });
+
     const response = await axios.post(
       `https://${shopDomain}/admin/api/2025-07/products.json`,
       shopifyProduct,
@@ -196,17 +224,49 @@ router.post('/products/create', async (req, res) => {
       }
     );
 
+    logger.info('Shopify product created successfully:', {
+      shopifyProductId: response.data.product.id,
+      title: response.data.product.title
+    });
+
     res.json({
       success: true,
       shopify_product_id: response.data.product.id,
       product: response.data.product
     });
   } catch (error) {
-    logger.error('Error creating Shopify product:', error.response?.data || error);
-    res.status(500).json({ 
-      error: 'Failed to create product',
-      details: error.response?.data?.errors || error.message
+    logger.error('Error creating Shopify product:', {
+      message: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      url: error.config?.url
     });
+    
+    // Handle different types of errors
+    if (error.response) {
+      // Shopify API returned an error
+      const statusCode = error.response.status;
+      const errorData = error.response.data;
+      
+      res.status(statusCode).json({ 
+        error: 'Shopify API error',
+        details: errorData?.errors || errorData || error.message,
+        status: statusCode
+      });
+    } else if (error.request) {
+      // Network error
+      res.status(503).json({ 
+        error: 'Unable to connect to Shopify',
+        details: 'Network error - please check internet connection'
+      });
+    } else {
+      // Other error
+      res.status(500).json({ 
+        error: 'Internal server error',
+        details: error.message
+      });
+    }
   }
 });
 
