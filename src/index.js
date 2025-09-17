@@ -20,7 +20,7 @@ app.use(express.json());
 app.use('/api/health', healthRouter);
 app.use('/api/sync', syncRouter);
 app.use('/api/shopify', shopifyRouter);
-app.use('/api/shopify-app', shopifyAppRouter);
+app.use('/shopify-app', shopifyAppRouter);
 
 const syncOrchestrator = new SyncOrchestrator();
 
