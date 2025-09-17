@@ -5,6 +5,7 @@ import cron from 'node-cron';
 import { logger } from './utils/logger.js';
 import { syncRouter } from './routes/sync.js';
 import { healthRouter } from './routes/health.js';
+import { shopifyRouter } from './routes/shopify.js';
 import { SyncOrchestrator } from './services/syncOrchestrator.js';
 
 dotenv.config();
@@ -17,6 +18,7 @@ app.use(express.json());
 
 app.use('/api/health', healthRouter);
 app.use('/api/sync', syncRouter);
+app.use('/api/shopify', shopifyRouter);
 
 const syncOrchestrator = new SyncOrchestrator();
 
