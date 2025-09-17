@@ -9,8 +9,8 @@ dotenv.config();
 const router = express.Router();
 
 // Shopify app credentials from environment variables
-const SHOPIFY_CLIENT_ID = process.env.SHOPIFY_CLIENT_ID || 'c181af0af68ba3078881698ff0f83747';
-const SHOPIFY_CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET || '6710cc767d094aab06ee72aa10689154';
+const SHOPIFY_CLIENT_ID = process.env.SHOPIFY_CLIENT_ID || 'df7b19db6ac2b418bd954389ab47c867';
+const SHOPIFY_CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET || '22456d13620254b26d8d9ff783d471df';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://splitfin.co.uk';
 
 /**
