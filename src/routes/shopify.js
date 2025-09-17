@@ -31,7 +31,7 @@ router.post('/oauth/init', (req, res) => {
     // Store state in session or database (for now, we'll pass it through)
     // In production, you should store this server-side
     
-    const redirectUri = `${process.env.API_URL || 'https://api.splitfin.co.uk'}/api/shopify/oauth/callback`;
+    const redirectUri = `${process.env.API_URL || 'https://splitfin-zoho-api.onrender.com'}/api/shopify/oauth/callback`;
     const scopes = 'read_products,write_products,read_inventory,write_inventory';
     
     const authUrl = `https://${shopDomain}/admin/oauth/authorize?` +
