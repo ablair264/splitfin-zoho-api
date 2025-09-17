@@ -6,6 +6,7 @@ import { logger } from './utils/logger.js';
 import { syncRouter } from './routes/sync.js';
 import { healthRouter } from './routes/health.js';
 import { shopifyRouter } from './routes/shopify.js';
+import { shopifyAppRouter } from './routes/shopify-app.js';
 import { SyncOrchestrator } from './services/syncOrchestrator.js';
 
 dotenv.config();
@@ -19,6 +20,7 @@ app.use(express.json());
 app.use('/api/health', healthRouter);
 app.use('/api/sync', syncRouter);
 app.use('/api/shopify', shopifyRouter);
+app.use('/api/shopify-app', shopifyAppRouter);
 
 const syncOrchestrator = new SyncOrchestrator();
 
