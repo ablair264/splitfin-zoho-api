@@ -31,7 +31,7 @@ const verifyShopifyRequest = (req) => {
 /**
  * Main app entry point - This is what Shopify loads in the admin
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const { shop, hmac } = req.query;
 
   // Verify the request is from Shopify
@@ -39,18 +39,13 @@ router.get('/', (req, res) => {
     return res.status(401).send('Unauthorized');
   }
 
-  // For embedded apps, we need to render a page that:
-  // 1. Loads Shopify App Bridge
-  // 2. Authenticates with our backend
-  // 3. Shows the app UI
-
+  // Simple confirmation page
   const html = `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="utf-8">
-      <title>Splitfin for Shopify</title>
-      <script src="https://cdn.shopify.com/shopifycloud/app-bridge/3/app-bridge.js"></script>
+      <title>Splitfin - Connected</title>
       <style>
         * {
           margin: 0;
@@ -59,287 +54,124 @@ router.get('/', (req, res) => {
         }
         body {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-          background: #f6f6f7;
-        }
-        .container {
-          max-width: 1200px;
-          margin: 0 auto;
+          background: #f4f6f8;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 100vh;
           padding: 20px;
         }
-        .header {
+        .container {
           background: white;
           border-radius: 8px;
-          padding: 24px;
-          margin-bottom: 20px;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+          padding: 40px;
+          max-width: 500px;
+          width: 100%;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          text-align: center;
         }
-        .header h1 {
-          color: #202223;
+        .logo {
+          width: 60px;
+          height: 60px;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          border-radius: 12px;
+          margin: 0 auto 24px;
+        }
+        h1 {
+          color: #1a1a1a;
           font-size: 24px;
-          margin-bottom: 8px;
+          font-weight: 600;
+          margin-bottom: 12px;
         }
-        .header p {
-          color: #6d7175;
+        p {
+          color: #666;
           font-size: 16px;
+          line-height: 1.5;
+          margin-bottom: 24px;
         }
-        .card {
-          background: white;
-          border-radius: 8px;
-          padding: 24px;
-          margin-bottom: 20px;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        .card h2 {
-          color: #202223;
-          font-size: 20px;
-          margin-bottom: 16px;
+        .status {
+          background: #f0fdf4;
+          color: #166534;
+          padding: 12px 20px;
+          border-radius: 6px;
+          margin-bottom: 32px;
+          font-weight: 500;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
         }
         .button {
-          background: #008060;
+          background: #5850ec;
           color: white;
-          border: none;
-          border-radius: 4px;
+          text-decoration: none;
           padding: 12px 24px;
-          font-size: 14px;
+          border-radius: 6px;
+          display: inline-block;
           font-weight: 500;
-          cursor: pointer;
           transition: background 0.2s;
         }
         .button:hover {
-          background: #006e52;
+          background: #4338ca;
         }
-        .button-secondary {
-          background: #f6f6f7;
-          color: #202223;
+        .secondary-link {
+          color: #5850ec;
+          text-decoration: none;
+          font-size: 14px;
+          margin-top: 16px;
+          display: inline-block;
         }
-        .button-secondary:hover {
-          background: #e4e5e7;
+        .secondary-link:hover {
+          text-decoration: underline;
         }
-        .status {
+        .info {
+          background: #f9fafb;
+          border-radius: 6px;
           padding: 16px;
-          border-radius: 4px;
-          margin-bottom: 20px;
+          margin: 24px 0;
+          font-size: 14px;
+          color: #4b5563;
+          text-align: left;
         }
-        .status.success {
-          background: #e3f3e9;
-          color: #004c3f;
-        }
-        .status.error {
-          background: #fbeae5;
-          color: #d72c0d;
-        }
-        .products-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-          gap: 20px;
-          margin-top: 20px;
-        }
-        .product-card {
-          background: #f6f6f7;
-          border-radius: 8px;
-          padding: 16px;
-        }
-        .loading {
-          text-align: center;
-          padding: 40px;
-          color: #6d7175;
+        .info strong {
+          color: #1f2937;
         }
       </style>
     </head>
     <body>
       <div class="container">
-        <div class="header">
-          <h1>Splitfin Product Sync</h1>
-          <p>Sync your Splitfin catalog with your Shopify store</p>
-        </div>
-
-        <div class="card">
-          <h2>Connection Status</h2>
-          <div id="connectionStatus" class="loading">Checking connection...</div>
-        </div>
-
-        <div class="card" id="syncSection" style="display: none;">
-          <h2>Product Sync</h2>
-          <p style="margin-bottom: 16px;">Sync your Splitfin products to this Shopify store.</p>
-          <button class="button" onclick="startSync()">Sync Products</button>
-          <button class="button button-secondary" onclick="viewProducts()" style="margin-left: 10px;">View Synced Products</button>
-          
-          <div id="syncStatus"></div>
-        </div>
-
-        <div class="card" id="productsSection" style="display: none;">
-          <h2>Recent Products</h2>
-          <div id="productsList" class="products-grid"></div>
-        </div>
-      </div>
-
-      <script>
-        // Initialize Shopify App Bridge
-        const AppBridge = window['app-bridge'];
-        const createApp = AppBridge.default;
-        const app = createApp({
-          apiKey: '${SHOPIFY_CLIENT_ID}',
-        });
-
-        // Shop domain from URL
-        const shop = '${shop}';
+        <div class="logo"></div>
         
-        // Check connection status
-        async function checkConnection() {
-          try {
-            const response = await fetch('/api/shopify-app/status?shop=' + shop);
-            const data = await response.json();
-            
-            const statusDiv = document.getElementById('connectionStatus');
-            if (data.connected) {
-              statusDiv.className = 'status success';
-              statusDiv.innerHTML = '✓ Connected to Splitfin';
-              document.getElementById('syncSection').style.display = 'block';
-              loadRecentProducts();
-            } else {
-              statusDiv.className = 'status error';
-              statusDiv.innerHTML = '✗ Not connected. <a href="/api/shopify-app/connect?shop=' + shop + '">Connect to Splitfin</a>';
-            }
-          } catch (error) {
-            console.error('Error checking connection:', error);
-          }
-        }
-
-        // Start product sync
-        async function startSync() {
-          const statusDiv = document.getElementById('syncStatus');
-          statusDiv.className = 'status';
-          statusDiv.innerHTML = 'Syncing products...';
-          
-          try {
-            const response = await fetch('/api/shopify-app/sync', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ shop })
-            });
-            
-            const data = await response.json();
-            if (data.success) {
-              statusDiv.className = 'status success';
-              statusDiv.innerHTML = '✓ Synced ' + data.count + ' products successfully';
-              loadRecentProducts();
-            } else {
-              statusDiv.className = 'status error';
-              statusDiv.innerHTML = '✗ Sync failed: ' + data.error;
-            }
-          } catch (error) {
-            statusDiv.className = 'status error';
-            statusDiv.innerHTML = '✗ Sync failed: ' + error.message;
-          }
-        }
-
-        // Load recent products
-        async function loadRecentProducts() {
-          try {
-            const response = await fetch('/api/shopify-app/products?shop=' + shop);
-            const products = await response.json();
-            
-            const productsSection = document.getElementById('productsSection');
-            const productsList = document.getElementById('productsList');
-            
-            if (products.length > 0) {
-              productsSection.style.display = 'block';
-              productsList.innerHTML = products.slice(0, 6).map(product => \`
-                <div class="product-card">
-                  <strong>\${product.name}</strong>
-                  <p style="color: #6d7175; font-size: 14px;">\${product.sku}</p>
-                  <p style="color: #6d7175; font-size: 14px;">\${product.brand_name}</p>
-                </div>
-              \`).join('');
-            }
-          } catch (error) {
-            console.error('Error loading products:', error);
-          }
-        }
-
-        // View products in Shopify admin
-        function viewProducts() {
-          // Use App Bridge to navigate to products page
-          const redirect = AppBridge.actions.Redirect.create(app);
-          redirect.dispatch(AppBridge.actions.Redirect.Action.ADMIN_PATH, {
-            path: '/products',
-            newContext: true
-          });
-        }
-
-        // Initialize
-        checkConnection();
-      </script>
+        <h1>Splitfin App Installed!</h1>
+        
+        <p>Your Shopify store <strong>${shop}</strong> is ready to connect with Splitfin.</p>
+        
+        <div class="status">
+          ✓ App installed successfully
+        </div>
+        
+        <div class="info">
+          <strong>Next steps:</strong><br>
+          1. Go to Splitfin and log in to your account<br>
+          2. Navigate to Extensions → Shopify Integration<br>
+          3. Click "Connect Store" and enter your shop domain<br>
+          4. Start syncing your products!
+        </div>
+        
+        <a href="https://splitfin.co.uk/extensions" class="button" target="_blank">
+          Go to Splitfin →
+        </a>
+        
+        <br>
+        
+        <a href="https://help.splitfin.co.uk/shopify" class="secondary-link" target="_blank">
+          View setup guide
+        </a>
+      </div>
     </body>
     </html>
   `;
 
   res.send(html);
-});
-
-/**
- * Check connection status
- */
-router.get('/status', async (req, res) => {
-  const { shop } = req.query;
-  
-  // TODO: Check if this shop is connected to a Splitfin account
-  // For now, return mock data
-  res.json({
-    connected: false,
-    shop: shop
-  });
-});
-
-/**
- * Connect shop to Splitfin account
- */
-router.get('/connect', (req, res) => {
-  const { shop } = req.query;
-  
-  // Redirect to Splitfin OAuth flow
-  // This would typically involve:
-  // 1. Store shop domain in session
-  // 2. Redirect to Splitfin login
-  // 3. After Splitfin auth, link the accounts
-  
-  res.redirect(`https://splitfin.co.uk/shopify/link?shop=${shop}`);
-});
-
-/**
- * Sync products endpoint
- */
-router.post('/sync', async (req, res) => {
-  const { shop } = req.body;
-  
-  try {
-    // TODO: Implement actual sync logic
-    // 1. Get Splitfin products
-    // 2. Transform to Shopify format
-    // 3. Create/update in Shopify
-    
-    res.json({
-      success: true,
-      count: 0,
-      message: 'Sync functionality coming soon'
-    });
-  } catch (error) {
-    logger.error('Sync error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-/**
- * Get recent synced products
- */
-router.get('/products', async (req, res) => {
-  const { shop } = req.query;
-  
-  // TODO: Get actual synced products from database
-  res.json([]);
 });
 
 export { router as shopifyAppRouter };
