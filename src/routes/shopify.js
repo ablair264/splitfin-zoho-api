@@ -85,7 +85,7 @@ router.get('/oauth/callback', async (req, res) => {
       const { access_token } = tokenResponse.data;
 
       // Get shop information
-      const shopInfoResponse = await axios.get(`https://${shop}/admin/api/2024-01/shop.json`, {
+      const shopInfoResponse = await axios.get(`https://${shop}/admin/api/2025-07/shop.json`, {
         headers: {
           'X-Shopify-Access-Token': access_token
         }
@@ -186,7 +186,7 @@ router.post('/products/create', async (req, res) => {
     }
 
     const response = await axios.post(
-      `https://${shopDomain}/admin/api/2024-01/products.json`,
+      `https://${shopDomain}/admin/api/2025-07/products.json`,
       shopifyProduct,
       {
         headers: {
