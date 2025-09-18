@@ -259,26 +259,33 @@ export class OrderSyncService extends BaseSyncService {
         .delete()
         .eq('order_id', orderId);
 
-      const orderItems = await Promise.all(lineItems.map(async (item) => {
+      const orderItems = [];
+      
+      for (const item of lineItems) {
         const { data: product } = await supabase
           .from('items')
           .select('id')
-          .eq('legacy_item_id', item.item_id) // Changed to legacy_item_id
+          .eq('legacy_item_id', item.item_id)
           .single();
 
-        return {
-          order_id: orderId,
-          item_id: product?.id || null,
-          item_name: item.name || item.item_name,
-          item_sku: item.sku || item.item_id,
-          legacy_item_id: item.item_id,
-          quantity: parseInt(item.quantity) || 0,
-          unit_price: parseFloat(item.rate) || 0,
-          total_price: parseFloat(item.item_total) || 0,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-      }));
+        // Only add line items where we found a matching product
+        if (product?.id) {
+          orderItems.push({
+            order_id: orderId,
+            item_id: product.id,
+            item_name: item.name || item.item_name,
+            item_sku: item.sku || item.item_id,
+            legacy_item_id: item.item_id,
+            quantity: parseInt(item.quantity) || 0,
+            unit_price: parseFloat(item.rate) || 0,
+            total_price: parseFloat(item.item_total) || 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        } else {
+          logger.warn(`Skipping line item for item_id ${item.item_id} - no matching product found`);
+        }
+      }
 
       if (orderItems.length > 0) {
         const { error } = await supabase
