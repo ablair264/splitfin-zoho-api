@@ -14,7 +14,10 @@ export class ItemSyncService extends BaseSyncService {
     let hasMore = true;
     const maxRecords = params.limit || 1000;
 
-    // Remove the last_modified_time filter that's causing 400 errors
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 1);
     const cleanParams = { ...params };
     delete cleanParams.last_modified_time;
 
@@ -27,7 +30,13 @@ export class ItemSyncService extends BaseSyncService {
         });
 
         const records = response.items || [];
-        allRecords.push(...records);
+        const todays = records.filter((r) => {
+          const lm = r.last_modified_time ? new Date(r.last_modified_time) : null;
+          const ct = r.created_time ? new Date(r.created_time) : null;
+          const d = lm || ct;
+          return d && d >= start && d < end;
+        });
+        allRecords.push(...todays);
 
         hasMore = response.page_context?.has_more_page || false;
         page++;

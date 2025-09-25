@@ -13,9 +13,11 @@ export class OrderSyncService extends BaseSyncService {
     let page = 1;
     let hasMore = true;
 
-    // Remove date filtering for orders to avoid 400 errors
-    // We'll filter by date in the orchestrator instead
-    logger.info('Fetching recent orders (no date filter to avoid 400 errors)');
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 1);
+    logger.info('Fetching orders and filtering to today');
 
     while (hasMore) {
       try {
@@ -26,7 +28,14 @@ export class OrderSyncService extends BaseSyncService {
         });
 
         const records = response[this.entityName] || [];
-        allRecords.push(...records);
+        const todays = records.filter((r) => {
+          const lc = r.last_modified_time ? new Date(r.last_modified_time) : null;
+          const dc = r.created_time ? new Date(r.created_time) : null;
+          const od = r.date ? new Date(r.date) : null;
+          const d = lc || dc || od;
+          return d && d >= start && d < end;
+        });
+        allRecords.push(...todays);
 
         hasMore = response.page_context?.has_more_page || false;
         page++;

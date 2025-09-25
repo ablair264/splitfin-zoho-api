@@ -19,6 +19,11 @@ export class CustomerSyncService extends BaseSyncService {
     params.last_modified_time = today.toISOString().split('T')[0]; // Use YYYY-MM-DD format
     logger.info(`Fetching customers from: ${params.last_modified_time}`);
 
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 1);
+
     while (hasMore) {
       try {
         const response = await zohoAuth.getInventoryData('contacts', {
@@ -28,7 +33,13 @@ export class CustomerSyncService extends BaseSyncService {
         });
 
         const records = response.contacts || [];
-        allRecords.push(...records);
+        const todays = records.filter((r) => {
+          const lm = r.last_modified_time ? new Date(r.last_modified_time) : null;
+          const ct = r.created_time ? new Date(r.created_time) : null;
+          const d = lm || ct;
+          return d && d >= start && d < end;
+        });
+        allRecords.push(...todays);
 
         hasMore = response.page_context?.has_more_page || false;
         page++;

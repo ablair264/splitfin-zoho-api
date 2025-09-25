@@ -13,14 +13,14 @@ export class PackageSyncService extends BaseSyncService {
     let page = 1;
     let hasMore = true;
 
-    // Fetch packages from the last month
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-    oneMonthAgo.setHours(0, 0, 0, 0);
-    
-    // Use date format that Zoho expects (YYYY-MM-DD)
-    params.date_start = oneMonthAgo.toISOString().split('T')[0];
-    logger.info(`Fetching packages from: ${params.date_start}`);
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 1);
+    const ymd = start.toISOString().split('T')[0];
+    params.date_start = ymd;
+    params.date_end = ymd;
+    logger.info(`Fetching packages for: ${ymd}`);
 
     while (hasMore) {
       try {
@@ -31,7 +31,14 @@ export class PackageSyncService extends BaseSyncService {
         });
 
         const records = response.packages || [];
-        allRecords.push(...records);
+        const todays = records.filter((r) => {
+          const lm = r.last_modified_time ? new Date(r.last_modified_time) : null;
+          const ct = r.created_time ? new Date(r.created_time) : null;
+          const sd = r.shipment_date ? new Date(r.shipment_date) : null;
+          const d = lm || ct || sd;
+          return d && d >= start && d < end;
+        });
+        allRecords.push(...todays);
 
         hasMore = response.page_context?.has_more_page || false;
         page++;

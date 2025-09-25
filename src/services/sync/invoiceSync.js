@@ -7,6 +7,51 @@ export class InvoiceSyncService extends BaseSyncService {
     super('invoices', 'invoices', 'invoices');
   }
 
+  async fetchZohoData(params = {}) {
+    const allRecords = [];
+    let page = 1;
+    let hasMore = true;
+
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 1);
+    const ymd = start.toISOString().split('T')[0];
+    const q = { ...params, date_start: ymd, date_end: ymd };
+    
+    while (hasMore) {
+      try {
+        const response = await zohoAuth.getInventoryData(this.zohoEndpoint, {
+          page,
+          per_page: 200,
+          ...q,
+        });
+
+        const records = response[this.entityName] || [];
+        const todays = records.filter((r) => {
+          const lm = r.last_modified_time ? new Date(r.last_modified_time) : null;
+          const ct = r.created_time ? new Date(r.created_time) : null;
+          const id = r.date ? new Date(r.date) : null;
+          const d = lm || ct || id;
+          return d && d >= start && d < end;
+        });
+        allRecords.push(...todays);
+
+        hasMore = response.page_context?.has_more_page || false;
+        page++;
+
+        if (hasMore) {
+          await this.delay(this.delayMs);
+        }
+      } catch (error) {
+        logger.error('Failed to fetch invoices from Zoho:', error);
+        throw error;
+      }
+    }
+
+    return allRecords;
+  }
+
   mapZohoInvoiceStatus(zohoStatus, balance) {
     if (zohoStatus === 'void') return 'cancelled';
     if (parseFloat(balance) === 0) return 'paid';
