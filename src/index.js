@@ -7,6 +7,7 @@ import { syncRouter } from './routes/sync.js';
 import { healthRouter } from './routes/health.js';
 import { shopifyRouter } from './routes/shopify.js';
 import { shopifyAppRouter } from './routes/shopify-app.js';
+import { trackingRouter } from './routes/tracking.js';
 import { SyncOrchestrator } from './services/syncOrchestrator.js';
 
 dotenv.config();
@@ -14,13 +15,36 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Restrict CORS to known origins if provided
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+if (allowedOrigins.length > 0) {
+  app.use(cors({
+    origin: (origin, callback) => {
+      // Allow same-origin or server-to-server (no origin)
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: false,
+  }));
+} else {
+  app.use(cors());
+}
 app.use(express.json());
+
+// Quick denylist for common bot scans (WordPress, xmlrpc, etc.)
+const denylist = [/wp-includes/i, /xmlrpc\.php/i, /wlwmanifest\.xml/i, /\.env/i];
+app.use((req, res, next) => {
+  if (denylist.some(rx => rx.test(req.path))) {
+    return res.status(404).send('Not found');
+  }
+  next();
+});
 
 app.use('/api/health', healthRouter);
 app.use('/api/sync', syncRouter);
 app.use('/api/shopify', shopifyRouter);
 app.use('/shopify-app', shopifyAppRouter);
+app.use('/api', trackingRouter);
 
 const syncOrchestrator = new SyncOrchestrator();
 
